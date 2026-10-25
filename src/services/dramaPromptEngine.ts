@@ -42,6 +42,7 @@ export interface DramaConsultantOption {
   channel: DramaAudienceChannel;
   visualStyle: DramaVisualStyle;
   aspectRatio: DramaAspectRatio;
+  episodeDurationSec?: number;
   paywallEpisodeIndex: number;
   marketFitReason: string;
   logline: string;
@@ -58,6 +59,86 @@ export interface DramaConsultantResponse {
   followUpChips: string[];
 }
 
+export interface DramaDurationSpec {
+  durationSec: number;
+  label: string;
+  minWords: number;
+  maxWords: number;
+  sceneRange: string;
+  beatRange: string;
+  recommendedShots: number;
+}
+
+export const DRAMA_DURATION_PRESETS: Array<{ sec: number; title: string; badge: string }> = [
+  { sec: 60, title: '60秒 · 极速卡点短剧', badge: '约 380~520 字/集' },
+  { sec: 90, title: '90秒 · 标准竖屏漫剧', badge: '约 550~750 字/集' },
+  { sec: 120, title: '120秒 · 深度拉扯短剧', badge: '约 750~1000 字/集' },
+  { sec: 180, title: '180秒 · 精品动态漫(3分钟)', badge: '约 1100~1450 字/集' },
+  { sec: 240, title: '240秒 · 中篇叙事漫剧(4分钟)', badge: '约 1450~1900 字/集' },
+];
+
+/**
+ * 将「单集目标时长（秒）」与「甲方标准剧本目标字数、场次数、动作台词交互条数、建议分镜数」做精确工业级挂钩。
+ * 商业漫剧 TTS 正常配音语速约 4~4.5 字/秒，叠加场头与极简 △ 动作白描行后，综合剧本字数约为 6.1~8.3 字/秒。
+ */
+export function getEpisodeDurationSpec(rawSec?: number): DramaDurationSpec {
+  const sec = Math.max(45, Math.min(480, Math.round(Number(rawSec) || 90)));
+
+  if (sec <= 65) {
+    return {
+      durationSec: sec,
+      label: '极速卡点竖屏短剧',
+      minWords: Math.round(sec * 6.3),
+      maxWords: Math.round(sec * 8.5),
+      sceneRange: '1~2 个紧凑场次',
+      beatRange: '10~14 条精炼动作与台词交互',
+      recommendedShots: 6,
+    };
+  }
+  if (sec <= 100) {
+    return {
+      durationSec: sec,
+      label: '标准竖屏商业漫剧',
+      minWords: Math.round(sec * 6.1),
+      maxWords: Math.round(sec * 8.3),
+      sceneRange: '2~3 个紧凑场次',
+      beatRange: '14~20 条精炼动作与台词交互',
+      recommendedShots: 8,
+    };
+  }
+  if (sec <= 145) {
+    return {
+      durationSec: sec,
+      label: '中密拉扯叙事短剧',
+      minWords: Math.round(sec * 6.2),
+      maxWords: Math.round(sec * 8.3),
+      sceneRange: '2~4 个完整场次',
+      beatRange: '20~26 条动作与台词交锋',
+      recommendedShots: Math.max(10, Math.round(sec / 11)),
+    };
+  }
+  if (sec <= 200) {
+    return {
+      durationSec: sec,
+      label: '精品长单集动态漫',
+      minWords: Math.round(sec * 6.1),
+      maxWords: Math.round(sec * 8.1),
+      sceneRange: '3~5 个起承转合场次',
+      beatRange: '28~36 条多轮动作与台词博弈',
+      recommendedShots: Math.max(14, Math.round(sec / 12)),
+    };
+  }
+  return {
+    durationSec: sec,
+    label: '中长篇深度动态漫',
+    minWords: Math.round(sec * 6.0),
+    maxWords: Math.round(sec * 7.9),
+    sceneRange: `${Math.max(4, Math.floor(sec / 55))}~${Math.max(5, Math.ceil(sec / 40))} 个层次场次`,
+    beatRange: `${Math.round(sec * 0.15)}~${Math.round(sec * 0.2)} 条完整动作与台词推进`,
+    recommendedShots: Math.min(24, Math.max(16, Math.round(sec / 12))),
+  };
+}
+
 /**
  * 商业漫剧总导演底层法则（物理级隔离个人小说 XP 偏好，100% 遵循大众短视频与 AI 漫剧行业真实交付规范）
  */
@@ -67,8 +148,9 @@ const COMMERCIAL_DRAMA_CONSTITUTION = `【商业 AI 漫剧 / 短剧工业化创�
 3. 编剧文学本与后期分镜本严格分层：
    - 写【甲方标准文学剧本】时：必须极简、干脆、留白！严禁在剧本正文里堆砌摄影机焦段参数、长篇外貌复读、抽象心理剖析或英文生图Tag！只写「场头 + 出场人物 + △极简动作白描（一句一动，10-28字）+ 角色精炼台词 + 关键【音效】」。
    - 拆【后期 AI 分镜执行单】时：再将文学剧本中的每一条 △ 动作与台词拆解为具体的景别运镜，并自动织入角色固定立绘外貌词供即梦/可灵/Vidu/MJ生图。
-4. 台词短促抓耳：单句台词严格控制在 30 字以内，口语化、情绪直接、适合 AI 配音（TTS）卡点输出。
-5. 集末断章强钩子：每集最后一行必须停在“危机骤降 / 底牌揭晓前一秒 / 惊天反转定格”的最高悬念处。`;
+4. 时长与字数体量强挂钩：单集设定的成片时长越长，剧本场次深度、人物交锋回合数与总字数必须按比例同步增长；既严禁将长单集缩水写成几百字短梗，也严禁靠废话描写注水。
+5. 台词短促抓耳：单句台词严格控制在 30 字以内，口语化、情绪直接、适合 AI 配音（TTS）卡点输出。
+6. 集末断章强钩子：每集最后一行必须停在“危机骤降 / 底牌揭晓前一秒 / 惊天反转定格”的最高悬念处。`;
 
 export function getTrackByProject(project: DramaProject): DramaTrackPreset {
   return (
@@ -206,18 +288,29 @@ export function parseDramaPitchProposals(raw: string): DramaPitchProposal[] {
 }
 
 export function buildDramaAssetExtractionMessages(
-  project: DramaProject
+  project: DramaProject,
+  initialEpisodeCount?: number
 ): Array<{ role: 'system' | 'user'; content: string }> {
   const track = getTrackByProject(project);
+  const durSpec = getEpisodeDurationSpec(project.episodeDurationSec);
+  const targetInitialCount = Math.max(
+    6,
+    Math.min(
+      20,
+      initialEpisodeCount || Math.max(12, Math.min(15, project.paywallEpisodeIndex + 2))
+    )
+  );
+
   const system = `${COMMERCIAL_DRAMA_CONSTITUTION}
 
-你是一位专业的 AI 漫剧视觉总监与分集统筹编剧。你的任务是根据剧目大纲，提取高度一致的【角色立绘固定资产】、【核心场景视觉锚点】与【前 12 集商业分集卡点目录】。`;
+你是一位专业的 AI 漫剧视觉总监与分集统筹编剧。你的任务是根据剧目大纲与单集时长规格（单集 ${durSpec.durationSec} 秒，对应单集剧本约 ${durSpec.minWords}~${durSpec.maxWords} 字），提取高度一致的【角色立绘固定资产】、【核心场景视觉锚点】与【第 1 集至第 ${targetInitialCount} 集商业分集卡点细纲（含关键道具与伏笔埋设）】。`;
 
-  const user = `请为以下 AI 漫剧项目生成全套工业化视觉资产与前 12 集节拍规划（包含第 ${project.paywallEpisodeIndex} 集核心付费卡点）：
+  const user = `请为以下 AI 漫剧项目生成全套工业化视觉资产与前 ${targetInitialCount} 集节拍细纲（包含第 ${project.paywallEpisodeIndex} 集核心付费卡点）：
 
 【剧名】：《${project.title}》
 【所属赛道】：${track.name}（${project.channel}）
 【视觉画风】：${project.visualStyle} | 【画幅】：${project.aspectRatio}
+【单集时长与体量规格】：单集 ${durSpec.durationSec} 秒（${durSpec.label}，单集剧本目标字数 ${durSpec.minWords}~${durSpec.maxWords} 字，包含 ${durSpec.sceneRange}） | 【全剧规划总集数】：${project.totalPlannedEpisodes} 集
 【核心卖点】：${project.logline}
 【黄金前3秒钩子】：${project.golden3SecHook}
 【全剧大纲】：
@@ -234,7 +327,7 @@ ${project.synopsis}
       "appearanceZh": "中文固定立绘特征（发型发色、五官气质、标志性常驻穿搭、代表配饰，供后期拆解分镜时自动锁定外观）",
       "visualPromptEn": "English AI image generation consistency prompt tags (hair, eyes, outfit, style: ${project.visualStyle}, ${project.aspectRatio})",
       "voicePersona": "配音音色、语速与情绪基调建议",
-      "signatureTrait": "标志性镜头微动作或随身视觉道具"
+      "signatureTrait": "标志性镜头微动作或随身关键信物/视觉道具"
     }
   ],
   "sceneAnchors": [
@@ -249,22 +342,25 @@ ${project.synopsis}
     {
       "episodeIndex": 1,
       "title": "单集短标题（不含第X集前缀）",
-      "beatSummary": "本集核心冲突事件、爽点打脸闭环与集末悬念（40-70字）",
+      "beatSummary": "本集核心冲突事件、爽点/拉扯推进闭环与集末断章悬念（45-85字，剧情容量须匹配 ${durSpec.durationSec} 秒单集时长）",
+      "foreshadowingOrProps": "本集埋设或呼应的关键道具、核心伏笔或身份线索（如：埋设破碎银色耳返信物 / 伏笔神秘匿名录音）",
       "hookType": "免费强留存"
     }
   ]
 }
 \`\`\`
 要求：
-1. \`characterAssets\` 提取 3~5 位核心出场角色；
-2. \`sceneAnchors\` 提取 2~3 个高频标志性主场景；
-3. \`episodePlan\` 完整规划第 1 集至第 ${Math.max(10, Math.min(15, project.paywallEpisodeIndex + 2))} 集，其中第 ${project.paywallEpisodeIndex} 集的 \`hookType\` 必须标记为 \`"核心付费卡点"\`，其余集根据节奏标记为 \`"免费强留存"\`、\`"小高潮爽点"\` 或 \`"反转高潮"\`。`;
+1. \`characterAssets\` 提取 3~5 位核心出场角色（若已有预设主角姓名与人设，请继承并深化完善其立绘词与标志性道具）；
+2. \`sceneAnchors\` 提取 2~4 个高频标志性主场景；
+3. \`episodePlan\` 完整规划第 1 集至第 ${targetInitialCount} 集，每集必须标注清晰的 \`foreshadowingOrProps\`（关键道具/伏笔线索，方便后续续写第 ${targetInitialCount + 1} 集以后细纲时精准回收！）；若第 ${project.paywallEpisodeIndex} 集在本区间内，其 \`hookType\` 必须标记为 \`"核心付费卡点"\`，其余集根据节奏标记为 \`"免费强留存"\`、\`"小高潮爽点"\` 或 \`"反转高潮"\`。`;
 
   return [
     { role: 'system', content: system },
     { role: 'user', content: user },
   ];
 }
+
+const VALID_HOOK_TYPES = ['免费强留存', '小高潮爽点', '核心付费卡点', '反转高潮'] as const;
 
 export function parseDramaAssetsJson(raw: string): {
   characterAssets: DramaCharacterAsset[];
@@ -297,17 +393,176 @@ export function parseDramaAssetsJson(raw: string): {
       }))
     : [];
 
-  const validHookTypes = ['免费强留存', '小高潮爽点', '核心付费卡点', '反转高潮'] as const;
   const episodePlan: DramaEpisodePlanItem[] = Array.isArray(parsed.episodePlan)
     ? parsed.episodePlan.map((ep: any, idx: number) => ({
         episodeIndex: Number(ep.episodeIndex) || idx + 1,
-        title: String(ep.title || `第${idx + 1}集`),
+        title: String(ep.title || `第${idx + 1}集`).replace(/^第\s*\d+\s*集[：:·\s-]*/, '').trim() || `第${idx + 1}集`,
         beatSummary: String(ep.beatSummary || ''),
-        hookType: validHookTypes.includes(ep.hookType) ? ep.hookType : '免费强留存',
+        foreshadowingOrProps: ep.foreshadowingOrProps ? String(ep.foreshadowingOrProps).trim() : undefined,
+        hookType: VALID_HOOK_TYPES.includes(ep.hookType) ? ep.hookType : '免费强留存',
       }))
     : [];
 
   return { characterAssets, sceneAnchors, episodePlan };
+}
+
+/**
+ * 滚动续写后续分集剧本细纲（第 startEpisode 至 endEpisode 集）：
+ * 强制 AI 先回溯审阅前序所有已规划分集细纲 + 已成稿剧本中的【未回收伏笔、关键道具、核心剧情与人物关系进展】，
+ * 再严丝合缝地续写指定区间的分集节拍规划。
+ */
+export function buildContinueEpisodePlanMessages(params: {
+  project: DramaProject;
+  startEpisode: number;
+  endEpisode: number;
+  arcDirectionHint?: string;
+}): Array<{ role: 'system' | 'user'; content: string }> {
+  const { project, startEpisode, endEpisode, arcDirectionHint } = params;
+  const track = getTrackByProject(project);
+  const durSpec = getEpisodeDurationSpec(project.episodeDurationSec);
+  const effectiveTotal = Math.max(project.totalPlannedEpisodes || 40, endEpisode);
+
+  // 1. 整理第 1 ~ (startEpisode - 1) 集的所有已规划分集细纲（含伏笔与关键道具记录）
+  const priorPlanned = [...(project.episodePlan || [])]
+    .filter((item) => item.episodeIndex < startEpisode)
+    .sort((a, b) => a.episodeIndex - b.episodeIndex);
+
+  const priorPlanDigest =
+    priorPlanned.length > 0
+      ? priorPlanned
+          .map(
+            (ep) =>
+              `- 第 ${ep.episodeIndex} 集《${ep.title}》[${ep.hookType}]：${ep.beatSummary}${
+                ep.foreshadowingOrProps ? ` ｜【伏笔/关键道具】：${ep.foreshadowingOrProps}` : ''
+              }`
+          )
+          .join('\n')
+      : '（前序尚无分集细纲记录，请依据全剧大纲直接从起始集构建）';
+
+  // 2. 整理已实际成稿的前序剧本（捕捉编剧在正文中临时新增的关键道具、台词暗线与集末断章）
+  const priorWrittenEps = [...(project.episodes || [])]
+    .filter((e) => e.index < startEpisode)
+    .sort((a, b) => a.index - b.index);
+
+  const writtenEpisodesDigest =
+    priorWrittenEps.length > 0
+      ? priorWrittenEps
+          .map((e) => {
+            const actionPropsSnippet = (e.rawScriptText || '')
+              .split('\n')
+              .filter((line) => line.startsWith('△') || line.includes('【音效】'))
+              .slice(-4)
+              .join(' / ')
+              .slice(0, 180);
+            return `- 已成稿第 ${e.index} 集（${e.title}）：核心剧情=${e.coreConflictSummary} ｜ 集末悬念=${e.endingCliffhanger}${
+              actionPropsSnippet ? ` ｜ 近期关键动作/道具细节：${actionPropsSnippet}` : ''
+            }`;
+          })
+          .join('\n')
+      : '（目前尚未撰写具体分集正文剧本，以前序分集细纲与角色资产为准）';
+
+  // 3. 角色标志性随身道具与关系锚点
+  const castPropsDigest =
+    project.characterAssets.length > 0
+      ? project.characterAssets
+          .map(
+            (c) =>
+              `- ${c.name}（${c.roleTag} · ${c.ageAndArchetype}）：标志性道具/微动作=${c.signatureTrait || '暂无'}`
+          )
+          .join('\n')
+      : '（按全剧大纲角色设定推进）';
+
+  const episodeCountToGen = Math.max(1, endEpisode - startEpisode + 1);
+
+  const system = `${COMMERCIAL_DRAMA_CONSTITUTION}
+
+你现在是顶级商业 AI 漫剧【总编审与分集大纲统筹导演】。
+创作者已经完成了前序集数的立项与细纲，现在需要你接力续写 **第 ${startEpisode} 集至第 ${endEpisode} 集（共 ${episodeCountToGen} 集）** 的剧本细纲。
+
+【核心编审铁律 —— 先回溯审阅，后续写细纲】：
+1. **深度回溯前序集数**：你必须逐集审阅前序（第 1 ~ ${Math.max(1, startEpisode - 1)} 集）的分集细纲、已成稿剧本悬念以及角色的标志性信物/关键道具：
+   - 排查前文埋下但尚未揭晓的**伏笔与悬念**（如隐藏身份、契约期限、幕后黑手、误会真相）；
+   - 追踪前文出现过的**关键道具/信物**（如录音笔、玉佩、旧乐谱、钥匙、合同、伤疤等），在后续集数中设计合理的“道具重现、线索串联或反转打脸”；
+   - 紧扣前文最后一集（第 ${startEpisode - 1} 集）留下的集末钩子，确保第 ${startEpisode} 集开篇第一秒无缝承接引爆，绝不断档或重复水剧情！
+2. **匹配单集时长体量**：本项目设定单集时长为 **${durSpec.durationSec} 秒（${durSpec.label}，对应单集文学剧本约 ${durSpec.minWords}~${durSpec.maxWords} 字，${durSpec.sceneRange}）**。每集细纲的信息密度与事件体量必须恰如其分地支撑 ${durSpec.durationSec} 秒成片。
+3. **张弛有度的商业卡点波浪**：全剧总规划约 ${effectiveTotal} 集（核心首轮付费点：第 ${project.paywallEpisodeIndex} 集）。在续写第 ${startEpisode}~${endEpisode} 集时，每 3~4 集必须安排一次 \`"小高潮爽点"\` 或 \`"反转高潮"\`，若包含第 ${project.paywallEpisodeIndex} 集则必须设为 \`"核心付费卡点"\`，严禁连续多集平淡过场！`;
+
+  const user = `请先审阅《${project.title}》的前序集数设定、伏笔与关键道具，然后精准续写 **第 ${startEpisode} 集至第 ${endEpisode} 集（共 ${episodeCountToGen} 集）** 的剧本细纲！
+
+【项目全局档案】
+- 剧名：《${project.title}》 | 赛道：${track.name}（${project.channel}）
+- 视觉规格：${project.visualStyle} · ${project.aspectRatio}
+- 单集时长设定：${durSpec.durationSec} 秒/集（对应剧本约 ${durSpec.minWords}~${durSpec.maxWords} 字）
+- 全剧规划总集数：${effectiveTotal} 集（当前续写所处阶段：第 ${startEpisode}~${endEpisode} 集 / 共 ${effectiveTotal} 集）
+- 一句话卖点：${project.logline}
+- 全剧三阶段总大纲：
+${project.synopsis}
+
+【角色与标志性道具/信物档案】
+${castPropsDigest}
+
+【前序已规划分集细纲全量回顾（第 1 ~ ${Math.max(1, startEpisode - 1)} 集）】
+${priorPlanDigest}
+
+【前序已成稿剧本正文的剧情与道具细节审阅】
+${writtenEpisodesDigest}
+${
+  arcDirectionHint?.trim()
+    ? `\n【创作者对本批次（第 ${startEpisode}~${endEpisode} 集）的特别剧情/伏笔指令】：\n${arcDirectionHint.trim()}\n`
+    : ''
+}
+请严格输出以下 JSON 对象（用 \`\`\`json 包裹，\`episodes\` 数组必须不多不少完整包含从 \`episodeIndex: ${startEpisode}\` 到 \`episodeIndex: ${endEpisode}\` 的每一集）：
+\`\`\`json
+{
+  "continuityAuditSummary": "120~240字的前序审阅与衔接报告：明确指出从前序集数中提取了哪些【未解伏笔】、【关键道具/信物】与【人物关系卡点】，并说明将在第 ${startEpisode}~${endEpisode} 集的哪几集中进行呼应、升级或回收。",
+  "episodes": [
+    {
+      "episodeIndex": ${startEpisode},
+      "title": "极具悬念或爽感的单集短标题（不含第X集前缀）",
+      "beatSummary": "本集核心冲突推进、爽点/反转闭环与集末断章悬念（50-90字，体量适配 ${durSpec.durationSec} 秒单集）",
+      "foreshadowingOrProps": "本集回收的前序伏笔/关键道具，或新埋设的关键线索（如：回收第3集匿名U盘伏笔 / 新埋顶流合约违约金陷阱）",
+      "hookType": "免费强留存"
+    }
+  ]
+}
+\`\`\``;
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ];
+}
+
+export function parseContinueEpisodePlanJson(
+  raw: string,
+  expectedStartEp: number
+): {
+  continuityAuditSummary: string;
+  episodes: DramaEpisodePlanItem[];
+} {
+  const cleaned = extractJsonString(raw);
+  const parsed = JSON.parse(cleaned);
+  const rawList = Array.isArray(parsed) ? parsed : parsed.episodes;
+
+  const episodes: DramaEpisodePlanItem[] = Array.isArray(rawList)
+    ? rawList.map((ep: any, idx: number) => ({
+        episodeIndex: Number(ep.episodeIndex) || expectedStartEp + idx,
+        title:
+          String(ep.title || `第${expectedStartEp + idx}集`)
+            .replace(/^第\s*\d+\s*集[：:·\s-]*/, '')
+            .trim() || `剧情推进`,
+        beatSummary: String(ep.beatSummary || ''),
+        foreshadowingOrProps: ep.foreshadowingOrProps
+          ? String(ep.foreshadowingOrProps).trim()
+          : undefined,
+        hookType: VALID_HOOK_TYPES.includes(ep.hookType) ? ep.hookType : '免费强留存',
+      }))
+    : [];
+
+  return {
+    continuityAuditSummary: String(parsed.continuityAuditSummary || '').trim(),
+    episodes,
+  };
 }
 
 /**
@@ -323,6 +578,7 @@ export function buildLiteraryScriptMessages(params: {
 }): Array<{ role: 'system' | 'user'; content: string }> {
   const { project, episodeIndex, scriptFormat, directorInstruction, sourceNovelChapter } = params;
   const track = getTrackByProject(project);
+  const durSpec = getEpisodeDurationSpec(project.episodeDurationSec);
   const isPaywallEp = episodeIndex === project.paywallEpisodeIndex;
   const plannedBeat = project.episodePlan.find((p) => p.episodeIndex === episodeIndex);
   const prevEp = project.episodes
@@ -332,9 +588,20 @@ export function buildLiteraryScriptMessages(params: {
   const castSummary =
     project.characterAssets.length > 0
       ? project.characterAssets
-          .map((c) => `- ${c.name}（${c.roleTag}，${c.ageAndArchetype}，说话风格：${c.voicePersona}）`)
+          .map(
+            (c) =>
+              `- ${c.name}（${c.roleTag}，${c.ageAndArchetype}，说话风格：${c.voicePersona}${
+                c.signatureTrait ? `，标志性道具/习惯：${c.signatureTrait}` : ''
+              }）`
+          )
           .join('\n')
       : '（根据大纲设定主要角色名与鲜明口吻）';
+
+  const recentPlanClues = project.episodePlan
+    .filter((p) => p.episodeIndex < episodeIndex && p.foreshadowingOrProps)
+    .slice(-4)
+    .map((p) => `第${p.episodeIndex}集伏笔/道具：${p.foreshadowingOrProps}`)
+    .join('；');
 
   const formatRule = buildFormatRulePrompt(scriptFormat, episodeIndex);
 
@@ -343,19 +610,34 @@ export function buildLiteraryScriptMessages(params: {
 你现在是资深商业短剧/AI漫剧专职编剧（负责交付给甲方的标准单集文学剧本）。
 你深知甲方审稿与后期漫剧制作团队最痛恨“写成啰嗦小说”或“在文学本里塞满生硬运镜参数”。你写的剧本永远节奏极快、场次清晰、一句一动、台词句句带钩子！
 
-【当前项目信息】
+【当前项目信息与单集时长-字数硬性挂钩指标】
 - 剧名：《${project.title}》
 - 赛道：${track.name}（${project.channel}）
+- ⏱️ 单集目标时长设定：**${durSpec.durationSec} 秒（${durSpec.label}）**
+- 📏 剧本正文目标总字数区间：**${durSpec.minWords} ~ ${durSpec.maxWords} 字**（硬性指标！单集时长设定为 ${durSpec.durationSec} 秒，请按此体量扎实铺开 ${durSpec.sceneRange}、约 ${durSpec.beatRange}；时长越长则人物交锋回合与事件递进越饱满，严禁偷工减料写得过短，也严禁写小说心理废话凑字数！）
 - 赛道节奏要求：${track.pacingStructure}
 - 赛道禁忌：${track.avoidTaboos}
-- 角色关系与口吻表（仅供把握人物性格，严禁在剧本动作行里大段抄写外貌设定！）：
+- 角色关系与口吻表（仅供把握人物性格与标志道具，严禁在剧本动作行里大段抄写外貌设定！）：
 ${castSummary}
 
 ${formatRule}`;
 
   const prevContext = prevEp
     ? `\n【上一集（第${prevEp.index}集）衔接】\n- 上集核心冲突：${prevEp.coreConflictSummary}\n- 上集末尾悬念钩子：${prevEp.endingCliffhanger}\n（本集第 ${episodeIndex}-1 场第一行必须直接承接引爆上集末尾悬念！）`
-    : `\n【首集黄金前3秒生死线】\n本集为开篇第 1 集！第 1-1 场前两行动作与台词必须直接兑现黄金前3秒钩子：${project.golden3SecHook}`;
+    : episodeIndex === 1
+    ? `\n【首集黄金前3秒生死线】\n本集为开篇第 1 集！第 1-1 场前两行动作与台词必须直接兑现黄金前3秒钩子：${project.golden3SecHook}`
+    : '';
+
+  const foreshadowContext =
+    plannedBeat?.foreshadowingOrProps || recentPlanClues
+      ? `\n【伏笔与关键道具连续性要求】${
+          recentPlanClues ? `\n- 前序已埋伏笔/道具备忘：${recentPlanClues}` : ''
+        }${
+          plannedBeat?.foreshadowingOrProps
+            ? `\n- 本集重点执行伏笔/关键道具：${plannedBeat.foreshadowingOrProps}（请自然融入 △ 动作特写或台词交锋中！）`
+            : ''
+        }`
+      : '';
 
   const paywallNotice = isPaywallEp
     ? `\n🔥【重点：第 ${episodeIndex} 集为全剧核心付费卡点集】🔥\n前半集给出一次干脆利落的反击爽点，最后一场最后一秒必须抛出最炸裂的危机降临或底牌反转戛然而止！`
@@ -366,25 +648,27 @@ ${formatRule}`;
 """
 ${sourceNovelChapter.chapterText.slice(0, 5500)}
 """
-改编铁律：彻底砍掉原小说的心理描写、修辞渲染和慢节奏铺垫，提炼为 1~3 个紧凑场次的漫剧标准剧本！`
+改编铁律：彻底砍掉原小说的心理描写、修辞渲染和慢节奏铺垫，提炼为适配 ${durSpec.durationSec} 秒时长（${durSpec.minWords}~${durSpec.maxWords} 字，${durSpec.sceneRange}）的漫剧标准剧本！`
     : '';
 
-  const user = `请创作《${project.title}》第 ${episodeIndex} 集【甲方标准文学剧本】（单集时长约 90~120 秒，包含 1~3 个紧凑场次，约 12~22 条精炼动作与台词交互）。
+  const user = `请创作《${project.title}》第 ${episodeIndex} 集【甲方标准文学剧本】。
+⏱️【体量硬约束】：本项目单集设定时长为 **${durSpec.durationSec} 秒**，\`scriptText\` 剧本正文总字数必须控制在 **${durSpec.minWords} ~ ${durSpec.maxWords} 字** 之间，包含 **${durSpec.sceneRange}**，约 **${durSpec.beatRange}**。
 ${prevContext}
-${plannedBeat ? `\n【本集分集大纲预定节拍】：${plannedBeat.title} —— ${plannedBeat.beatSummary}` : ''}
+${plannedBeat ? `\n【本集分集大纲预定节拍】：${plannedBeat.title} —— ${plannedBeat.beatSummary}（节拍定位：${plannedBeat.hookType}）` : ''}
+${foreshadowContext}
 ${paywallNotice}
 ${directorInstruction.trim() ? `\n【本集具体剧情指令】：${directorInstruction.trim()}` : ''}
 ${adaptationNotice}
 
-请严格按以下 JSON 结构输出（用 \`\`\`json 包裹），其中 \`scriptText\` 必须是严格遵守上述排版规范的纯净剧本正文：
+请严格按以下 JSON 结构输出（用 \`\`\`json 包裹），其中 \`scriptText\` 必须是严格遵守上述排版规范且字数匹配 ${durSpec.minWords}~${durSpec.maxWords} 字的纯净剧本正文：
 \`\`\`json
 {
   "title": "第${episodeIndex}集：简短抓人的集标题",
-  "targetDurationSec": 95,
+  "targetDurationSec": ${durSpec.durationSec},
   "coreConflictSummary": "一句话概括本集冲突与爽点结果（30-50字）",
   "opening3SecHook": "一句话概括开场前3秒动作/冲突钩子",
   "endingCliffhanger": "一句话概括集末最后一秒留存悬念",
-  "scriptText": "此处填入严格按所选行业格式排版的完整单集剧本纯文本（使用 \\n 换行，只含场头、出场人物、△极简动作/【音效】与精炼台词，严禁夹杂生图Tag或运镜解析）",
+  "scriptText": "此处填入严格按所选行业格式排版的完整单集剧本纯文本（使用 \\n 换行，总字数 ${durSpec.minWords}~${durSpec.maxWords} 字，只含场头、出场人物、△极简动作/【音效】与精炼台词，严禁夹杂生图Tag或运镜解析）",
   "nextEpisodeHooks": [
     "【下集推进1：爽点爆发】具体剧情...",
     "【下集推进2：危机加码】具体剧情...",
@@ -404,7 +688,8 @@ export function parseLiteraryScriptEpisode(
   episodeIndex: number,
   scriptFormat: DramaScriptFormat,
   isPaywallHook: boolean,
-  existingShots: DramaShot[] = []
+  existingShots: DramaShot[] = [],
+  defaultDurationSec = 90
 ): DramaEpisode {
   const cleaned = extractJsonString(raw);
   const parsed = JSON.parse(cleaned);
@@ -415,7 +700,7 @@ export function parseLiteraryScriptEpisode(
     index: episodeIndex,
     title: String(parsed.title || `第${episodeIndex}集`),
     isPaywallHook,
-    targetDurationSec: Number(parsed.targetDurationSec) || 95,
+    targetDurationSec: Number(parsed.targetDurationSec) || defaultDurationSec,
     coreConflictSummary: String(parsed.coreConflictSummary || ''),
     opening3SecHook: String(parsed.opening3SecHook || ''),
     endingCliffhanger: String(parsed.endingCliffhanger || ''),
@@ -590,6 +875,8 @@ export function buildDramaEpisodeMessages(params: {
   } = params;
 
   const track = getTrackByProject(project);
+  const durSpec = getEpisodeDurationSpec(project.episodeDurationSec);
+  const effectiveShotCount = targetShotCount || durSpec.recommendedShots;
   const isPaywallEp = episodeIndex === project.paywallEpisodeIndex;
   const plannedBeat = project.episodePlan.find((p) => p.episodeIndex === episodeIndex);
   const prevEp = project.episodes
@@ -603,7 +890,9 @@ export function buildDramaEpisodeMessages(params: {
       ? project.characterAssets
           .map(
             (c) =>
-              `- 【${c.name}】（${c.roleTag} | ${c.ageAndArchetype}）\n  固定外貌词(中文)：${c.appearanceZh}\n  AI生图固定Tag(EN)：${c.visualPromptEn}\n  配音指导：${c.voicePersona}`
+              `- 【${c.name}】（${c.roleTag} | ${c.ageAndArchetype}${
+                c.signatureTrait ? ` | 标志性道具/动作：${c.signatureTrait}` : ''
+              }）\n  固定外貌词(中文)：${c.appearanceZh}\n  AI生图固定Tag(EN)：${c.visualPromptEn}\n  配音指导：${c.voicePersona}`
           )
           .join('\n')
       : '（暂未锁定角色资产，请在分镜生图词中自行保持主角外观前后统一）';
@@ -617,9 +906,11 @@ export function buildDramaEpisodeMessages(params: {
 
   const system = `${COMMERCIAL_DRAMA_CONSTITUTION}
 
-【当前漫剧项目工业规格】
+【当前漫剧项目工业规格与时长-字数强挂钩要求】
 - 剧名：《${project.title}》
 - 赛道规范：${track.name}（${project.channel}）
+- ⏱️ 单集设定成片时长：**${durSpec.durationSec} 秒（${durSpec.label}）**
+- 📏 文学剧本正文 \`scriptText\` 目标字数：**${durSpec.minWords} ~ ${durSpec.maxWords} 字**（包含 ${durSpec.sceneRange}，约 ${durSpec.beatRange}；各分镜 \`durationSec\` 累加总时长也须贴近 ${durSpec.durationSec} 秒！）
 - 赛道节奏铁律：${track.pacingStructure}
 - 赛道禁忌红线：${track.avoidTaboos}
 - 全局统一画风：${project.visualStyle} | 画幅比例：${project.aspectRatio}
@@ -634,7 +925,9 @@ ${sceneBlock}`;
 
   const prevContext = prevEp
     ? `\n【上一集（第${prevEp.index}集）衔接记忆】\n- 上集核心剧情：${prevEp.coreConflictSummary}\n- 上集末尾留存悬念：${prevEp.endingCliffhanger}\n（本集开场必须直接承接引爆上集末尾悬念！）`
-    : `\n【开篇首集生死线】\n本集是全剧开篇第 1 集！开场必须严格兑现黄金前3秒钩子：${project.golden3SecHook}`;
+    : episodeIndex === 1
+    ? `\n【开篇首集生死线】\n本集是全剧开篇第 1 集！开场必须严格兑现黄金前3秒钩子：${project.golden3SecHook}`
+    : '';
 
   const paywallNotice = isPaywallEp
     ? `\n🔥【重点警告：本集为第 ${episodeIndex} 集核心付费卡点集！】🔥\n必须在前半段给出一次极度解气的情绪小高潮，并在最后抛出全剧最炸裂的反转或危机戛然而止！`
@@ -645,12 +938,20 @@ ${sceneBlock}`;
 """
 ${sourceNovelChapter.chapterText.slice(0, 5500)}
 """
-改编要求：剔除原小说冗长心理描写，先提炼为极简标准文学剧本 \`scriptText\`，再同步拆解为 ${targetShotCount} 个漫剧视听分镜 \`shots\`！`
+改编要求：剔除原小说冗长心理描写，先提炼为 ${durSpec.minWords}~${durSpec.maxWords} 字的极简标准文学剧本 \`scriptText\`，再同步拆解为 ${effectiveShotCount} 个漫剧视听分镜 \`shots\`！`
     : '';
 
-  const user = `请创作《${project.title}》第 ${episodeIndex} 集的【甲方标准文学剧本 (scriptText)】并同步拆解【后期 AI 分镜执行单 (shots，约 ${targetShotCount} 镜)】。
+  const user = `请创作《${project.title}》第 ${episodeIndex} 集的【甲方标准文学剧本 (scriptText，目标字数 ${durSpec.minWords}~${durSpec.maxWords} 字，适配单集 ${durSpec.durationSec} 秒)】并同步拆解【后期 AI 分镜执行单 (shots，约 ${effectiveShotCount} 镜)】。
 ${prevContext}
-${plannedBeat ? `\n【分集大纲预定节拍】：${plannedBeat.title} —— ${plannedBeat.beatSummary}（定位：${plannedBeat.hookType}）` : ''}
+${
+  plannedBeat
+    ? `\n【分集大纲预定节拍】：${plannedBeat.title} —— ${plannedBeat.beatSummary}（定位：${plannedBeat.hookType}）${
+        plannedBeat.foreshadowingOrProps
+          ? `\n【本集关键道具/伏笔要求】：${plannedBeat.foreshadowingOrProps}`
+          : ''
+      }`
+    : ''
+}
 ${paywallNotice}
 ${directorInstruction.trim() ? `\n【本集导演具体执导指令】：${directorInstruction.trim()}` : ''}
 ${adaptationNotice}
@@ -659,15 +960,15 @@ ${adaptationNotice}
 \`\`\`json
 {
   "title": "第${episodeIndex}集：极具冲击力的单集标题",
-  "targetDurationSec": 95,
+  "targetDurationSec": ${durSpec.durationSec},
   "coreConflictSummary": "一句话概括本集核心爽点闭环与推进成果",
   "opening3SecHook": "本集前3秒抓人眼球的核心视觉动作/冲突钩子",
   "endingCliffhanger": "本集最后一秒留存断章悬念钩子",
-  "scriptText": "严格遵循所选甲方剧本格式的纯净文学剧本（含场头、出场人物、△极简动作/【音效】、角色精炼台词，绝不啰嗦！）",
+  "scriptText": "严格遵循所选甲方剧本格式的纯净文学剧本（总字数 ${durSpec.minWords}~${durSpec.maxWords} 字，含场头、出场人物、△极简动作/【音效】、角色精炼台词，绝不啰嗦！）",
   "shots": [
     {
       "shotNumber": 1,
-      "durationSec": 4,
+      "durationSec": 5,
       "shotSizeAndCamera": "景别与运镜（如：极特写 → 急速拉远 + 震屏特效）",
       "charactersInShot": "本镜出场角色名",
       "visualDescription": "可直接复制给即梦/可灵的完整中文生图/生视频提示词（融合画风「${project.visualStyle}」与角色固定立绘特征）",
@@ -889,19 +1190,30 @@ export function exportDramaEpisodeToCsv(project: DramaProject, episode: DramaEpi
 }
 
 export function exportDramaProjectToMarkdown(project: DramaProject): string {
+  const durSpec = getEpisodeDurationSpec(project.episodeDurationSec);
   const charMd = project.characterAssets
     .map(
       (c) =>
-        `### ${c.name}（${c.roleTag}）\n- **人设定位**：${c.ageAndArchetype}\n- **中文固定立绘词**：${c.appearanceZh}\n- **英文一致性 Tag**：\`${c.visualPromptEn}\`\n- **配音音色指导**：${c.voicePersona}\n- **记忆点微动作**：${c.signatureTrait}`
+        `### ${c.name}（${c.roleTag}）\n- **人设定位**：${c.ageAndArchetype}\n- **中文固定立绘词**：${c.appearanceZh}\n- **英文一致性 Tag**：\`${c.visualPromptEn}\`\n- **配音音色指导**：${c.voicePersona}\n- **记忆点微动作/道具**：${c.signatureTrait}`
     )
     .join('\n\n');
+
+  const planMd = [...(project.episodePlan || [])]
+    .sort((a, b) => a.episodeIndex - b.episodeIndex)
+    .map(
+      (p) =>
+        `- **第 ${p.episodeIndex} 集《${p.title}》**（${p.hookType}）：${p.beatSummary}${
+          p.foreshadowingOrProps ? `\n  - *伏笔/关键道具*：${p.foreshadowingOrProps}` : ''
+        }`
+    )
+    .join('\n');
 
   const epMd = [...project.episodes]
     .sort((a, b) => a.index - b.index)
     .map((ep) => `## ${ep.title}\n\n${ep.rawScriptText}`)
     .join('\n\n---\n\n');
 
-  return `# 《${project.title}》AI 漫剧工业化制作圣经\n\n- **热门赛道**：${project.trackName}（${project.channel}）\n- **视觉规格**：${project.visualStyle} · ${project.aspectRatio}\n- **规划集数**：${project.totalPlannedEpisodes} 集（核心付费卡点：第 ${project.paywallEpisodeIndex} 集）\n- **核心卖点 (Logline)**：${project.logline}\n- **开篇黄金前3秒**：${project.golden3SecHook}\n\n## 一、全剧商业大纲\n\n${project.synopsis}\n\n## 二、角色视觉一致性立绘档案\n\n${charMd || '暂未建档'}\n\n## 三、分集甲方标准剧本\n\n${epMd || '暂无已生成分集'}`;
+  return `# 《${project.title}》AI 漫剧工业化制作圣经\n\n- **热门赛道**：${project.trackName}（${project.channel}）\n- **视觉规格**：${project.visualStyle} · ${project.aspectRatio}\n- **单集时长与字数指标**：单集 ${durSpec.durationSec} 秒（目标剧本约 ${durSpec.minWords}~${durSpec.maxWords} 字）\n- **规划集数**：${project.totalPlannedEpisodes} 集（核心付费卡点：第 ${project.paywallEpisodeIndex} 集）\n- **核心卖点 (Logline)**：${project.logline}\n- **开篇黄金前3秒**：${project.golden3SecHook}\n\n## 一、全剧商业大纲\n\n${project.synopsis}\n\n## 二、角色视觉一致性立绘档案\n\n${charMd || '暂未建档'}\n\n## 三、分集节拍与伏笔规划目录（已规划 ${project.episodePlan?.length || 0} 集）\n\n${planMd || '暂未生成分集细纲'}\n\n## 四、分集甲方标准剧本\n\n${epMd || '暂无已生成分集'}`;
 }
 
 /**
@@ -959,6 +1271,7 @@ ${trackCatalog}
       "channel": "女频爆款",
       "visualStyle": "2.5D精致厚涂精绘",
       "aspectRatio": "9:16 竖屏短剧",
+      "episodeDurationSec": 90,
       "paywallEpisodeIndex": 10,
       "marketFitReason": "一句话说明该方向为什么能打爆完播率与付费转化",
       "logline": "一句话商业核心卖点（50~90字，点明男女主/主角极致身份反差与核心拉扯爽点）",
@@ -1040,6 +1353,7 @@ export function parseDramaConsultantResponse(raw: string): DramaConsultantRespon
         channel,
         visualStyle,
         aspectRatio,
+        episodeDurationSec: Number(opt.episodeDurationSec) || 90,
         paywallEpisodeIndex: Number(opt.paywallEpisodeIndex) || 10,
         marketFitReason: String(opt.marketFitReason || ''),
         logline: String(opt.logline || ''),

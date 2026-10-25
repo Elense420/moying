@@ -29,7 +29,7 @@ import { Book, Chapter, Summary, UiSettings, ApiConfig, IdeaCard, NovelSkill } f
 import { streamChatCompletion, chatCompletion } from '../services/apiClient';
 import { buildUnifiedSystemPrompt } from '../services/promptEngine';
 import { generateUUID } from '../utils/uuid';
-import { MotionButton, StaggerList, StaggerItem } from './MotionPrimitives';
+import { MotionButton, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 
 interface WriterViewProps {
@@ -1611,8 +1611,15 @@ ${chapterTail}
 
       {/* Inline Paragraph Polish Modal */}
       {isPolishModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsPolishModalOpen(false)}>
+          <div
+            onClick={() => setIsPolishModalOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-2xl max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <div>
                 <h3 className="text-base font-bold text-[var(--text-primary)]">局部段落 AI 精修与张力慢放</h3>
@@ -1702,14 +1709,22 @@ ${chapterTail}
                 替换写回正文
               </button>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {/* Live Prompt & SKILL Audit Modal */}
       {isAuditModalOpen && liveAuditReport && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-2xl max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsAuditModalOpen(false)}>
+          <div
+            onClick={() => setIsAuditModalOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-2xl max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <div>
                 <h3 className="text-base font-bold text-[var(--text-primary)]">本章执笔 Prompt 与 SKILL 实时透视</h3>
@@ -1800,170 +1815,216 @@ ${chapterTail}
                 {liveAuditReport.systemPrompt}
               </pre>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
-      {/* Fullscreen Immersive Focus Reading Overlay (Zero Inline Styles) */}
+      {/* Fullscreen Immersive Focus Reading Overlay (Portaled above TopNavbar & MobileBottomNav) */}
       {isFocusMode && (
-        <div
-          className={`fixed inset-0 z-50 overflow-y-auto ${
-            focusTheme === 'sepia'
-              ? 'bg-[#f6efe2] text-[#3a2e21]'
-              : focusTheme === 'dark'
-              ? 'bg-[#121211] text-[#dfdcd5]'
-              : 'bg-[#faf9f6] text-[#18181b]'
-          }`}
-        >
-          <div className="sticky top-0 z-30 px-4 py-3 sm:px-8 backdrop-blur-md bg-black/5 dark:bg-white/5 border-b border-black/10 dark:border-white/10 flex flex-wrap items-center justify-between gap-3 pt-safe">
-            <div className="min-w-0">
-              <h2 className="font-bold text-sm truncate font-editorial-serif">
-                《{currentBook.title}》 · {chapterTitle}
-              </h2>
-              <p className="text-[11px] opacity-70 tabular-nums">
-                第 {currentChapterIndex + 1} / {currentBook.chapters.length} 章 · {chapterText.length} 字
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-1 bg-black/5 dark:bg-white/10 p-1 rounded-xl text-xs">
-                <button
-                  type="button"
-                  onClick={() => setFocusFontStep((prev) => Math.max(0, prev - 1))}
-                  className="min-h-[34px] px-2.5 rounded-lg font-bold"
-                >
-                  A-
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFocusFontStep((prev) => Math.min(FOCUS_FONT_CLASSES.length - 1, prev + 1))}
-                  className="min-h-[34px] px-2.5 rounded-lg font-bold"
-                >
-                  A+
-                </button>
-              </div>
-
-              <div className="flex items-center gap-1 bg-black/5 dark:bg-white/10 p-1 rounded-xl text-xs">
-                {[
-                  { id: 'sepia', label: '宣纸' },
-                  { id: 'light', label: '素白' },
-                  { id: 'dark', label: '玄夜' },
-                ].map((t) => (
+        <ModalPortal onEscape={() => setIsFocusMode(false)}>
+          <div
+            id="immersive-focus-reader-scroll"
+            className={`fixed inset-0 z-[105] h-[100dvh] overflow-y-auto ${
+              focusTheme === 'sepia'
+                ? 'bg-[#f6efe2] text-[#3a2e21]'
+                : focusTheme === 'dark'
+                ? 'bg-[#121211] text-[#dfdcd5]'
+                : 'bg-[#faf9f6] text-[#18181b]'
+            }`}
+          >
+            {/* Top Sticky Reader Bar with Prominent Left Back Button */}
+            <div
+              className={`sticky top-0 z-30 px-3.5 py-2.5 sm:px-8 sm:py-3 backdrop-blur-md border-b border-black/10 dark:border-white/10 pt-safe ${
+                focusTheme === 'sepia'
+                  ? 'bg-[#f6efe2]/92'
+                  : focusTheme === 'dark'
+                  ? 'bg-[#121211]/92'
+                  : 'bg-[#faf9f6]/92'
+              }`}
+            >
+              <div className="max-w-4xl mx-auto flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
                   <button
-                    key={t.id}
                     type="button"
-                    onClick={() => setFocusTheme(t.id as any)}
-                    className={`min-h-[34px] px-2.5 rounded-lg font-medium ${
-                      focusTheme === t.id ? 'bg-black/15 dark:bg-white/20 font-semibold' : ''
+                    onClick={() => setIsFocusMode(false)}
+                    className={`min-h-[42px] px-3.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 shrink-0 cursor-pointer transition-opacity hover:opacity-90 ${
+                      focusTheme === 'dark'
+                        ? 'bg-[#dfdcd5] text-[#121211]'
+                        : 'bg-[#18181b] text-white'
                     }`}
                   >
-                    {t.label}
+                    <ArrowLeft className="w-4 h-4" />
+                    <span>返回</span>
                   </button>
-                ))}
+
+                  <div className="min-w-0">
+                    <h2 className="font-bold text-xs sm:text-sm truncate font-editorial-serif">
+                      《{currentBook.title}》 · {chapterTitle}
+                    </h2>
+                    <p className="text-[11px] opacity-70 tabular-nums truncate">
+                      第 {currentChapterIndex + 1} / {currentBook.chapters.length} 章 · {chapterText.length} 字
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  <div className="flex items-center gap-0.5 bg-black/5 dark:bg-white/10 p-1 rounded-xl text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setFocusFontStep((prev) => Math.max(0, prev - 1))}
+                      className="min-h-[34px] px-2 sm:px-2.5 rounded-lg font-bold cursor-pointer"
+                    >
+                      A-
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFocusFontStep((prev) => Math.min(FOCUS_FONT_CLASSES.length - 1, prev + 1))
+                      }
+                      className="min-h-[34px] px-2 sm:px-2.5 rounded-lg font-bold cursor-pointer"
+                    >
+                      A+
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-0.5 bg-black/5 dark:bg-white/10 p-1 rounded-xl text-xs">
+                    {[
+                      { id: 'sepia', label: '宣纸' },
+                      { id: 'light', label: '素白' },
+                      { id: 'dark', label: '玄夜' },
+                    ].map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setFocusTheme(t.id as any)}
+                        className={`min-h-[34px] px-2 sm:px-2.5 rounded-lg font-medium cursor-pointer ${
+                          focusTheme === t.id ? 'bg-black/15 dark:bg-white/20 font-semibold' : ''
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Reader Content & Unobstructed Bottom Chapter Controls */}
+            <div className="max-w-3xl mx-auto px-5 sm:px-8 pt-8 sm:pt-14 pb-16 sm:pb-20 pb-safe space-y-8 font-editorial-serif">
+              <div className="space-y-2 text-center">
+                <p className="text-xs font-sans opacity-60 tabular-nums">
+                  第 {currentChapterIndex + 1} / {currentBook.chapters.length} 章
+                </p>
+                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+                  {chapterTitle || `第 ${currentChapterIndex + 1} 章`}
+                </h1>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setIsFocusMode(false)}
-                className="min-h-[38px] px-3.5 rounded-xl bg-black/80 dark:bg-white/90 text-white dark:text-black text-xs font-semibold flex items-center gap-1"
-              >
-                <X className="w-3.5 h-3.5" />
-                <span>退出</span>
-              </button>
+              <div className={`whitespace-pre-wrap leading-loose tracking-wide ${FOCUS_FONT_CLASSES[focusFontStep]}`}>
+                {chapterText || '本章暂无正文内容'}
+              </div>
+
+              {/* Unobstructed Bottom Chapter Switcher + Return Button */}
+              <div className="pt-8 border-t border-black/10 dark:border-white/10 flex items-center justify-between gap-2.5 font-sans text-xs">
+                <button
+                  type="button"
+                  disabled={currentChapterIndex <= 0}
+                  onClick={() => {
+                    setCurrentChapterIndex((prev) => Math.max(0, prev - 1));
+                    document.getElementById('immersive-focus-reader-scroll')?.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="min-h-[46px] px-4 py-2.5 rounded-xl bg-black/8 dark:bg-white/10 disabled:opacity-30 font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4 shrink-0" />
+                  <span>上一章</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsFocusMode(false)}
+                  className="min-h-[46px] px-4 py-2.5 rounded-xl border border-black/15 dark:border-white/15 font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                >
+                  <span>返回执笔台</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={currentChapterIndex >= currentBook.chapters.length - 1}
+                  onClick={() => {
+                    setCurrentChapterIndex((prev) => Math.min(currentBook.chapters.length - 1, prev + 1));
+                    document.getElementById('immersive-focus-reader-scroll')?.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="min-h-[46px] px-4 py-2.5 rounded-xl bg-black/8 dark:bg-white/10 disabled:opacity-30 font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                >
+                  <span>下一章</span>
+                  <ArrowRight className="w-4 h-4 shrink-0" />
+                </button>
+              </div>
             </div>
           </div>
-
-          <div className="max-w-3xl mx-auto px-5 sm:px-8 py-10 sm:py-16 space-y-8 pb-safe font-editorial-serif">
-            <h1 className="text-2xl sm:text-3xl font-bold text-center tracking-tight">
-              {chapterTitle || `第 ${currentChapterIndex + 1} 章`}
-            </h1>
-
-            <div className={`whitespace-pre-wrap leading-loose tracking-wide ${FOCUS_FONT_CLASSES[focusFontStep]}`}>
-              {chapterText || '本章暂无正文内容'}
-            </div>
-
-            <div className="pt-10 border-t border-black/10 dark:border-white/10 flex items-center justify-between gap-4 font-sans text-xs">
-              <button
-                type="button"
-                disabled={currentChapterIndex <= 0}
-                onClick={() => setCurrentChapterIndex((prev) => Math.max(0, prev - 1))}
-                className="min-h-[44px] px-4 py-2 rounded-xl bg-black/5 dark:bg-white/10 disabled:opacity-30 font-medium flex items-center gap-1.5"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>上一章</span>
-              </button>
-
-              <span className="opacity-70 tabular-nums">
-                {currentChapterIndex + 1} / {currentBook.chapters.length}
-              </span>
-
-              <button
-                type="button"
-                disabled={currentChapterIndex >= currentBook.chapters.length - 1}
-                onClick={() =>
-                  setCurrentChapterIndex((prev) => Math.min(currentBook.chapters.length - 1, prev + 1))
-                }
-                className="min-h-[44px] px-4 py-2 rounded-xl bg-black/5 dark:bg-white/10 disabled:opacity-30 font-medium flex items-center gap-1.5"
-              >
-                <span>下一章</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        </div>
+        </ModalPortal>
       )}
 
       {/* Notice Modal */}
       {noticeModal && noticeModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-xs">
-          <div className="bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-t-3xl sm:rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 pb-safe">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                {noticeModal.type === 'success' ? (
-                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-                ) : (
-                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
-                )}
-                <h3 className="text-base font-bold text-[var(--text-primary)]">{noticeModal.title}</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setNoticeModal(null)}
-                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-[var(--text-muted)]"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <p className="text-xs sm:text-sm text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
-              {noticeModal.message}
-            </p>
-
-            <div className="flex items-center justify-end gap-2 pt-1">
-              {lastFailedRequest && noticeModal.type === 'error' && (
+        <ModalPortal onEscape={() => setNoticeModal(null)}>
+          <div
+            onClick={() => setNoticeModal(null)}
+            className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center p-0 sm:p-4 pt-safe bg-black/55 backdrop-blur-xs"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-t-3xl sm:rounded-2xl p-6 max-w-md w-full max-h-[88dvh] overflow-y-auto shadow-2xl space-y-4 pb-safe"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  {noticeModal.type === 'success' ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                  )}
+                  <h3 className="text-base font-bold text-[var(--text-primary)]">{noticeModal.title}</h3>
+                </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    const req = lastFailedRequest;
-                    setNoticeModal(null);
-                    handleGenerateNextChapter(req.plotHint, req.isRewrite);
-                  }}
-                  className="btn-primary min-h-[42px] px-4 py-2 text-xs flex items-center gap-1.5"
+                  onClick={() => setNoticeModal(null)}
+                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-[var(--text-muted)] cursor-pointer"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>一键重试生成该章节</span>
+                  <X className="w-4 h-4" />
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setNoticeModal(null)}
-                className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] text-xs font-medium"
-              >
-                知道了
-              </button>
+              </div>
+
+              <p className="text-xs sm:text-sm text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
+                {noticeModal.message}
+              </p>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                {lastFailedRequest && noticeModal.type === 'error' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const req = lastFailedRequest;
+                      setNoticeModal(null);
+                      handleGenerateNextChapter(req.plotHint, req.isRewrite);
+                    }}
+                    className="btn-primary min-h-[42px] px-4 py-2 text-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>一键重试生成该章节</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setNoticeModal(null)}
+                  className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] text-xs font-medium cursor-pointer"
+                >
+                  知道了
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
     </div>
   );

@@ -57,7 +57,7 @@ import {
   readFileTextSmart,
 } from '../services/skillPackageParser';
 import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
-import { MotionButton, StaggerCard } from './MotionPrimitives';
+import { MotionButton, StaggerCard, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 
 interface SetupViewProps {
@@ -1660,8 +1660,15 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
       {/* Lorebook 2.0 Modal (Bottom-Sheet on Mobile) */}
       {isLoreModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsLoreModalOpen(false)}>
+          <div
+            onClick={() => setIsLoreModalOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-lg max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <h3 className="text-base font-bold text-[var(--text-primary)]">
                 {editingLoreEntry ? '编辑世界书档案卡' : '新建世界书档案卡 (Lorebook 2.0)'}
@@ -1789,14 +1796,22 @@ export const SetupView: React.FC<SetupViewProps> = ({
                 保存档案卡
               </button>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {/* SKILL 2.0 Modal (Bottom-Sheet on Mobile) */}
       {isSkillModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsSkillModalOpen(false)}>
+          <div
+            onClick={() => setIsSkillModalOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-lg max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <h3 className="text-base font-bold text-[var(--text-primary)]">
                 {editingSkill ? '编辑 SKILL 2.0 技能规范' : '新建 SKILL 2.0 写作技能'}
@@ -1966,14 +1981,22 @@ export const SetupView: React.FC<SetupViewProps> = ({
                 保存至全局技能库
               </button>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {/* Prompt & SKILL Live Audit Inspector Modal */}
       {isAuditModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-2xl max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsAuditModalOpen(false)}>
+          <div
+            onClick={() => setIsAuditModalOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-2xl max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <div>
                 <h3 className="text-base font-bold text-[var(--text-primary)]">Prompt 与 SKILL 真实挂载透视镜</h3>
@@ -2062,8 +2085,9 @@ export const SetupView: React.FC<SetupViewProps> = ({
                 {currentAuditReport.systemPrompt}
               </pre>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {inspectingSkill && (

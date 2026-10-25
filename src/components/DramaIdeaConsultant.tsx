@@ -14,6 +14,7 @@ import {
   ApiConfig,
   UiSettings,
   DramaProject,
+  DramaCandidatePlan,
   HOT_DRAMA_TRACKS,
 } from '../types';
 import { streamChatCompletion } from '../services/apiClient';
@@ -39,6 +40,7 @@ interface DramaIdeaConsultantProps {
   existingProjectId?: string;
   existingCreatedAt?: number;
   onConfirmOption: (project: DramaProject, option: DramaConsultantOption) => void;
+  onAutoArchiveCandidates?: (candidates: DramaCandidatePlan[], selectedTitle: string) => void;
 }
 
 const EXAMPLE_FUZZY_IDEAS = [
@@ -55,6 +57,7 @@ export const DramaIdeaConsultant: React.FC<DramaIdeaConsultantProps> = ({
   existingProjectId,
   existingCreatedAt,
   onConfirmOption,
+  onAutoArchiveCandidates,
 }) => {
   const [inputIdea, setInputIdea] = useState('');
   const [turns, setTurns] = useState<ConsultantTurnItem[]>([]);
@@ -147,7 +150,7 @@ export const DramaIdeaConsultant: React.FC<DramaIdeaConsultantProps> = ({
     }
   };
 
-  const handleConfirmAndEnterSetup = (opt: DramaConsultantOption) => {
+  const handleConfirmAndEnterSetup = (opt: DramaConsultantOption, turn: ConsultantTurnItem) => {
     const now = Date.now();
     const matchedTrack =
       HOT_DRAMA_TRACKS.find((t) => t.id === opt.trackId) || HOT_DRAMA_TRACKS[0];
@@ -163,6 +166,51 @@ export const DramaIdeaConsultant: React.FC<DramaIdeaConsultantProps> = ({
       signatureTrait: c.signatureTrait,
     }));
 
+    // Auto-backup the other unselected AI proposals into Candidate Project Plans Directory
+    if (onAutoArchiveCandidates && turn.response.options.length > 1) {
+      const siblingOptions = turn.response.options.filter((o) => o.optionId !== opt.optionId);
+      const candidatesToBackup: DramaCandidatePlan[] = siblingOptions.map((sib, idx) => {
+        const sibTrack =
+          HOT_DRAMA_TRACKS.find((t) => t.id === sib.trackId) || HOT_DRAMA_TRACKS[0];
+        return {
+          id: generateUUID(),
+          createdAt: now + idx,
+          sourceType: 'fuzzy-consultant',
+          userPromptOrSpark: turn.userPrompt,
+          marketTrendAnalysis: turn.response.marketTrendAnalysis,
+          consultantReply: turn.response.consultantReply,
+          selectedSiblingTitle: opt.title,
+          directionTag: sib.directionTag || `备选方向 0${idx + 1}`,
+          title: sib.title,
+          trackId: sibTrack.id,
+          trackName: sibTrack.name,
+          channel: sib.channel || sibTrack.channel,
+          visualStyle: sib.visualStyle || sibTrack.visualStyleRecommend,
+          aspectRatio: sib.aspectRatio || '9:16 竖屏短剧',
+          episodeDurationSec: sib.episodeDurationSec || 90,
+          paywallEpisodeIndex: sib.paywallEpisodeIndex || 10,
+          marketFitReason: sib.marketFitReason,
+          logline: sib.logline,
+          targetAudience: sib.targetAudience || sibTrack.targetAudience,
+          golden3SecHook: sib.golden3SecHook,
+          synopsis: sib.synopsis,
+          seedCharacters: (sib.seedCharacters || []).map((c) => ({
+            id: generateUUID(),
+            name: c.name,
+            roleTag: c.roleTag,
+            ageAndArchetype: c.ageAndArchetype,
+            appearanceZh: c.appearanceZh,
+            visualPromptEn: c.visualPromptEn,
+            voicePersona: c.voicePersona,
+            signatureTrait: c.signatureTrait,
+          })),
+        };
+      });
+      if (candidatesToBackup.length > 0) {
+        onAutoArchiveCandidates(candidatesToBackup, opt.title);
+      }
+    }
+
     const projectPayload: DramaProject = {
       id: existingProjectId || generateUUID(),
       title: opt.title,
@@ -174,6 +222,7 @@ export const DramaIdeaConsultant: React.FC<DramaIdeaConsultantProps> = ({
       visualStyle: opt.visualStyle || matchedTrack.visualStyleRecommend,
       aspectRatio: opt.aspectRatio || '9:16 竖屏短剧',
       preferredScriptFormat: 'triangle_standard',
+      episodeDurationSec: opt.episodeDurationSec || 90,
       totalPlannedEpisodes: 40,
       paywallEpisodeIndex: opt.paywallEpisodeIndex || 10,
       logline: opt.logline,
@@ -322,10 +371,13 @@ export const DramaIdeaConsultant: React.FC<DramaIdeaConsultantProps> = ({
           {/* 3 Differentiated Selectable Pitch Proposals */}
           {latestTurn.response.options.length > 0 && (
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="space-y-1">
                 <h3 className="text-sm font-bold text-[var(--text-primary)]">
                   为您量身定制 {latestTurn.response.options.length} 套立项方向建议（确认任一方案即自动带入全部设定与初始主角立绘）：
                 </h3>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  选定其中 1 套进入立项后，其余未选建议将自动备份至「备选项目计划目录」，日后可随时回顾阅览或转正立项。
+                </p>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -339,8 +391,8 @@ export const DramaIdeaConsultant: React.FC<DramaIdeaConsultantProps> = ({
                             <span className="font-semibold text-[var(--accent)]">{opt.directionTag}</span>
                             <span className="tabular-nums shrink-0">第 {opt.paywallEpisodeIndex} 集付费点</span>
                           </div>
-                          <p className="text-[11px] text-[var(--text-muted)]">
-                            {opt.channel} · {opt.visualStyle} · {opt.aspectRatio.split(' ')[0]}
+                          <p className="text-[11px] text-[var(--text-muted)] tabular-nums">
+                            {opt.channel} · {opt.visualStyle} · {opt.aspectRatio.split(' ')[0]} · 单集{opt.episodeDurationSec || 90}秒
                           </p>
                         </div>
 
@@ -399,7 +451,7 @@ export const DramaIdeaConsultant: React.FC<DramaIdeaConsultantProps> = ({
                       <div className="pt-3 border-t border-[var(--border-subtle)] space-y-2">
                         <MotionButton
                           type="button"
-                          onClick={() => handleConfirmAndEnterSetup(opt)}
+                          onClick={() => handleConfirmAndEnterSetup(opt, latestTurn)}
                           className="btn-primary w-full min-h-[42px] px-4 py-2 text-xs flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
                           <span>

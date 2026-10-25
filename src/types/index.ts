@@ -606,6 +606,7 @@ export interface DramaEpisodePlanItem {
   title: string;
   beatSummary: string;
   hookType: '免费强留存' | '小高潮爽点' | '核心付费卡点' | '反转高潮';
+  foreshadowingOrProps?: string; // 本集埋设或回收的伏笔、关键道具、核心线索备注
 }
 
 export interface DramaProject {
@@ -619,6 +620,7 @@ export interface DramaProject {
   visualStyle: DramaVisualStyle;
   aspectRatio: DramaAspectRatio;
   preferredScriptFormat?: DramaScriptFormat;
+  episodeDurationSec?: number; // 单集目标成片时长（秒，如 60 / 90 / 120 / 180 / 240，与剧本目标字数强挂钩）
   totalPlannedEpisodes: number;
   paywallEpisodeIndex: number; // 通常第 10 或 12 集
   logline: string; // 一句话商业核心卖点
@@ -628,7 +630,36 @@ export interface DramaProject {
   characterAssets: DramaCharacterAsset[];
   sceneAnchors: DramaSceneAnchor[];
   episodePlan: DramaEpisodePlanItem[];
+  continuityAuditLog?: string; // 最近一次续写分集细纲时的前序伏笔、关键道具与剧情衔接审阅摘要
   episodes: DramaEpisode[];
   sourceNovelId?: string; // 若由小说改编，记录关联小说ID（但绝不注入XP宪法）
 }
+
+export interface DramaCandidatePlan {
+  id: string;
+  createdAt: number;
+  sourceType: 'fuzzy-consultant' | 'track-radar';
+  userPromptOrSpark: string;
+  marketTrendAnalysis?: string;
+  consultantReply?: string;
+  selectedSiblingTitle?: string;
+  directionTag: string;
+  title: string;
+  trackId: string;
+  trackName: string;
+  channel: DramaAudienceChannel;
+  visualStyle: DramaVisualStyle;
+  aspectRatio: DramaAspectRatio;
+  episodeDurationSec?: number;
+  paywallEpisodeIndex: number;
+  marketFitReason?: string;
+  logline: string;
+  targetAudience: string;
+  golden3SecHook: string;
+  synopsis: string;
+  seedCharacters: DramaCharacterAsset[];
+  adoptedProjectId?: string;
+  adoptedAt?: number;
+}
+
 

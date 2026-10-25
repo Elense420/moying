@@ -25,10 +25,14 @@ import {
   ChevronUp,
   Layers,
   MessageSquarePlus,
+  FolderArchive,
+  Clock,
+  KeyRound,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   DramaProject,
+  DramaCandidatePlan,
   DramaVisualStyle,
   DramaAspectRatio,
   DramaAudienceChannel,
@@ -46,8 +50,12 @@ import {
 } from '../types';
 import { streamChatCompletion, chatCompletion } from '../services/apiClient';
 import {
+  DRAMA_DURATION_PRESETS,
+  getEpisodeDurationSpec,
   buildDramaAssetExtractionMessages,
   parseDramaAssetsJson,
+  buildContinueEpisodePlanMessages,
+  parseContinueEpisodePlanJson,
   buildLiteraryScriptMessages,
   parseLiteraryScriptEpisode,
   buildStandardizeClientScriptMessages,
@@ -68,9 +76,11 @@ import {
   StaggerItem,
   MotionButton,
   SNAPPY_EASE,
+  ModalPortal,
 } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 import { DramaIdeaConsultant } from './DramaIdeaConsultant';
+import { DramaCandidateVaultModal } from './DramaCandidateVaultView';
 
 const VISUAL_STYLES: DramaVisualStyle[] = [
   '2.5D精致厚涂精绘',
@@ -203,16 +213,24 @@ interface DramaSetupViewProps {
   currentProject: DramaProject | null;
   configs: ApiConfig[];
   uiSettings: UiSettings;
+  candidates?: DramaCandidatePlan[];
   onSaveProject: (project: DramaProject) => Promise<void>;
   onStartEpisodeInWriter: (project: DramaProject, episodeIndex: number, presetBeat?: string) => void;
+  onAutoArchiveCandidates?: (candidates: DramaCandidatePlan[], selectedTitle: string) => void;
+  onPromoteCandidate?: (candidate: DramaCandidatePlan) => void;
+  onDeleteCandidate?: (id: string) => void;
 }
 
 export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
   currentProject,
   configs,
   uiSettings,
+  candidates = [],
   onSaveProject,
   onStartEpisodeInWriter,
+  onAutoArchiveCandidates,
+  onPromoteCandidate,
+  onDeleteCandidate,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
   const defaultTrack = HOT_DRAMA_TRACKS[0];
@@ -224,6 +242,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
   const [aspectRatio, setAspectRatio] = useState<DramaAspectRatio>('9:16 竖屏短剧');
   const [preferredScriptFormat, setPreferredScriptFormat] =
     useState<DramaScriptFormat>('triangle_standard');
+  const [episodeDurationSec, setEpisodeDurationSec] = useState<number>(90);
   const [totalPlannedEpisodes, setTotalPlannedEpisodes] = useState<number>(40);
   const [paywallEpisodeIndex, setPaywallEpisodeIndex] = useState<number>(10);
   const [logline, setLogline] = useState('');
@@ -233,12 +252,38 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
   const [characterAssets, setCharacterAssets] = useState<DramaCharacterAsset[]>([]);
   const [sceneAnchors, setSceneAnchors] = useState<DramaSceneAnchor[]>([]);
   const [episodePlan, setEpisodePlan] = useState<DramaEpisodePlanItem[]>([]);
+  const [continuityAuditLog, setContinuityAuditLog] = useState<string>('');
 
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractStreamText, setExtractStreamText] = useState('');
+  const [isContinuingPlan, setIsContinuingPlan] = useState(false);
+  const [continueStreamText, setContinueStreamText] = useState('');
+  const [continueStartEp, setContinueStartEp] = useState<number>(13);
+  const [continueEndEp, setContinueEndEp] = useState<number>(24);
+  const [continueArcHint, setContinueArcHint] = useState<string>('');
+  const [editingPlanEpIdx, setEditingPlanEpIdx] = useState<number | null>(null);
+  const [isAuditExpanded, setIsAuditExpanded] = useState<boolean>(true);
+
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [isConsultantOpen, setIsConsultantOpen] = useState<boolean>(!currentProject);
+  const [isCandidateVaultOpen, setIsCandidateVaultOpen] = useState<boolean>(false);
+
+  const setupDurSpec = getEpisodeDurationSpec(episodeDurationSec);
+
+  const maxPlannedEpisodeIndex =
+    episodePlan.length > 0 ? Math.max(...episodePlan.map((ep) => ep.episodeIndex)) : 0;
+
+  useEffect(() => {
+    const nextStart = maxPlannedEpisodeIndex + 1;
+    const defaultSpan = maxPlannedEpisodeIndex === 0 ? 12 : 12;
+    const suggestedEnd =
+      totalPlannedEpisodes >= nextStart
+        ? Math.min(totalPlannedEpisodes, nextStart + defaultSpan - 1)
+        : nextStart + defaultSpan - 1;
+    setContinueStartEp(nextStart);
+    setContinueEndEp(Math.max(nextStart, suggestedEnd));
+  }, [maxPlannedEpisodeIndex]);
 
   useEffect(() => {
     if (currentProject) {
@@ -248,6 +293,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setVisualStyle(currentProject.visualStyle);
       setAspectRatio(currentProject.aspectRatio);
       setPreferredScriptFormat(currentProject.preferredScriptFormat || 'triangle_standard');
+      setEpisodeDurationSec(currentProject.episodeDurationSec || 90);
       setTotalPlannedEpisodes(currentProject.totalPlannedEpisodes || 40);
       setPaywallEpisodeIndex(currentProject.paywallEpisodeIndex || 10);
       setLogline(currentProject.logline || '');
@@ -256,7 +302,10 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setSynopsis(currentProject.synopsis || '');
       setCharacterAssets(currentProject.characterAssets || []);
       setSceneAnchors(currentProject.sceneAnchors || []);
-      setEpisodePlan(currentProject.episodePlan || []);
+      setEpisodePlan(
+        [...(currentProject.episodePlan || [])].sort((a, b) => a.episodeIndex - b.episodeIndex)
+      );
+      setContinuityAuditLog(currentProject.continuityAuditLog || '');
       setIsConsultantOpen(!currentProject.title && !currentProject.synopsis);
     } else {
       setTitle('');
@@ -265,6 +314,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setVisualStyle(defaultTrack.visualStyleRecommend);
       setAspectRatio('9:16 竖屏短剧');
       setPreferredScriptFormat('triangle_standard');
+      setEpisodeDurationSec(90);
       setTotalPlannedEpisodes(40);
       setPaywallEpisodeIndex(10);
       setLogline('');
@@ -274,6 +324,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setCharacterAssets([]);
       setSceneAnchors([]);
       setEpisodePlan([]);
+      setContinuityAuditLog('');
       setIsConsultantOpen(true);
     }
   }, [currentProject?.id]);
@@ -288,9 +339,10 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
     }
   };
 
-  const buildSnapshotProject = (): DramaProject => {
+  const buildSnapshotProject = (overrides?: Partial<DramaProject>): DramaProject => {
     const now = Date.now();
     const matchedTrack = HOT_DRAMA_TRACKS.find((t) => t.id === trackId) || defaultTrack;
+    const clampedDuration = Math.max(45, Math.min(480, Math.round(Number(episodeDurationSec) || 90)));
     return {
       id: currentProject?.id || generateUUID(),
       title: title.trim() || '未命名爆款漫剧',
@@ -302,6 +354,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       visualStyle,
       aspectRatio,
       preferredScriptFormat,
+      episodeDurationSec: clampedDuration,
       totalPlannedEpisodes,
       paywallEpisodeIndex,
       logline,
@@ -310,9 +363,11 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       synopsis,
       characterAssets,
       sceneAnchors,
-      episodePlan,
+      episodePlan: [...episodePlan].sort((a, b) => a.episodeIndex - b.episodeIndex),
+      continuityAuditLog,
       episodes: currentProject?.episodes || [],
       sourceNovelId: currentProject?.sourceNovelId,
+      ...overrides,
     };
   };
 
@@ -323,7 +378,10 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
     }
     const proj = buildSnapshotProject();
     await onSaveProject(proj);
-    setStatusMsg({ type: 'success', text: `《${proj.title}》立项规格与视觉资产已保存` });
+    setStatusMsg({
+      type: 'success',
+      text: `《${proj.title}》立项规格（单集 ${proj.episodeDurationSec} 秒 · 目标 ${setupDurSpec.minWords}~${setupDurSpec.maxWords} 字）与视觉资产已保存`,
+    });
     triggerQuickToast('漫剧立项档案已保存');
   };
 
@@ -347,7 +405,10 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
 
     setIsExtracting(true);
     setExtractStreamText('');
-    setStatusMsg({ type: 'info', text: 'AI 视觉总监正在锁定角色固定立绘词、核心场景锚点与前12集卡点目录...' });
+    setStatusMsg({
+      type: 'info',
+      text: `AI 视觉总监正在按「单集 ${setupDurSpec.durationSec} 秒（约 ${setupDurSpec.minWords}~${setupDurSpec.maxWords} 字/集）」规格锁定角色立绘词、核心场景锚点与前 12 集伏笔卡点细纲...`,
+    });
 
     try {
       const snapshot = buildSnapshotProject();
@@ -367,21 +428,22 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       });
 
       const parsed = parseDramaAssetsJson(res.content || rawAccum);
+      const sortedPlan = [...parsed.episodePlan].sort((a, b) => a.episodeIndex - b.episodeIndex);
       setCharacterAssets(parsed.characterAssets);
       setSceneAnchors(parsed.sceneAnchors);
-      setEpisodePlan(parsed.episodePlan);
+      setEpisodePlan(sortedPlan);
 
       const updatedProj: DramaProject = {
         ...snapshot,
         characterAssets: parsed.characterAssets,
         sceneAnchors: parsed.sceneAnchors,
-        episodePlan: parsed.episodePlan,
+        episodePlan: sortedPlan,
         lastModifiedAt: Date.now(),
       };
       await onSaveProject(updatedProj);
       setStatusMsg({
         type: 'success',
-        text: `已成功锁定 ${parsed.characterAssets.length} 位角色立绘固定词、${parsed.sceneAnchors.length} 处场景锚点与 ${parsed.episodePlan.length} 集分集卡点目录！`,
+        text: `已成功锁定 ${parsed.characterAssets.length} 位角色立绘固定词、${parsed.sceneAnchors.length} 处场景锚点与前 ${sortedPlan.length} 集细纲！如需第 ${sortedPlan.length + 1} 集之后的细纲，可在下方直接选择集数续写。`,
       });
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: `提取视觉资产失败：${err.message}` });
@@ -389,6 +451,147 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setIsExtracting(false);
       setExtractStreamText('');
     }
+  };
+
+  /**
+   * 滚动续写第 X - Y 集剧本细纲（先自动审阅前序所有已规划细纲、已成稿剧本中的伏笔、关键道具与核心剧情）
+   */
+  const handleAiContinueEpisodePlan = async () => {
+    if (!title.trim() || !synopsis.trim()) {
+      setStatusMsg({
+        type: 'error',
+        text: '请先填写「漫剧剧名」与「全剧商业大纲」后再生成后续分集细纲。',
+      });
+      return;
+    }
+
+    const startEp = Math.max(1, Math.round(Number(continueStartEp) || 1));
+    const endEp = Math.max(startEp, Math.round(Number(continueEndEp) || startEp));
+    const batchCount = endEp - startEp + 1;
+
+    if (batchCount > 20) {
+      setStatusMsg({
+        type: 'error',
+        text: `单次建议生成不超过 20 集（当前选择了 ${batchCount} 集：第 ${startEp}~${endEp} 集），以确保 AI 能深入审阅前序伏笔与关键道具且不被截断。建议先填第 ${startEp} 至 ${startEp + 19} 集，完成后可一键继续下一批！`,
+      });
+      setContinueEndEp(startEp + 19);
+      return;
+    }
+
+    const cfgId = uiSettings.writerApiCfgId || uiSettings.inspirationApiCfgId;
+    const cfg = configs.find((c) => c.id === cfgId) || configs[0];
+    const model = uiSettings.writerApiModel || cfg?.modelsCache?.[0]?.id || 'gemini-3.6-flash';
+
+    if (!cfg) {
+      setStatusMsg({ type: 'error', text: '未检测到可用模型线路，请先在「引擎与技能」中配置' });
+      return;
+    }
+
+    setIsContinuingPlan(true);
+    setContinueStreamText('');
+    setStatusMsg({
+      type: 'info',
+      text: `AI 总编审正在回溯审阅第 1~${Math.max(1, startEp - 1)} 集的伏笔、关键道具与剧情线，并续写第 ${startEp}~${endEp} 集剧本细纲...`,
+    });
+
+    try {
+      const nextTotalPlanned = Math.max(totalPlannedEpisodes, endEp);
+      const snapshot = buildSnapshotProject({ totalPlannedEpisodes: nextTotalPlanned });
+      const messages = buildContinueEpisodePlanMessages({
+        project: snapshot,
+        startEpisode: startEp,
+        endEpisode: endEp,
+        arcDirectionHint: continueArcHint,
+      });
+
+      let rawAccum = '';
+      const res = await streamChatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages,
+        temperature: 0.78,
+        onChunk: (chunk) => {
+          rawAccum += chunk;
+          setContinueStreamText(rawAccum);
+        },
+      });
+
+      const parsed = parseContinueEpisodePlanJson(res.content || rawAccum, startEp);
+      if (parsed.episodes.length === 0) {
+        setStatusMsg({
+          type: 'error',
+          text: '未能解析出新增的分集细纲列表，请点击重试或缩小单次生成集数跨度。',
+        });
+        return;
+      }
+
+      // 按 episodeIndex 精准合并：保留前序及其他集，覆盖或追加本次新生成的 [startEp..endEp] 集并升序排列
+      const incomingIndexSet = new Set(parsed.episodes.map((item) => item.episodeIndex));
+      const mergedPlan = [
+        ...episodePlan.filter((item) => !incomingIndexSet.has(item.episodeIndex)),
+        ...parsed.episodes,
+      ].sort((a, b) => a.episodeIndex - b.episodeIndex);
+
+      const newMaxEp = Math.max(...mergedPlan.map((e) => e.episodeIndex), nextTotalPlanned);
+      const updatedAudit = parsed.continuityAuditSummary || continuityAuditLog;
+
+      setEpisodePlan(mergedPlan);
+      setTotalPlannedEpisodes(newMaxEp);
+      if (updatedAudit) {
+        setContinuityAuditLog(updatedAudit);
+        setIsAuditExpanded(true);
+      }
+      setContinueArcHint('');
+
+      const updatedProj = buildSnapshotProject({
+        episodePlan: mergedPlan,
+        totalPlannedEpisodes: newMaxEp,
+        continuityAuditLog: updatedAudit,
+      });
+      await onSaveProject(updatedProj);
+
+      setStatusMsg({
+        type: 'success',
+        text: `已完成前序伏笔与关键道具审阅，成功续写第 ${startEp}~${
+          parsed.episodes[parsed.episodes.length - 1].episodeIndex
+        } 集细纲（当前累计已规划 ${mergedPlan.length} 集）！`,
+      });
+      triggerQuickToast(`已续写第 ${startEp}~${endEp} 集剧本细纲`);
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: `续写分集细纲失败：${err.message}` });
+    } finally {
+      setIsContinuingPlan(false);
+      setContinueStreamText('');
+    }
+  };
+
+  const updateEpisodePlanItem = (
+    epIdx: number,
+    patch: Partial<DramaEpisodePlanItem>
+  ) => {
+    setEpisodePlan((prev) =>
+      prev
+        .map((item) => (item.episodeIndex === epIdx ? { ...item, ...patch } : item))
+        .sort((a, b) => a.episodeIndex - b.episodeIndex)
+    );
+  };
+
+  const handleAddManualEpisodePlanItem = () => {
+    const nextIdx = maxPlannedEpisodeIndex + 1;
+    const newItem: DramaEpisodePlanItem = {
+      episodeIndex: nextIdx,
+      title: '新分集剧情节点',
+      beatSummary: '',
+      foreshadowingOrProps: '',
+      hookType: nextIdx === paywallEpisodeIndex ? '核心付费卡点' : '免费强留存',
+    };
+    setEpisodePlan((prev) => [...prev, newItem].sort((a, b) => a.episodeIndex - b.episodeIndex));
+    if (nextIdx > totalPlannedEpisodes) {
+      setTotalPlannedEpisodes(nextIdx);
+    }
+    setEditingPlanEpIdx(nextIdx);
   };
 
   const copyText = (key: string, val: string, toastMsg = '已复制到剪贴板') => {
@@ -435,6 +638,16 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {onPromoteCandidate && onDeleteCandidate && (
+            <MotionButton
+              type="button"
+              onClick={() => setIsCandidateVaultOpen(true)}
+              className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap cursor-pointer tabular-nums"
+            >
+              <FolderArchive className="w-4 h-4 text-[var(--accent)]" />
+              <span>备选计划目录 ({candidates.length})</span>
+            </MotionButton>
+          )}
           <MotionButton
             type="button"
             onClick={() => setIsConsultantOpen((prev) => !prev)}
@@ -477,12 +690,14 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
           mode="setup"
           existingProjectId={currentProject?.id}
           existingCreatedAt={currentProject?.createdAt}
+          onAutoArchiveCandidates={onAutoArchiveCandidates}
           onConfirmOption={async (adoptedProj) => {
             setTitle(adoptedProj.title);
             setTrackId(adoptedProj.trackId);
             setChannel(adoptedProj.channel);
             setVisualStyle(adoptedProj.visualStyle);
             setAspectRatio(adoptedProj.aspectRatio);
+            setEpisodeDurationSec(adoptedProj.episodeDurationSec || 90);
             setPaywallEpisodeIndex(adoptedProj.paywallEpisodeIndex);
             setLogline(adoptedProj.logline);
             setTargetAudience(adoptedProj.targetAudience);
@@ -494,6 +709,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
             const mergedProj: DramaProject = {
               ...adoptedProj,
               preferredScriptFormat,
+              episodeDurationSec: adoptedProj.episodeDurationSec || episodeDurationSec || 90,
               totalPlannedEpisodes,
               episodes: currentProject?.episodes || [],
               sourceNovelId: currentProject?.sourceNovelId,
@@ -606,7 +822,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
             <input
               type="number"
               min={6}
-              max={120}
+              max={200}
               value={totalPlannedEpisodes}
               onChange={(e) => setTotalPlannedEpisodes(Number(e.target.value) || 40)}
               className="studio-input w-full min-h-[42px] px-3.5 py-2 text-xs tabular-nums"
@@ -618,11 +834,83 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
             <input
               type="number"
               min={3}
-              max={30}
+              max={50}
               value={paywallEpisodeIndex}
               onChange={(e) => setPaywallEpisodeIndex(Number(e.target.value) || 10)}
               className="studio-input w-full min-h-[42px] px-3.5 py-2 text-xs tabular-nums"
             />
+          </div>
+        </div>
+
+        {/* Per-Episode Duration Setting Coupled with Script Target Word Count */}
+        <div className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/55 space-y-3 text-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 font-bold text-[var(--text-primary)]">
+              <Clock className="w-4 h-4 text-[var(--accent)] shrink-0" />
+              <span>单集时长设定（与单集剧本创作字数、场次规模及分镜数自动强挂钩）</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <label className="text-[var(--text-muted)] whitespace-nowrap">自定义秒数：</label>
+              <input
+                type="number"
+                min={45}
+                max={480}
+                step={5}
+                value={episodeDurationSec}
+                onChange={(e) => setEpisodeDurationSec(Number(e.target.value) || 90)}
+                onBlur={() =>
+                  setEpisodeDurationSec((prev) =>
+                    Math.max(45, Math.min(480, Math.round(Number(prev) || 90)))
+                  )
+                }
+                className="studio-input w-22 min-h-[36px] px-2.5 py-1 text-xs font-semibold tabular-nums text-center"
+              />
+              <span className="text-[var(--text-muted)]">秒/集</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            {DRAMA_DURATION_PRESETS.map((preset) => {
+              const active = episodeDurationSec === preset.sec;
+              return (
+                <button
+                  key={preset.sec}
+                  type="button"
+                  onClick={() => setEpisodeDurationSec(preset.sec)}
+                  className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer space-y-0.5 ${
+                    active
+                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)]'
+                      : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--accent)]/50 text-[var(--text-secondary)]'
+                  }`}
+                >
+                  <div className="font-bold text-xs tabular-nums text-[var(--text-primary)]">
+                    {preset.title}
+                  </div>
+                  <div className="text-[11px] tabular-nums text-[var(--text-muted)]">
+                    {preset.badge}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 pt-0.5 text-[11px] sm:text-xs text-[var(--text-secondary)] tabular-nums">
+            <span className="font-semibold text-[var(--accent)]">
+              当前时长-字数联动标准：
+            </span>
+            <span>
+              单集 <strong>{setupDurSpec.durationSec} 秒</strong>（{setupDurSpec.label}）
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              剧本正文目标 <strong>{setupDurSpec.minWords} ~ {setupDurSpec.maxWords} 字</strong>
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>{setupDurSpec.sceneRange}</span>
+            <span aria-hidden="true">·</span>
+            <span>{setupDurSpec.beatRange}</span>
+            <span aria-hidden="true">·</span>
+            <span>建议拆解 {setupDurSpec.recommendedShots} 镜</span>
           </div>
         </div>
 
@@ -937,22 +1225,68 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
         </section>
 
         <section className="lg:col-span-7 studio-card p-5 sm:p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
-            <h2 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
-              <Flame className="w-4 h-4 text-[var(--accent)]" />
-              <span>商业分集节拍与付费卡点规划 ({episodePlan.length} 集)</span>
-            </h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-3">
+            <div className="space-y-0.5">
+              <h2 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2 tabular-nums">
+                <Flame className="w-4 h-4 text-[var(--accent)] shrink-0" />
+                <span>
+                  商业分集节拍与付费卡点规划（已规划 {episodePlan.length} / {totalPlannedEpisodes} 集）
+                </span>
+              </h2>
+              <p className="text-[11px] text-[var(--text-muted)]">
+                首次生成前 12 集细纲后，可在下方自由输入/选择后续集数区间（如 13~24 集）继续生成，AI 会自动回溯前序伏笔、关键道具与核心剧情。
+              </p>
+            </div>
+            <MotionButton
+              type="button"
+              onClick={handleAddManualEpisodePlanItem}
+              className="min-h-[34px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>手动新增一集</span>
+            </MotionButton>
           </div>
+
+          {/* Preceding Episodes Continuity & Key Prop Audit Report */}
+          {continuityAuditLog && (
+            <div className="p-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/70 space-y-1.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAuditExpanded((v) => !v)}
+                  className="font-bold text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer text-left"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                  <span>AI 前序集数伏笔、关键道具与剧情衔接审阅报告</span>
+                  {isAuditExpanded ? (
+                    <ChevronUp className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                  )}
+                </button>
+              </div>
+              {isAuditExpanded && (
+                <p className="text-[var(--text-secondary)] leading-relaxed whitespace-pre-line">
+                  {continuityAuditLog}
+                </p>
+              )}
+            </div>
+          )}
 
           {episodePlan.length === 0 ? (
             <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">
-              点击上方「AI 一键提取角色固定立绘词 + 分集卡点目录」，自动生成前 12 集起承转合与付费卡点规划。
+              点击上方「AI 一键提取角色固定立绘词 + 分集卡点目录」自动生成前 12 集起承转合，或直接在下方指定集数区间生成分集剧本细纲。
             </p>
           ) : (
-            <StaggerList className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+            <StaggerList className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1">
               {episodePlan.map((ep) => {
                 const isPaywall = ep.hookType === '核心付费卡点' || ep.episodeIndex === paywallEpisodeIndex;
                 const alreadyShot = currentProject?.episodes?.some((e) => e.index === ep.episodeIndex);
+                const isEditingEp = editingPlanEpIdx === ep.episodeIndex;
+                const fullPresetBeat = `${ep.title}：${ep.beatSummary}${
+                  ep.foreshadowingOrProps ? `（本集关键道具/伏笔要求：${ep.foreshadowingOrProps}）` : ''
+                }`;
+
                 return (
                   <StaggerItem
                     key={ep.episodeIndex}
@@ -967,15 +1301,26 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
                             onSelect: async () => {
                               const proj = buildSnapshotProject();
                               await onSaveProject(proj);
-                              onStartEpisodeInWriter(proj, ep.episodeIndex, `${ep.title}：${ep.beatSummary}`);
+                              onStartEpisodeInWriter(proj, ep.episodeIndex, fullPresetBeat);
                             },
+                          },
+                          {
+                            id: 'edit-ep-plan',
+                            label: isEditingEp ? '完成细纲微调' : '手动编辑本集细纲与伏笔',
+                            icon: <Edit3 className="w-3.5 h-3.5" />,
+                            onSelect: () => setEditingPlanEpIdx(isEditingEp ? null : ep.episodeIndex),
                           },
                           {
                             id: 'copy-beat',
                             label: '复制本集剧情节拍梗概',
                             icon: <Copy className="w-3.5 h-3.5" />,
                             onSelect: () =>
-                              copyText(`beat-${ep.episodeIndex}`, `第${ep.episodeIndex}集《${ep.title}》：${ep.beatSummary}`),
+                              copyText(
+                                `beat-${ep.episodeIndex}`,
+                                `第${ep.episodeIndex}集《${ep.title}》：${ep.beatSummary}${
+                                  ep.foreshadowingOrProps ? `\n伏笔/关键道具：${ep.foreshadowingOrProps}` : ''
+                                }`
+                              ),
                           },
                           {
                             id: 'set-paywall',
@@ -986,55 +1331,292 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
                               triggerQuickToast(`已将第 ${ep.episodeIndex} 集设为付费卡点`);
                             },
                           },
+                          {
+                            id: 'del-ep-plan',
+                            label: `移除第 ${ep.episodeIndex} 集细纲`,
+                            icon: <Trash2 className="w-3.5 h-3.5" />,
+                            danger: true,
+                            dividerBefore: true,
+                            onSelect: () =>
+                              setEpisodePlan((prev) =>
+                                prev.filter((item) => item.episodeIndex !== ep.episodeIndex)
+                              ),
+                          },
                         ],
                         `分集大纲 · 第 ${ep.episodeIndex} 集`
                       )
                     }
-                    className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+                    className={`p-3.5 rounded-xl border space-y-2.5 text-xs ${
                       isPaywall
                         ? 'border-amber-500/45 bg-amber-500/5'
                         : 'border-[var(--border-subtle)] bg-[var(--bg-surface)]'
                     }`}
                   >
-                    <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold tabular-nums text-[var(--text-primary)]">
-                          第 {ep.episodeIndex} 集 · {ep.title}
-                        </span>
-                        <span
-                          className={`text-[11px] font-semibold ${
-                            isPaywall ? 'text-amber-600 dark:text-amber-400' : 'text-[var(--text-muted)]'
-                          }`}
-                        >
-                          {isPaywall ? '🔥 核心付费卡点' : ep.hookType}
-                        </span>
-                        {alreadyShot && (
-                          <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-                            ✓ 已出本
-                          </span>
-                        )}
+                    {isEditingEp ? (
+                      <div className="space-y-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                            <span className="font-bold tabular-nums text-[var(--text-primary)] shrink-0">
+                              第 {ep.episodeIndex} 集
+                            </span>
+                            <input
+                              type="text"
+                              value={ep.title}
+                              onChange={(e) =>
+                                updateEpisodePlanItem(ep.episodeIndex, { title: e.target.value })
+                              }
+                              placeholder="单集标题"
+                              className="studio-input px-2.5 py-1 text-xs font-semibold flex-1"
+                            />
+                            <select
+                              value={ep.hookType}
+                              onChange={(e) =>
+                                updateEpisodePlanItem(ep.episodeIndex, {
+                                  hookType: e.target.value as DramaEpisodePlanItem['hookType'],
+                                })
+                              }
+                              className="studio-input px-2 py-1 text-xs"
+                            >
+                              <option value="免费强留存">免费强留存</option>
+                              <option value="小高潮爽点">小高潮爽点</option>
+                              <option value="核心付费卡点">核心付费卡点</option>
+                              <option value="反转高潮">反转高潮</option>
+                            </select>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setEditingPlanEpIdx(null)}
+                            className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--accent)] text-[var(--accent-fg)] font-semibold text-xs cursor-pointer"
+                          >
+                            完成
+                          </button>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={ep.beatSummary}
+                          onChange={(e) =>
+                            updateEpisodePlanItem(ep.episodeIndex, { beatSummary: e.target.value })
+                          }
+                          placeholder="本集核心冲突推进与集末断章悬念..."
+                          className="studio-input w-full p-2 text-xs leading-relaxed"
+                        />
+                        <input
+                          type="text"
+                          value={ep.foreshadowingOrProps || ''}
+                          onChange={(e) =>
+                            updateEpisodePlanItem(ep.episodeIndex, {
+                              foreshadowingOrProps: e.target.value,
+                            })
+                          }
+                          placeholder="本集埋设或回收的伏笔 / 关键道具（如：回收第3集旧乐谱伏笔）..."
+                          className="studio-input w-full px-2.5 py-1.5 text-xs"
+                        />
                       </div>
-                      <p className="text-[var(--text-secondary)] leading-relaxed">{ep.beatSummary}</p>
-                    </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                        <div className="space-y-1 min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold tabular-nums text-[var(--text-primary)]">
+                              第 {ep.episodeIndex} 集 · {ep.title}
+                            </span>
+                            <span
+                              className={`text-[11px] font-semibold ${
+                                isPaywall ? 'text-amber-600 dark:text-amber-400' : 'text-[var(--text-muted)]'
+                              }`}
+                            >
+                              {isPaywall ? '🔥 核心付费卡点' : ep.hookType}
+                            </span>
+                            {alreadyShot && (
+                              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                ✓ 已出本
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[var(--text-secondary)] leading-relaxed">{ep.beatSummary}</p>
+                          {ep.foreshadowingOrProps && (
+                            <p className="text-[11px] text-[var(--accent)] font-medium leading-relaxed">
+                              🗝️ 伏笔/关键道具：{ep.foreshadowingOrProps}
+                            </p>
+                          )}
+                        </div>
 
-                    <MotionButton
-                      type="button"
-                      onClick={async () => {
-                        const proj = buildSnapshotProject();
-                        await onSaveProject(proj);
-                        onStartEpisodeInWriter(proj, ep.episodeIndex, `${ep.title}：${ep.beatSummary}`);
-                      }}
-                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      {alreadyShot ? '查看剧本' : '写此集 →'}
-                    </MotionButton>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setEditingPlanEpIdx(ep.episodeIndex)}
+                            title="微调本集细纲与伏笔道具"
+                            className="min-h-[36px] min-w-[36px] rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[var(--text-muted)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <MotionButton
+                            type="button"
+                            onClick={async () => {
+                              const proj = buildSnapshotProject();
+                              await onSaveProject(proj);
+                              onStartEpisodeInWriter(proj, ep.episodeIndex, fullPresetBeat);
+                            }}
+                            className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            {alreadyShot ? '查看剧本' : '写此集 →'}
+                          </MotionButton>
+                        </div>
+                      </div>
+                    )}
                   </StaggerItem>
                 );
               })}
             </StaggerList>
           )}
+
+          {/* Rolling Continuation Control Panel for Episode X - Y Beat Outlines */}
+          <div className="pt-3 border-t border-[var(--border-subtle)]">
+            <div className="p-4 rounded-2xl studio-muted space-y-3 text-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <div className="font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                    <span>继续生成后续分集剧本细纲（自动重审前序伏笔、关键道具与剧情推进）</span>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    支持自由指定需续写或重排的集数范围（单次建议 6~20 集），AI 将先审阅第 1~{Math.max(1, continueStartEp - 1)} 集的伏笔道具再顺延生成。
+                  </p>
+                </div>
+              </div>
+
+              {/* Quick Range Presets + Custom Start/End Episode Inputs */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5 bg-[var(--bg-surface)] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] tabular-nums">
+                  <span className="text-[var(--text-muted)]">第</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={300}
+                    disabled={isContinuingPlan}
+                    value={continueStartEp}
+                    onChange={(e) => {
+                      const val = Math.max(1, Number(e.target.value) || 1);
+                      setContinueStartEp(val);
+                      if (continueEndEp < val) setContinueEndEp(val + 11);
+                    }}
+                    className="studio-input w-14 px-2 py-1 text-center font-bold text-xs tabular-nums"
+                  />
+                  <span className="text-[var(--text-muted)]">集 至 第</span>
+                  <input
+                    type="number"
+                    min={continueStartEp}
+                    max={300}
+                    disabled={isContinuingPlan}
+                    value={continueEndEp}
+                    onChange={(e) =>
+                      setContinueEndEp(Math.max(continueStartEp, Number(e.target.value) || continueStartEp))
+                    }
+                    className="studio-input w-14 px-2 py-1 text-center font-bold text-xs tabular-nums"
+                  />
+                  <span className="text-[var(--text-muted)]">
+                    集（共 {Math.max(1, continueEndEp - continueStartEp + 1)} 集）
+                  </span>
+                </div>
+
+                {[8, 12, 16].map((span) => {
+                  const baseStart = maxPlannedEpisodeIndex + 1;
+                  const targetEnd = baseStart + span - 1;
+                  const isCurrentPreset =
+                    continueStartEp === baseStart && continueEndEp === targetEnd;
+                  return (
+                    <button
+                      key={span}
+                      type="button"
+                      disabled={isContinuingPlan}
+                      onClick={() => {
+                        setContinueStartEp(baseStart);
+                        setContinueEndEp(targetEnd);
+                      }}
+                      className={`min-h-[34px] px-2.5 py-1 rounded-xl border text-[11px] font-medium tabular-nums whitespace-nowrap cursor-pointer transition-colors ${
+                        isCurrentPreset
+                          ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)] font-semibold'
+                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--accent)]/50 text-[var(--text-secondary)]'
+                      }`}
+                    >
+                      顺延 +{span} 集 ({baseStart}~{targetEnd})
+                    </button>
+                  );
+                })}
+
+                {totalPlannedEpisodes > maxPlannedEpisodeIndex &&
+                  totalPlannedEpisodes - maxPlannedEpisodeIndex <= 20 && (
+                    <button
+                      type="button"
+                      disabled={isContinuingPlan}
+                      onClick={() => {
+                        setContinueStartEp(maxPlannedEpisodeIndex + 1);
+                        setContinueEndEp(totalPlannedEpisodes);
+                      }}
+                      className="min-h-[34px] px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--accent)] text-[11px] font-medium text-[var(--accent)] tabular-nums whitespace-nowrap cursor-pointer"
+                    >
+                      补齐至总规划第 {totalPlannedEpisodes} 集
+                    </button>
+                  )}
+              </div>
+
+              <input
+                type="text"
+                disabled={isContinuingPlan}
+                value={continueArcHint}
+                onChange={(e) => setContinueArcHint(e.target.value)}
+                placeholder="选填：本阶段剧情走向或指定想回收的前序伏笔/关键道具（留空则由 AI 自动回溯前文伏笔与总大纲推进）..."
+                className="studio-input w-full min-h-[38px] px-3 py-2 text-xs bg-[var(--bg-surface)]"
+              />
+
+              {isContinuingPlan && continueStreamText && (
+                <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-2">
+                  <div className="h-1 w-full rounded-full bg-[var(--border-subtle)] overflow-hidden">
+                    <div className="h-full w-1/2 bg-[var(--accent)] rounded-full animate-shimmer-sweep" />
+                  </div>
+                  <p className="text-[11px] font-mono text-[var(--text-muted)] line-clamp-3 whitespace-pre-wrap">
+                    {continueStreamText}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end">
+                <MotionButton
+                  type="button"
+                  disabled={isContinuingPlan || isExtracting}
+                  onClick={handleAiContinueEpisodePlan}
+                  className="btn-primary min-h-[42px] px-5 py-2 text-xs flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-60 tabular-nums"
+                >
+                  {isContinuingPlan ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>
+                        正在审阅前序伏笔并生成第 {continueStartEp}-{continueEndEp} 集细纲...
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>
+                        继续生成第 {continueStartEp} - {continueEndEp} 集剧本细纲
+                      </span>
+                    </>
+                  )}
+                </MotionButton>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
+
+      {onPromoteCandidate && onDeleteCandidate && (
+        <DramaCandidateVaultModal
+          isOpen={isCandidateVaultOpen}
+          onClose={() => setIsCandidateVaultOpen(false)}
+          candidates={candidates}
+          onPromoteCandidate={onPromoteCandidate}
+          onDeleteCandidate={onDeleteCandidate}
+        />
+      )}
     </div>
   );
 };
@@ -1105,7 +1687,11 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
     if (currentProject?.preferredScriptFormat) {
       setScriptFormat(currentProject.preferredScriptFormat);
     }
-  }, [currentProject?.id]);
+    if (currentProject) {
+      const spec = getEpisodeDurationSpec(currentProject.episodeDurationSec);
+      setTargetShotCount(spec.recommendedShots);
+    }
+  }, [currentProject?.id, currentProject?.episodeDurationSec]);
 
   useEffect(() => {
     if (presetDirectorBeat) {
@@ -1192,8 +1778,9 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
     }
 
     setIsGenerating(true);
+    const projectDurSpec = getEpisodeDurationSpec(currentProject.episodeDurationSec);
     setGeneratingStageLabel(
-      `正在按「${DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat)?.name}」撰写第 ${epNumberToWrite} 集极简文学剧本...`
+      `正在按「${DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat)?.name}」撰写第 ${epNumberToWrite} 集极简文学剧本（目标 ${projectDurSpec.durationSec} 秒 · ${projectDurSpec.minWords}~${projectDurSpec.maxWords} 字）...`
     );
     setErrorAlert(null);
     setStreamRawText('');
@@ -1213,6 +1800,7 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
       });
 
       let fullRaw = '';
+      const estChars = projectDurSpec.maxWords + 550;
       const res = await streamChatCompletion({
         provider: cfg.provider,
         baseUrl: cfg.baseUrl,
@@ -1223,7 +1811,7 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
         onChunk: (chunk) => {
           fullRaw += chunk;
           setStreamRawText(fullRaw);
-          const pct = Math.min(95, Math.max(12, Math.round((fullRaw.length / 1300) * 100)));
+          const pct = Math.min(95, Math.max(12, Math.round((fullRaw.length / estChars) * 100)));
           setStreamProgress(pct);
         },
       });
@@ -1241,7 +1829,8 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
         epNumberToWrite,
         scriptFormat,
         isPaywall,
-        existingEp?.shots || []
+        existingEp?.shots || [],
+        projectDurSpec.durationSec
       );
 
       if (!newEpisode.rawScriptText.trim()) {
@@ -1251,7 +1840,8 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
 
       const fmtName = DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat)?.name || '标准剧本';
       const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
-      newEpisode.meta = `格式: ${fmtName} | 模型: ${model} | 耗时 ${elapsedSec}s${
+      const charCount = newEpisode.rawScriptText.replace(/\s+/g, '').length;
+      newEpisode.meta = `格式: ${fmtName} | 单集设定: ${projectDurSpec.durationSec}s (实测 ${charCount} 字) | 模型: ${model} | 耗时 ${elapsedSec}s${
         newEpisode.shots.length > 0 ? ` | 已拆解 ${newEpisode.shots.length} 镜` : ' | 待拆解后期分镜'
       }`;
 
@@ -1670,6 +2260,24 @@ ${charContext}
   const selectedSourceBook = books.find((b) => b.id === selectedBookId) || books[0];
   const currentFormatSpec =
     DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat) || DRAMA_SCRIPT_FORMATS[0];
+  const writerDurSpec = getEpisodeDurationSpec(currentProject.episodeDurationSec);
+  const currentScriptCharCount = (
+    isEditingRawScript ? draftScriptText : activeEpisode?.rawScriptText || ''
+  ).replace(/\s+/g, '').length;
+
+  const handleQuickChangeProjectDuration = async (newDurationSec: number) => {
+    const clamped = Math.max(45, Math.min(480, Math.round(newDurationSec || 90)));
+    const newSpec = getEpisodeDurationSpec(clamped);
+    setTargetShotCount(newSpec.recommendedShots);
+    await onSaveProject({
+      ...currentProject,
+      episodeDurationSec: clamped,
+      lastModifiedAt: Date.now(),
+    });
+    triggerQuickToast(
+      `单集时长已切换为 ${clamped} 秒（目标剧本约 ${newSpec.minWords}~${newSpec.maxWords} 字）`
+    );
+  };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -1678,7 +2286,9 @@ ${charContext}
         <div className="studio-card p-4 space-y-3">
           <div className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2.5">
             <div className="min-w-0">
-              <p className="text-[11px] text-[var(--text-muted)] truncate">{currentProject.trackName}</p>
+              <p className="text-[11px] text-[var(--text-muted)] truncate tabular-nums">
+                {currentProject.trackName} · 单集 {writerDurSpec.durationSec}s
+              </p>
               <h2 className="text-sm font-bold text-[var(--text-primary)] truncate font-editorial-serif">
                 《{currentProject.title}》
               </h2>
@@ -1688,7 +2298,7 @@ ${charContext}
               onClick={onGoToDramaSetup}
               className="text-xs text-[var(--accent)] font-medium shrink-0 cursor-pointer"
             >
-              立绘资产
+              立项细纲
             </MotionButton>
           </div>
 
@@ -2058,8 +2668,8 @@ ${charContext}
                 </div>
                 <span className="text-xs text-[var(--text-muted)] tabular-nums">
                   {activeEpisode.shots.length > 0
-                    ? `已拆解 ${activeEpisode.shots.length} 镜 · 预计成片 ${activeEpisode.targetDurationSec} 秒`
-                    : `标准文学本已定稿 · 预计成片 ${activeEpisode.targetDurationSec} 秒`}
+                    ? `已拆解 ${activeEpisode.shots.length} 镜 · 实测 ${currentScriptCharCount} 字（单集设定 ${writerDurSpec.durationSec}s · 目标 ${writerDurSpec.minWords}~${writerDurSpec.maxWords} 字）`
+                    : `实测 ${currentScriptCharCount} 字 · 单集设定 ${writerDurSpec.durationSec} 秒（目标区间 ${writerDurSpec.minWords}~${writerDurSpec.maxWords} 字）`}
                 </span>
               </div>
 
@@ -2491,21 +3101,56 @@ ${charContext}
         {/* Writer & Director's Control Deck */}
         <section className="studio-card p-5 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-bold text-[var(--text-primary)]">
-              🎬 编剧/导演执笔台（目标：第 {activeEpisode ? nextEpisodeNumber : targetEpisodeIndex} 集 · 规范：{currentFormatSpec.name}）
-            </h3>
-            <div className="flex items-center gap-2 text-xs">
-              <label className="text-[var(--text-muted)]">拆解分镜密度：</label>
+            <div className="space-y-0.5">
+              <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                🎬 编剧/导演执笔台（目标：第 {activeEpisode ? nextEpisodeNumber : targetEpisodeIndex} 集 · 规范：{currentFormatSpec.name}）
+              </h3>
+              <p className="text-[11px] text-[var(--text-muted)] tabular-nums">
+                时长-字数强挂钩：单集 {writerDurSpec.durationSec} 秒 → 剧本目标 {writerDurSpec.minWords}~{writerDurSpec.maxWords} 字 · {writerDurSpec.sceneRange}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <label className="text-[var(--text-muted)]">单集时长：</label>
+              <select
+                value={
+                  DRAMA_DURATION_PRESETS.some((p) => p.sec === writerDurSpec.durationSec)
+                    ? writerDurSpec.durationSec
+                    : 'custom'
+                }
+                disabled={isGenerating}
+                onChange={(e) => {
+                  if (e.target.value !== 'custom') {
+                    handleQuickChangeProjectDuration(Number(e.target.value));
+                  }
+                }}
+                className="studio-input px-2.5 py-1.5 text-xs tabular-nums"
+              >
+                {DRAMA_DURATION_PRESETS.map((p) => (
+                  <option key={p.sec} value={p.sec}>
+                    {p.sec}秒（{p.badge}）
+                  </option>
+                ))}
+                {!DRAMA_DURATION_PRESETS.some((p) => p.sec === writerDurSpec.durationSec) && (
+                  <option value="custom">
+                    自定义 {writerDurSpec.durationSec}秒（约{writerDurSpec.minWords}~{writerDurSpec.maxWords}字）
+                  </option>
+                )}
+              </select>
+
+              <label className="text-[var(--text-muted)]">拆解分镜数：</label>
               <select
                 value={targetShotCount}
                 disabled={isGenerating}
                 onChange={(e) => setTargetShotCount(Number(e.target.value))}
                 className="studio-input px-2.5 py-1.5 text-xs tabular-nums"
               >
-                <option value={6}>6 镜（约60秒极速版）</option>
-                <option value={8}>8 镜（约90秒标准短剧）</option>
-                <option value={10}>10 镜（约110秒高密爽剧）</option>
-                <option value={12}>12 镜（约135秒重点卡点集）</option>
+                <option value={6}>6 镜（60秒极速）</option>
+                <option value={8}>8 镜（90秒标准）</option>
+                <option value={10}>10 镜（110秒高密）</option>
+                <option value={12}>12 镜（120秒叙事）</option>
+                <option value={15}>15 镜（180秒动态漫）</option>
+                <option value={18}>18 镜（240秒中长集）</option>
+                <option value={22}>22 镜（超密分镜）</option>
               </select>
             </div>
           </div>
@@ -2594,21 +3239,24 @@ ${charContext}
       </div>
 
       {/* Messy Client Script Import & Wash Modal */}
-      <AnimatePresence>
-        {isWashModalOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
-          >
+      {isWashModalOpen && (
+        <ModalPortal onEscape={() => setIsWashModalOpen(false)}>
+          <AnimatePresence>
             <motion.div
-              initial={{ opacity: 0, y: 18, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.98 }}
-              transition={{ duration: 0.18, ease: SNAPPY_EASE }}
-              className="w-full sm:max-w-2xl rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe max-h-[90vh] overflow-y-auto"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsWashModalOpen(false)}
+              className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
             >
+              <motion.div
+                initial={{ opacity: 0, y: 18, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                transition={{ duration: 0.18, ease: SNAPPY_EASE }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full sm:max-w-2xl rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto"
+              >
               <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
                 <div>
                   <h3 className="text-base font-bold text-[var(--text-primary)]">
@@ -2693,15 +3341,23 @@ ${charContext}
                   </MotionButton>
                 </div>
               </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </AnimatePresence>
+        </ModalPortal>
+      )}
 
       {/* Mobile Episode Switcher Bottom Sheet */}
       {isMobileDrawerOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden flex items-end bg-black/50 backdrop-blur-xs">
-          <div className="w-full rounded-t-3xl bg-[var(--bg-surface)] border-t border-[var(--border-subtle)] p-5 space-y-4 max-h-[75vh] overflow-y-auto pb-safe">
+        <ModalPortal onEscape={() => setIsMobileDrawerOpen(false)}>
+          <div
+            onClick={() => setIsMobileDrawerOpen(false)}
+            className="fixed inset-0 z-[100] lg:hidden flex items-end bg-black/55 backdrop-blur-xs pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full rounded-t-3xl bg-[var(--bg-surface)] border-t border-[var(--border-subtle)] p-5 space-y-4 max-h-[82dvh] overflow-y-auto pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <h3 className="text-sm font-bold">选择漫剧分集</h3>
               <button
@@ -2744,14 +3400,22 @@ ${charContext}
                 + 筹备第 {nextEpisodeNumber} 集新剧本
               </button>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {/* Novel Chapter -> Commercial Comic-Drama Adaptation Modal */}
       {isAdaptModalOpen && selectedSourceBook && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsAdaptModalOpen(false)}>
+          <div
+            onClick={() => setIsAdaptModalOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <h3 className="text-base font-bold text-[var(--text-primary)]">
                 小说章节跨界改编为甲方标准剧本
@@ -2832,8 +3496,9 @@ ${charContext}
                 改编生成标准剧本
               </MotionButton>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
     </div>
   );

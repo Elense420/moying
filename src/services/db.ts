@@ -1,7 +1,7 @@
-import { Book, ApiConfig, InspirationRecord, UiSettings, HistoryItem, NovelSkill, DEFAULT_PRESET_SKILLS, DramaProject } from '../types';
+import { Book, ApiConfig, InspirationRecord, UiSettings, HistoryItem, NovelSkill, DEFAULT_PRESET_SKILLS, DramaProject, DramaCandidatePlan } from '../types';
 
 const DB_NAME = 'aiNovelistDB';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 export const STORE_NAMES = {
   BOOKS: 'books',
@@ -15,6 +15,7 @@ export const STORE_NAMES = {
   INSPIRATION_RECORDS: 'inspirationRecords',
   NOVEL_SKILLS: 'novelSkills',
   DRAMA_PROJECTS: 'dramaProjects',
+  DRAMA_CANDIDATES: 'dramaCandidates',
 } as const;
 
 let dbInstance: IDBDatabase | null = null;
@@ -632,4 +633,39 @@ export async function resetGlobalSkills(): Promise<NovelSkill[]> {
   localStorage.setItem('moyun_skills_v2_migrated', '1');
   return DEFAULT_PRESET_SKILLS;
 }
+
+export async function getDramaCandidates(): Promise<DramaCandidatePlan[]> {
+  const all = await dbGetAll<DramaCandidatePlan>(STORE_NAMES.DRAMA_CANDIDATES);
+  return (all || []).sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function saveDramaCandidatesBatch(
+  candidates: DramaCandidatePlan[]
+): Promise<DramaCandidatePlan[]> {
+  if (!candidates || candidates.length === 0) {
+    return getDramaCandidates();
+  }
+  const existing = await dbGetAll<DramaCandidatePlan>(STORE_NAMES.DRAMA_CANDIDATES);
+  const existingFingerprints = new Set(
+    existing.map((c) => `${c.title.trim()}::${c.logline.trim().slice(0, 40)}`)
+  );
+
+  for (const item of candidates) {
+    const fp = `${item.title.trim()}::${item.logline.trim().slice(0, 40)}`;
+    if (!existingFingerprints.has(fp)) {
+      await dbPut(STORE_NAMES.DRAMA_CANDIDATES, item);
+      existingFingerprints.add(fp);
+    }
+  }
+  return getDramaCandidates();
+}
+
+export async function updateDramaCandidate(candidate: DramaCandidatePlan): Promise<void> {
+  await dbPut(STORE_NAMES.DRAMA_CANDIDATES, candidate);
+}
+
+export async function deleteDramaCandidate(id: string): Promise<void> {
+  await dbDelete(STORE_NAMES.DRAMA_CANDIDATES, id);
+}
+
 

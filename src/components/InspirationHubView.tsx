@@ -28,7 +28,7 @@ import { InspirationRecord, Book, UiSettings, ApiConfig, IdeaCard, NovelSkill } 
 import { dbPut, dbGetAll, dbDelete, dbClear, STORE_NAMES } from '../services/db';
 import { chatCompletion } from '../services/apiClient';
 import { buildUnifiedSystemPrompt } from '../services/promptEngine';
-import { MotionButton, StaggerCard } from './MotionPrimitives';
+import { MotionButton, StaggerCard, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 
 export interface ShareHistoryItem {
@@ -1201,25 +1201,34 @@ ${cardTexts}`;
 
       {/* Detail & Edit Modal */}
       {selectedRecord && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-7 shadow-2xl space-y-5 pb-safe">
-            <div className="flex items-start justify-between gap-3 border-b border-[var(--border-subtle)] pb-4">
-              <div>
-                <h3 className="text-lg font-bold text-[var(--text-primary)] font-editorial-serif">
-                  {isEditing ? '编辑灵感大纲' : `《${selectedRecord.title}》`}
-                </h3>
-                <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                  {selectedRecord.genre} · {selectedRecord.style}
-                </p>
+        <ModalPortal onEscape={() => setSelectedRecord(null)}>
+          <div
+            onClick={() => setSelectedRecord(null)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-2xl max-h-[88dvh] sm:max-h-[88vh] rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden flex flex-col pb-safe"
+            >
+              <div className="px-5 py-4 sm:px-7 border-b border-[var(--border-subtle)] flex items-start justify-between gap-3 shrink-0">
+                <div className="min-w-0">
+                  <h3 className="text-lg font-bold text-[var(--text-primary)] font-editorial-serif truncate">
+                    {isEditing ? '编辑灵感大纲' : `《${selectedRecord.title}》`}
+                  </h3>
+                  <p className="text-xs text-[var(--text-muted)] mt-0.5 truncate">
+                    {selectedRecord.genre} · {selectedRecord.style}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedRecord(null)}
+                  className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--bg-muted)] shrink-0 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedRecord(null)}
-                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--bg-muted)]"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+
+              <div className="p-5 sm:p-7 overflow-y-auto flex-1">
 
             {isEditing ? (
               <div className="space-y-3 text-xs">
@@ -1321,9 +1330,10 @@ ${cardTexts}`;
                 )}
               </div>
             )}
+              </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[var(--border-subtle)]">
-              <div className="flex items-center gap-2">
+              <div className="px-5 py-3.5 sm:px-7 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] flex flex-wrap items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2">
                 {isEditing ? (
                   <>
                     <button
@@ -1402,112 +1412,140 @@ ${cardTexts}`;
                   <span>以此大纲立项写新书</span>
                 </button>
               )}
+              </div>
             </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {/* Link Novels Modal */}
       {isLinkDialogOpen && selectedRecord && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 space-y-4 pb-safe">
-            <h3 className="text-base font-bold text-[var(--text-primary)]">关联书库中的作品</h3>
-            <div className="max-h-60 overflow-y-auto space-y-2">
-              {books.length === 0 ? (
-                <p className="text-xs text-[var(--text-muted)]">书库暂无作品</p>
-              ) : (
-                books.map((b) => {
-                  const checked = selectedNovelIdsToLink.includes(b.id);
+        <ModalPortal onEscape={() => setIsLinkDialogOpen(false)}>
+          <div
+            onClick={() => setIsLinkDialogOpen(false)}
+            className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 space-y-4 pb-safe shadow-2xl"
+            >
+              <h3 className="text-base font-bold text-[var(--text-primary)]">关联书库中的作品</h3>
+              <div className="max-h-60 overflow-y-auto space-y-2">
+                {books.length === 0 ? (
+                  <p className="text-xs text-[var(--text-muted)]">书库暂无作品</p>
+                ) : (
+                  books.map((b) => {
+                    const checked = selectedNovelIdsToLink.includes(b.id);
+                    return (
+                      <label
+                        key={b.id}
+                        className="flex items-center gap-2.5 p-2.5 rounded-xl border border-[var(--border-subtle)] cursor-pointer text-xs"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setSelectedNovelIdsToLink((prev) =>
+                              checked ? prev.filter((id) => id !== b.id) : [...prev, b.id]
+                            )
+                          }
+                          className="w-4 h-4 accent-[var(--accent)]"
+                        />
+                        <span className="font-medium text-[var(--text-primary)]">《{b.title}》</span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsLinkDialogOpen(false)}
+                  className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmLinkNovels}
+                  className="btn-primary min-h-[42px] px-5 text-xs cursor-pointer"
+                >
+                  保存关联
+                </button>
+              </div>
+            </div>
+          </div>
+        </ModalPortal>
+      )}
+
+      {/* Batch Export Inspirations Modal */}
+      {isDownloadDialogOpen && (
+        <ModalPortal onEscape={() => setIsDownloadDialogOpen(false)}>
+          <div
+            onClick={() => setIsDownloadDialogOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 space-y-4 pb-safe shadow-2xl"
+            >
+              <h3 className="text-base font-bold text-[var(--text-primary)]">选择要导出的灵感大纲</h3>
+              <div className="max-h-60 overflow-y-auto space-y-2">
+                {records.map((r) => {
+                  const checked = selectedDownloadIds.includes(r.id);
                   return (
                     <label
-                      key={b.id}
+                      key={r.id}
                       className="flex items-center gap-2.5 p-2.5 rounded-xl border border-[var(--border-subtle)] cursor-pointer text-xs"
                     >
                       <input
                         type="checkbox"
                         checked={checked}
                         onChange={() =>
-                          setSelectedNovelIdsToLink((prev) =>
-                            checked ? prev.filter((id) => id !== b.id) : [...prev, b.id]
+                          setSelectedDownloadIds((prev) =>
+                            checked ? prev.filter((id) => id !== r.id) : [...prev, r.id]
                           )
                         }
                         className="w-4 h-4 accent-[var(--accent)]"
                       />
-                      <span className="font-medium text-[var(--text-primary)]">《{b.title}》</span>
+                      <span className="truncate text-[var(--text-primary)]">《{r.title}》</span>
                     </label>
                   );
-                })
-              )}
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setIsLinkDialogOpen(false)}
-                className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs"
-              >
-                取消
-              </button>
-              <button type="button" onClick={handleConfirmLinkNovels} className="btn-primary min-h-[42px] px-5 text-xs">
-                保存关联
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Batch Export Inspirations Modal */}
-      {isDownloadDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 space-y-4 pb-safe">
-            <h3 className="text-base font-bold text-[var(--text-primary)]">选择要导出的灵感大纲</h3>
-            <div className="max-h-60 overflow-y-auto space-y-2">
-              {records.map((r) => {
-                const checked = selectedDownloadIds.includes(r.id);
-                return (
-                  <label
-                    key={r.id}
-                    className="flex items-center gap-2.5 p-2.5 rounded-xl border border-[var(--border-subtle)] cursor-pointer text-xs"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() =>
-                        setSelectedDownloadIds((prev) =>
-                          checked ? prev.filter((id) => id !== r.id) : [...prev, r.id]
-                        )
-                      }
-                      className="w-4 h-4 accent-[var(--accent)]"
-                    />
-                    <span className="truncate text-[var(--text-primary)]">《{r.title}》</span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setIsDownloadDialogOpen(false)}
-                className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={selectedDownloadIds.length === 0}
-                onClick={handleConfirmDownloadInspirations}
-                className="btn-primary min-h-[42px] px-5 text-xs disabled:opacity-40"
-              >
-                导出 ({selectedDownloadIds.length})
-              </button>
+                })}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsDownloadDialogOpen(false)}
+                  className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedDownloadIds.length === 0}
+                  onClick={handleConfirmDownloadInspirations}
+                  className="btn-primary min-h-[42px] px-5 text-xs disabled:opacity-40 cursor-pointer"
+                >
+                  导出 ({selectedDownloadIds.length})
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {/* External Platform Share / Blurb AI Analyzer Modal */}
       {isShareImportOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsShareImportOpen(false)}>
+          <div
+            onClick={() => setIsShareImportOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-xl max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <h3 className="text-base font-bold text-[var(--text-primary)]">外部简介与推文看点 AI 拆解</h3>
               <button
@@ -1610,8 +1648,9 @@ ${cardTexts}`;
                 )}
               </div>
             )}
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
     </div>
   );

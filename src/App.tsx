@@ -22,12 +22,14 @@ import { ConfigView } from './components/ConfigView';
 import { OfflineIndicator } from './components/PWAInstallButton';
 import { DramaLibraryView, DramaRadarView } from './components/DramaLibraryAndRadarView';
 import { DramaSetupView, DramaWriterView } from './components/DramaStudioView';
+import { convertCandidateToDramaProject } from './components/DramaCandidateVaultView';
 import {
   PageTransition,
   SNAPPY_EASE,
   MotionButton,
   GlobalMicroLoader,
   WorkspaceSkeleton,
+  ModalPortal,
 } from './components/MotionPrimitives';
 import { ContextMenuProvider, useContextMenu } from './components/ContextMenu';
 import { useGlobalActivity, beginGlobalActivity } from './services/activityTracker';
@@ -44,6 +46,7 @@ import {
   NovelSkill,
   DEFAULT_PRESET_SKILLS,
   DramaProject,
+  DramaCandidatePlan,
   CreativeTrack,
 } from './types';
 import {
@@ -57,6 +60,10 @@ import {
   BUILTIN_CONFIG_ID,
   DEFAULT_BUILTIN_CONFIG,
   getGlobalSkills,
+  getDramaCandidates,
+  saveDramaCandidatesBatch,
+  updateDramaCandidate,
+  deleteDramaCandidate,
 } from './services/db';
 import { generateUUID } from './utils/uuid';
 
@@ -67,7 +74,7 @@ function StudioWorkspace() {
   const routeTimerRef = useRef<number | null>(null);
 
   const globalActivity = useGlobalActivity();
-  const { openContextMenu } = useContextMenu();
+  const { openContextMenu, triggerQuickToast } = useContextMenu();
 
   // Track 1: Personal Free Novel Creation Data
   const [books, setBooks] = useState<Book[]>([]);
@@ -78,6 +85,7 @@ function StudioWorkspace() {
 
   // Track 2: Commercial AI Comic-Drama Script Studio Data (100% XP-Isolated)
   const [dramaProjects, setDramaProjects] = useState<DramaProject[]>([]);
+  const [dramaCandidates, setDramaCandidates] = useState<DramaCandidatePlan[]>([]);
   const [currentDramaProject, setCurrentDramaProject] = useState<DramaProject | null>(null);
   const [currentDramaEpisodeIndex, setCurrentDramaEpisodeIndex] = useState<number>(1);
   const [presetDramaBeat, setPresetDramaBeat] = useState<string>('');
@@ -163,18 +171,27 @@ function StudioWorkspace() {
       await openDB();
       await seedInitialDataIfEmpty();
 
-      const [loadedBooks, loadedDramas, configsWrapper, loadedUi, loadedXp, loadedSkills] =
-        await Promise.all([
-          dbGetAll<Book>(STORE_NAMES.BOOKS),
-          dbGetAll<DramaProject>(STORE_NAMES.DRAMA_PROJECTS),
-          dbGet<{ id: string; data: ApiConfig[] }>(STORE_NAMES.CONFIGS, 'all'),
-          dbGet<UiSettings>(STORE_NAMES.UI_SETTINGS, 'current'),
-          dbGet<{ id: string; content: string }>(STORE_NAMES.XP_PREFERENCES, 'current'),
-          getGlobalSkills(),
-        ]);
+      const [
+        loadedBooks,
+        loadedDramas,
+        loadedCandidates,
+        configsWrapper,
+        loadedUi,
+        loadedXp,
+        loadedSkills,
+      ] = await Promise.all([
+        dbGetAll<Book>(STORE_NAMES.BOOKS),
+        dbGetAll<DramaProject>(STORE_NAMES.DRAMA_PROJECTS),
+        getDramaCandidates(),
+        dbGet<{ id: string; data: ApiConfig[] }>(STORE_NAMES.CONFIGS, 'all'),
+        dbGet<UiSettings>(STORE_NAMES.UI_SETTINGS, 'current'),
+        dbGet<{ id: string; content: string }>(STORE_NAMES.XP_PREFERENCES, 'current'),
+        getGlobalSkills(),
+      ]);
 
       setBooks(loadedBooks);
       setDramaProjects(loadedDramas);
+      setDramaCandidates(loadedCandidates);
       setGlobalSkills(loadedSkills);
 
       if (configsWrapper && Array.isArray(configsWrapper.data)) {
@@ -456,6 +473,39 @@ function StudioWorkspace() {
     setActiveTab('drama-setup');
   };
 
+  const handleAutoArchiveDramaCandidates = async (
+    candidatesToSave: DramaCandidatePlan[],
+    selectedTitle: string
+  ) => {
+    if (!candidatesToSave || candidatesToSave.length === 0) return;
+    const updatedList = await saveDramaCandidatesBatch(candidatesToSave);
+    setDramaCandidates(updatedList);
+    triggerQuickToast(
+      `已选定《${selectedTitle}》立项，其余 ${candidatesToSave.length} 个方案已自动备份至「备选项目计划目录」`
+    );
+  };
+
+  const handlePromoteDramaCandidate = async (candidate: DramaCandidatePlan) => {
+    const newProject = convertCandidateToDramaProject(candidate);
+    await handleSaveDramaProject(newProject);
+    const updatedCandidate: DramaCandidatePlan = {
+      ...candidate,
+      adoptedProjectId: newProject.id,
+      adoptedAt: Date.now(),
+    };
+    const nextCandidates = await updateDramaCandidate(updatedCandidate);
+    setDramaCandidates(nextCandidates);
+    setUiSettings((prev) => ({ ...prev, activeTrack: 'drama' }));
+    setActiveTab('drama-setup');
+    triggerQuickToast(`已将备选方案《${newProject.title}》正式立项，欢迎补充视觉立绘资产`);
+  };
+
+  const handleDeleteDramaCandidate = async (id: string) => {
+    const nextCandidates = await deleteDramaCandidate(id);
+    setDramaCandidates(nextCandidates);
+    triggerQuickToast('已从备选项目计划目录移除');
+  };
+
   const handleEditDramaSetup = (project: DramaProject) => {
     setCurrentDramaProject(project);
     localStorage.setItem('currentDramaId', project.id);
@@ -615,7 +665,7 @@ function StudioWorkspace() {
         }
       />
 
-      <main className="relative z-10 flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 lg:px-8 pt-4 sm:pt-6 pb-24 md:pb-12">
+      <main className="relative flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 lg:px-8 pt-4 sm:pt-6 pb-24 md:pb-12">
         <CreativeRealmSwitcher
           activeTrack={activeTrack}
           onSwitchTrack={handleSwitchCreativeTrack}
@@ -691,11 +741,14 @@ function StudioWorkspace() {
               {activeTab === 'drama-library' && (
                 <DramaLibraryView
                   projects={dramaProjects}
+                  candidates={dramaCandidates}
                   onCreateNewDrama={handleCreateBlankDrama}
                   onGoToRadar={() => setActiveTab('drama-radar')}
                   onEditDramaSetup={handleEditDramaSetup}
                   onOpenDramaWriter={(proj, epIdx) => handleOpenDramaWriter(proj, epIdx)}
                   onDeleteDrama={(proj) => setPendingDeleteDrama(proj)}
+                  onPromoteCandidate={handlePromoteDramaCandidate}
+                  onDeleteCandidate={handleDeleteDramaCandidate}
                 />
               )}
 
@@ -703,7 +756,11 @@ function StudioWorkspace() {
                 <DramaRadarView
                   configs={configs}
                   uiSettings={uiSettings}
+                  candidates={dramaCandidates}
                   onAdoptPitchAsProject={handleAdoptPitchAsDrama}
+                  onAutoArchiveCandidates={handleAutoArchiveDramaCandidates}
+                  onPromoteCandidate={handlePromoteDramaCandidate}
+                  onDeleteCandidate={handleDeleteDramaCandidate}
                 />
               )}
 
@@ -712,10 +769,14 @@ function StudioWorkspace() {
                   currentProject={currentDramaProject}
                   configs={configs}
                   uiSettings={uiSettings}
+                  candidates={dramaCandidates}
                   onSaveProject={handleSaveDramaProject}
                   onStartEpisodeInWriter={(proj, epIdx, beat) =>
                     handleOpenDramaWriter(proj, epIdx, beat)
                   }
+                  onAutoArchiveCandidates={handleAutoArchiveDramaCandidates}
+                  onPromoteCandidate={handlePromoteDramaCandidate}
+                  onDeleteCandidate={handleDeleteDramaCandidate}
                 />
               )}
 
@@ -796,92 +857,100 @@ function StudioWorkspace() {
       />
 
       {/* Safe Delete Book Confirmation Modal */}
-      <AnimatePresence>
-        {pendingDeleteBook && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.16 }}
-            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
-          >
+      {pendingDeleteBook && (
+        <ModalPortal onEscape={() => setPendingDeleteBook(null)}>
+          <AnimatePresence>
             <motion.div
-              initial={{ opacity: 0, y: 18, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.98 }}
-              transition={{ duration: 0.18, ease: SNAPPY_EASE }}
-              className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 shadow-2xl space-y-4 pb-safe"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              onClick={() => setPendingDeleteBook(null)}
+              className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
             >
-              <h3 className="text-base font-bold text-[var(--text-primary)]">
-                确认删除小说《{pendingDeleteBook.title}》？
-              </h3>
-              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                删除后该书的 {pendingDeleteBook.chapters.length} 章正文与历史存档将从本机移除，此操作无法撤销。建议删除前先导出备份。
-              </p>
-              <div className="flex items-center justify-end gap-2 pt-1">
-                <MotionButton
-                  type="button"
-                  onClick={() => setPendingDeleteBook(null)}
-                  className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs font-medium cursor-pointer"
-                >
-                  取消
-                </MotionButton>
-                <MotionButton
-                  type="button"
-                  onClick={confirmDeleteBookExecution}
-                  className="min-h-[42px] px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
-                >
-                  彻底删除
-                </MotionButton>
-              </div>
+              <motion.div
+                initial={{ opacity: 0, y: 18, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                transition={{ duration: 0.18, ease: SNAPPY_EASE }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 shadow-2xl space-y-4 pb-safe"
+              >
+                <h3 className="text-base font-bold text-[var(--text-primary)]">
+                  确认删除小说《{pendingDeleteBook.title}》？
+                </h3>
+                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                  删除后该书的 {pendingDeleteBook.chapters.length} 章正文与历史存档将从本机移除，此操作无法撤销。建议删除前先导出备份。
+                </p>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <MotionButton
+                    type="button"
+                    onClick={() => setPendingDeleteBook(null)}
+                    className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs font-medium cursor-pointer"
+                  >
+                    取消
+                  </MotionButton>
+                  <MotionButton
+                    type="button"
+                    onClick={confirmDeleteBookExecution}
+                    className="min-h-[42px] px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    彻底删除
+                  </MotionButton>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </AnimatePresence>
+        </ModalPortal>
+      )}
 
       {/* Safe Delete Drama Project Confirmation Modal */}
-      <AnimatePresence>
-        {pendingDeleteDrama && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.16 }}
-            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
-          >
+      {pendingDeleteDrama && (
+        <ModalPortal onEscape={() => setPendingDeleteDrama(null)}>
+          <AnimatePresence>
             <motion.div
-              initial={{ opacity: 0, y: 18, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.98 }}
-              transition={{ duration: 0.18, ease: SNAPPY_EASE }}
-              className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 shadow-2xl space-y-4 pb-safe"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              onClick={() => setPendingDeleteDrama(null)}
+              className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
             >
-              <h3 className="text-base font-bold text-[var(--text-primary)]">
-                确认删除漫剧项目《{pendingDeleteDrama.title}》？
-              </h3>
-              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                删除后该剧目的 {pendingDeleteDrama.episodes.length} 集甲方剧本与后期分镜资产将从本机移除，此操作无法撤销。
-              </p>
-              <div className="flex items-center justify-end gap-2 pt-1">
-                <MotionButton
-                  type="button"
-                  onClick={() => setPendingDeleteDrama(null)}
-                  className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs font-medium cursor-pointer"
-                >
-                  取消
-                </MotionButton>
-                <MotionButton
-                  type="button"
-                  onClick={confirmDeleteDramaExecution}
-                  className="min-h-[42px] px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
-                >
-                  彻底删除
-                </MotionButton>
-              </div>
+              <motion.div
+                initial={{ opacity: 0, y: 18, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                transition={{ duration: 0.18, ease: SNAPPY_EASE }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-6 shadow-2xl space-y-4 pb-safe"
+              >
+                <h3 className="text-base font-bold text-[var(--text-primary)]">
+                  确认删除漫剧项目《{pendingDeleteDrama.title}》？
+                </h3>
+                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                  删除后该剧目的 {pendingDeleteDrama.episodes.length} 集甲方剧本与后期分镜资产将从本机移除，此操作无法撤销。
+                </p>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <MotionButton
+                    type="button"
+                    onClick={() => setPendingDeleteDrama(null)}
+                    className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs font-medium cursor-pointer"
+                  >
+                    取消
+                  </MotionButton>
+                  <MotionButton
+                    type="button"
+                    onClick={confirmDeleteDramaExecution}
+                    className="min-h-[42px] px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    彻底删除
+                  </MotionButton>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </AnimatePresence>
+        </ModalPortal>
+      )}
     </div>
   );
 }

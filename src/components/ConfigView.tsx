@@ -54,7 +54,7 @@ import {
 } from '../services/skillPackageParser';
 import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
 import { PWAInstallButton } from './PWAInstallButton';
-import { SPRING_INDICATOR, MotionButton, StaggerCard, StaggerList, StaggerItem } from './MotionPrimitives';
+import { SPRING_INDICATOR, MotionButton, StaggerCard, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 
 interface ConfigViewProps {
@@ -1486,8 +1486,15 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
 
       {/* SKILL 2.0 Edit/Create Modal */}
       {isSkillModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+        <ModalPortal onEscape={() => setIsSkillModalOpen(false)}>
+          <div
+            onClick={() => setIsSkillModalOpen(false)}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-lg max-h-[88dvh] sm:max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe"
+            >
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
               <h3 className="text-base font-bold text-[var(--text-primary)]">
                 {editingSkill ? '修改全局 SKILL 2.0 规范' : '新建全局 SKILL 2.0 规范'}
@@ -1650,8 +1657,9 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                 保存技能
               </button>
             </div>
+            </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {inspectingSkill && (

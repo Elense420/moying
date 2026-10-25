@@ -7,6 +7,7 @@ import React, {
   useCallback,
   useLayoutEffect,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Check } from 'lucide-react';
 import { SNAPPY_EASE } from './MotionPrimitives';
@@ -33,8 +34,8 @@ interface ContextMenuState {
 interface ContextMenuContextValue {
   openContextMenu: (
     e: React.MouseEvent,
-    items: ContextMenuItem[],
-    title?: string
+    itemsOrTitle: ContextMenuItem[] | string,
+    titleOrItems?: string | ContextMenuItem[]
   ) => void;
   closeContextMenu: () => void;
   triggerQuickToast: (message: string) => void;
@@ -73,11 +74,26 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     toastTimerRef.current = window.setTimeout(() => {
       setQuickToast(null);
-    }, 1800);
+    }, 2400);
   }, []);
 
   const openContextMenu = useCallback(
-    (e: React.MouseEvent, items: ContextMenuItem[], title?: string) => {
+    (
+      e: React.MouseEvent,
+      itemsOrTitle: ContextMenuItem[] | string,
+      titleOrItems?: string | ContextMenuItem[]
+    ) => {
+      const items = Array.isArray(itemsOrTitle)
+        ? itemsOrTitle
+        : Array.isArray(titleOrItems)
+        ? titleOrItems
+        : [];
+      const title =
+        typeof itemsOrTitle === 'string'
+          ? itemsOrTitle
+          : typeof titleOrItems === 'string'
+          ? titleOrItems
+          : undefined;
       if (!items || items.length === 0) return;
       e.preventDefault();
       e.stopPropagation();
@@ -135,12 +151,8 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, [menuState.isOpen, closeContextMenu]);
 
-  return (
-    <ContextMenuContext.Provider
-      value={{ openContextMenu, closeContextMenu, triggerQuickToast }}
-    >
-      {children}
-
+  const overlayNodes = (
+    <>
       {/* Floating Right-Click Context Menu */}
       <AnimatePresence>
         {menuState.isOpen && (
@@ -165,7 +177,7 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({
             }
             transition={{ duration: 0.14, ease: SNAPPY_EASE }}
             onContextMenu={(e) => e.preventDefault()}
-            className="context-menu-floating fixed z-[70] min-w-[208px] max-w-[268px] rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]/96 backdrop-blur-md p-1.5 shadow-2xl select-none"
+            className="context-menu-floating fixed z-[140] min-w-[208px] max-w-[268px] rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]/96 backdrop-blur-md p-1.5 shadow-2xl select-none"
           >
             {menuState.title && (
               <div className="px-2.5 py-1.5 mb-1 border-b border-[var(--border-subtle)] text-[11px] font-semibold text-[var(--text-muted)] truncate">
@@ -231,13 +243,23 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.96 }}
             transition={{ duration: 0.16, ease: SNAPPY_EASE }}
-            className="fixed bottom-20 md:bottom-6 right-4 sm:right-6 z-[75] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]/95 backdrop-blur-md shadow-lg flex items-center gap-2 text-xs font-medium text-[var(--text-primary)] pointer-events-none"
+            className="fixed bottom-20 md:bottom-6 right-4 sm:right-6 z-[145] max-w-[90vw] sm:max-w-md px-3.5 py-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]/96 backdrop-blur-md shadow-xl flex items-center gap-2 text-xs font-medium text-[var(--text-primary)] pointer-events-none"
           >
             <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <span>{quickToast}</span>
+            <span className="leading-snug">{quickToast}</span>
           </motion.div>
         )}
       </AnimatePresence>
+    </>
+  );
+
+  return (
+    <ContextMenuContext.Provider
+      value={{ openContextMenu, closeContextMenu, triggerQuickToast }}
+    >
+      {children}
+      {typeof document !== 'undefined' ? createPortal(overlayNodes, document.body) : overlayNodes}
     </ContextMenuContext.Provider>
   );
 };
+

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, ChevronDown, ChevronUp, Feather, Download, Trash2, BookOpen, Copy } from 'lucide-react';
 import { Book, Chapter, ArchivedChapter, Summary } from '../types';
 import JSZip from 'jszip';
-import { MotionButton, StaggerList, StaggerItem } from './MotionPrimitives';
+import { MotionButton, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 
 interface BookDetailModalProps {
@@ -77,10 +77,17 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const totalWords = (book.chapters || []).reduce((acc, ch) => acc + (ch.text?.length || 0), 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-xs">
-      <div className="studio-card w-full sm:max-w-3xl max-h-[90vh] rounded-t-3xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl pb-safe">
-        {/* Header */}
-        <div className="px-5 py-4 sm:px-6 border-b border-[var(--border-subtle)] flex items-start justify-between gap-3">
+    <ModalPortal onEscape={onClose}>
+      <div
+        onClick={onClose}
+        className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 pt-safe bg-black/55 backdrop-blur-xs"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="studio-card w-full sm:max-w-3xl max-h-[88dvh] sm:max-h-[88vh] rounded-t-3xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl pb-safe"
+        >
+          {/* Header */}
+          <div className="px-5 py-4 sm:px-6 border-b border-[var(--border-subtle)] flex items-start justify-between gap-3 shrink-0">
           <div className="min-w-0">
             <h2 className="text-lg sm:text-xl font-bold text-[var(--text-primary)] truncate font-editorial-serif">
               《{book.title}》
@@ -342,6 +349,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </ModalPortal>
   );
 };

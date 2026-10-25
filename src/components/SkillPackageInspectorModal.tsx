@@ -14,6 +14,7 @@ import {
 import { NovelSkill, SkillReferenceDoc, SkillScope } from '../types';
 import { exportSingleSkillPackage } from '../services/skillPackageParser';
 import { serializeSkillToMarkdown } from '../services/promptEngine';
+import { ModalPortal } from './MotionPrimitives';
 
 interface SkillPackageInspectorModalProps {
   skill: NovelSkill | null;
@@ -107,8 +108,15 @@ export const SkillPackageInspectorModal: React.FC<SkillPackageInspectorModalProp
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4">
-      <div className="w-full sm:max-w-4xl max-h-[90vh] flex flex-col rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden pb-safe">
+    <ModalPortal onEscape={onClose}>
+      <div
+        onClick={onClose}
+        className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4 pt-safe"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="w-full sm:max-w-4xl max-h-[88dvh] sm:max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden pb-safe"
+        >
         {/* Header */}
         <div className="px-5 py-4 sm:px-6 border-b border-[var(--border-subtle)] flex items-start justify-between gap-4 shrink-0">
           <div className="space-y-1 min-w-0">
@@ -456,7 +464,8 @@ export const SkillPackageInspectorModal: React.FC<SkillPackageInspectorModalProp
             </div>
           )}
         </div>
+        </div>
       </div>
-    </div>
+    </ModalPortal>
   );
 };

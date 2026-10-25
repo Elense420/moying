@@ -1,8 +1,51 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion, HTMLMotionProps } from 'motion/react';
 import { Loader2 } from 'lucide-react';
 
 export const SNAPPY_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
+
+let activeModalScrollLocks = 0;
+
+/**
+ * Portals modals and fullscreen overlays directly to document.body so they escape
+ * any parent transform / stacking-context traps (such as PageTransition or StaggerCard),
+ * guaranteeing zero occlusion from TopNavbar or MobileBottomNav.
+ */
+export const ModalPortal: React.FC<{
+  children: React.ReactNode;
+  onEscape?: () => void;
+  lockScroll?: boolean;
+}> = ({ children, onEscape, lockScroll = true }) => {
+  useEffect(() => {
+    if (!lockScroll || typeof document === 'undefined') return;
+    activeModalScrollLocks += 1;
+    const prevOverflow = document.body.style.overflow;
+    if (activeModalScrollLocks === 1) {
+      document.body.style.overflow = 'hidden';
+    }
+    return () => {
+      activeModalScrollLocks = Math.max(0, activeModalScrollLocks - 1);
+      if (activeModalScrollLocks === 0) {
+        document.body.style.overflow = prevOverflow === 'hidden' ? '' : prevOverflow;
+      }
+    };
+  }, [lockScroll]);
+
+  useEffect(() => {
+    if (!onEscape || typeof window === 'undefined') return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onEscape();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onEscape]);
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(children, document.body);
+};
 
 export const SPRING_INDICATOR = {
   type: 'spring' as const,

@@ -16,10 +16,12 @@ import {
   Compass,
   Copy,
   MessageSquarePlus,
+  FolderArchive,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import {
   DramaProject,
+  DramaCandidatePlan,
   HOT_DRAMA_TRACKS,
   DramaTrackPreset,
   ApiConfig,
@@ -43,25 +45,33 @@ import {
 } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 import { DramaIdeaConsultant } from './DramaIdeaConsultant';
+import { DramaCandidateVaultSection } from './DramaCandidateVaultView';
 
 interface DramaLibraryViewProps {
   projects: DramaProject[];
+  candidates: DramaCandidatePlan[];
   onCreateNewDrama: () => void;
   onGoToRadar: () => void;
   onEditDramaSetup: (project: DramaProject) => void;
   onOpenDramaWriter: (project: DramaProject, episodeIdx?: number) => void;
   onDeleteDrama: (project: DramaProject) => void;
+  onPromoteCandidate: (candidate: DramaCandidatePlan) => void;
+  onDeleteCandidate: (id: string) => void;
 }
 
 export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
   projects,
+  candidates,
   onCreateNewDrama,
   onGoToRadar,
   onEditDramaSetup,
   onOpenDramaWriter,
   onDeleteDrama,
+  onPromoteCandidate,
+  onDeleteCandidate,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
+  const [librarySection, setLibrarySection] = useState<'active' | 'candidates'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedChannel, setSelectedChannel] = useState<string>('全部');
 
@@ -151,17 +161,21 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
             <span>
               已拆解分镜 <AnimatedNumber value={totalShots} className="font-semibold text-[var(--text-primary)]" /> 镜
             </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              备选计划储备 <AnimatedNumber value={candidates.length} className="font-semibold text-[var(--text-primary)]" /> 套
+            </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <MotionButton
             type="button"
             onClick={onGoToRadar}
             className="min-h-[44px] px-4 py-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
           >
             <Compass className="w-4 h-4 text-[var(--accent)]" />
-            <span>热门赛道选品</span>
+            <span>赛道与立项探讨</span>
           </MotionButton>
           <MotionButton
             type="button"
@@ -174,7 +188,59 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
         </div>
       </section>
 
-      {/* Filter & Search Bar */}
+      {/* Directory Folder Switcher: Active Dramas vs Archived Candidate Plans */}
+      <div className="inline-flex items-center gap-1.5 p-1 studio-muted overflow-x-auto no-scrollbar max-w-full">
+        <button
+          type="button"
+          onClick={() => setLibrarySection('active')}
+          className={`relative min-h-[40px] px-4 py-2 rounded-xl text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors tabular-nums ${
+            librarySection === 'active'
+              ? 'text-[var(--text-primary)] font-semibold'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          {librarySection === 'active' && (
+            <motion.span
+              layoutId="drama-lib-folder-pill"
+              transition={SPRING_INDICATOR}
+              className="absolute inset-0 bg-[var(--bg-surface)] rounded-xl shadow-2xs"
+            />
+          )}
+          <Clapperboard className="w-4 h-4 text-[var(--accent)] relative z-10" />
+          <span className="relative z-10">正式立项剧目 ({projects.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setLibrarySection('candidates')}
+          className={`relative min-h-[40px] px-4 py-2 rounded-xl text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors tabular-nums ${
+            librarySection === 'candidates'
+              ? 'text-[var(--text-primary)] font-semibold'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          {librarySection === 'candidates' && (
+            <motion.span
+              layoutId="drama-lib-folder-pill"
+              transition={SPRING_INDICATOR}
+              className="absolute inset-0 bg-[var(--bg-surface)] rounded-xl shadow-2xs"
+            />
+          )}
+          <FolderArchive className="w-4 h-4 text-[var(--accent)] relative z-10" />
+          <span className="relative z-10">备选项目计划目录 ({candidates.length})</span>
+        </button>
+      </div>
+
+      {librarySection === 'candidates' ? (
+        <DramaCandidateVaultSection
+          candidates={candidates}
+          onPromoteCandidate={onPromoteCandidate}
+          onDeleteCandidate={onDeleteCandidate}
+          onGoToConsultant={onGoToRadar}
+        />
+      ) : (
+        <>
+          {/* Filter & Search Bar */}
       <section className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-1 p-1 studio-muted overflow-x-auto no-scrollbar">
           {channels.map((ch) => {
@@ -346,13 +412,17 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
 
                     {/* Production Telemetry Metrics (Tabular Numerals) */}
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-muted)] tabular-nums pt-0.5">
+                      <span>单集 {project.episodeDurationSec || 90} 秒</span>
+                      <span aria-hidden="true">·</span>
+                      <span>细纲 {project.episodePlan?.length || 0} 集</span>
+                      <span aria-hidden="true">·</span>
                       <span>已出 {epCount}/{project.totalPlannedEpisodes} 集</span>
                       <span aria-hidden="true">·</span>
                       <span>已拆 {shotCount} 镜</span>
                       <span aria-hidden="true">·</span>
                       <span>立绘锁死 {charCount} 角色</span>
                       <span aria-hidden="true">·</span>
-                      <span>第 {project.paywallEpisodeIndex} 集付费卡点</span>
+                      <span>第 {project.paywallEpisodeIndex} 集付费点</span>
                     </div>
                   </div>
 
@@ -415,6 +485,8 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
           })}
         </div>
       )}
+        </>
+      )}
     </div>
   );
 };
@@ -426,16 +498,24 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
 interface DramaRadarViewProps {
   configs: ApiConfig[];
   uiSettings: UiSettings;
+  candidates: DramaCandidatePlan[];
   onAdoptPitchAsProject: (newProject: DramaProject) => void;
+  onAutoArchiveCandidates: (candidates: DramaCandidatePlan[], selectedTitle: string) => void;
+  onPromoteCandidate: (candidate: DramaCandidatePlan) => void;
+  onDeleteCandidate: (id: string) => void;
 }
 
 export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
   configs,
   uiSettings,
+  candidates,
   onAdoptPitchAsProject,
+  onAutoArchiveCandidates,
+  onPromoteCandidate,
+  onDeleteCandidate,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
-  const [radarTab, setRadarTab] = useState<'consultant' | 'tracks'>('consultant');
+  const [radarTab, setRadarTab] = useState<'consultant' | 'tracks' | 'candidates'>('consultant');
   const [selectedTrack, setSelectedTrack] = useState<DramaTrackPreset>(HOT_DRAMA_TRACKS[0]);
   const [customSpark, setCustomSpark] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -500,8 +580,42 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
     }
   };
 
-  const handleCreateFromProposal = (pitch: DramaPitchProposal) => {
+  const handleCreateFromProposal = (pitch: DramaPitchProposal, selectedIndex: number) => {
     const now = Date.now();
+
+    // Auto-archive the remaining 2 unselected proposals into Candidate Project Plans Directory
+    if (proposals.length > 1) {
+      const unselected = proposals
+        .filter((_, idx) => idx !== selectedIndex)
+        .map((sib, idx): DramaCandidatePlan => ({
+          id: generateUUID(),
+          createdAt: now + idx,
+          sourceType: 'track-radar',
+          userPromptOrSpark: customSpark.trim()
+            ? `赛道「${selectedTrack.name}」 · 微创新：${customSpark.trim()}`
+            : `赛道「${selectedTrack.name}」当季爆款三连孵化`,
+          marketTrendAnalysis: `目标赛道：${selectedTrack.channel} · ${selectedTrack.name}（${selectedTrack.heatLabel}）\n爽点内核：${selectedTrack.coreEmotion}`,
+          selectedSiblingTitle: pitch.title,
+          directionTag: `赛道孵化备选 0${idx + 1}`,
+          title: sib.title,
+          trackId: selectedTrack.id,
+          trackName: selectedTrack.name,
+          channel: selectedTrack.channel,
+          visualStyle: selectedTrack.visualStyleRecommend,
+          aspectRatio: '9:16 竖屏短剧',
+          episodeDurationSec: 90,
+          paywallEpisodeIndex: sib.paywallEpisodeIndex || 10,
+          logline: sib.logline,
+          targetAudience: sib.targetAudience || selectedTrack.targetAudience,
+          golden3SecHook: sib.golden3SecHook,
+          synopsis: sib.synopsis,
+          seedCharacters: [],
+        }));
+      if (unselected.length > 0) {
+        onAutoArchiveCandidates(unselected, pitch.title);
+      }
+    }
+
     const newProject: DramaProject = {
       id: generateUUID(),
       title: pitch.title,
@@ -513,6 +627,7 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
       visualStyle: selectedTrack.visualStyleRecommend,
       aspectRatio: '9:16 竖屏短剧',
       preferredScriptFormat: 'triangle_standard',
+      episodeDurationSec: 90,
       totalPlannedEpisodes: 40,
       paywallEpisodeIndex: pitch.paywallEpisodeIndex || 10,
       logline: pitch.logline,
@@ -583,16 +698,43 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
             <Flame className="w-4 h-4 text-[var(--accent)] relative z-10" />
             <span className="relative z-10 tabular-nums">热门赛道公式雷达 ({HOT_DRAMA_TRACKS.length})</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setRadarTab('candidates')}
+            className={`relative min-h-[40px] px-4 py-2 rounded-xl text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors tabular-nums ${
+              radarTab === 'candidates'
+                ? 'text-[var(--text-primary)] font-semibold'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {radarTab === 'candidates' && (
+              <motion.span
+                layoutId="drama-radar-mode-pill"
+                transition={SPRING_INDICATOR}
+                className="absolute inset-0 bg-[var(--bg-surface)] rounded-xl shadow-2xs"
+              />
+            )}
+            <FolderArchive className="w-4 h-4 text-[var(--accent)] relative z-10" />
+            <span className="relative z-10">备选项目计划目录 ({candidates.length})</span>
+          </button>
         </div>
       </section>
 
-      {radarTab === 'consultant' ? (
+      {radarTab === 'candidates' ? (
+        <DramaCandidateVaultSection
+          candidates={candidates}
+          onPromoteCandidate={onPromoteCandidate}
+          onDeleteCandidate={onDeleteCandidate}
+          onGoToConsultant={() => setRadarTab('consultant')}
+        />
+      ) : radarTab === 'consultant' ? (
         <DramaIdeaConsultant
           configs={configs}
           uiSettings={uiSettings}
           mode="radar"
+          onAutoArchiveCandidates={onAutoArchiveCandidates}
           onConfirmOption={(newProj) => {
-            triggerQuickToast(`已确认《${newProj.title}》方案，正在进入正式立项台...`);
             onAdoptPitchAsProject(newProj);
           }}
         />
@@ -758,9 +900,14 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
         {/* 3 Generated Commercial Proposals */}
         {proposals.length > 0 && (
           <div className="pt-3 space-y-3">
-            <h3 className="text-sm font-bold text-[var(--text-primary)]">
-              已为您生成 {proposals.length} 套「{selectedTrack.name}」商业立项企划：
-            </h3>
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                已为您生成 {proposals.length} 套「{selectedTrack.name}」商业立项企划：
+              </h3>
+              <p className="text-[11px] text-[var(--text-muted)]">
+                采纳其中 1 套进入立项后，另外 2 套建议将自动归档至「备选项目计划目录」供后续随时回顾与立项。
+              </p>
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               {proposals.map((prop, index) => (
                 <StaggerCard
@@ -774,7 +921,7 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
                           id: 'prop-adopt',
                           label: '采纳立项并提取角色立绘词',
                           icon: <ArrowRight className="w-3.5 h-3.5" />,
-                          onSelect: () => handleCreateFromProposal(prop),
+                          onSelect: () => handleCreateFromProposal(prop, index),
                         },
                         {
                           id: 'prop-copy',
@@ -818,7 +965,7 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
 
                     <MotionButton
                       type="button"
-                      onClick={() => handleCreateFromProposal(prop)}
+                      onClick={() => handleCreateFromProposal(prop, index)}
                       className="btn-primary w-full min-h-[42px] px-4 py-2 text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <span>采纳立项并提取角色立绘词</span>

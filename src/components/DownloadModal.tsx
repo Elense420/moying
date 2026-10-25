@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Download, FileText, Archive, Globe, BookOpen } from 'lucide-react';
 import { Book } from '../types';
 import JSZip from 'jszip';
+import { ModalPortal } from './MotionPrimitives';
 
 interface DownloadModalProps {
   book: Book | null;
@@ -191,22 +192,29 @@ p { text-indent: 2em; margin: 0.65em 0; text-align: justify; }`
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-xs">
-      <div className="studio-card w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl pb-safe">
-        <div className="px-5 py-4 border-b border-[var(--border-subtle)] flex items-center justify-between">
-          <h3 className="font-semibold text-[var(--text-primary)] text-base truncate pr-3">
-            导出作品《{book.title}》
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--bg-muted)] cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+    <ModalPortal onEscape={onClose}>
+      <div
+        onClick={onClose}
+        className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center p-0 sm:p-4 pt-safe bg-black/55 backdrop-blur-xs"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="studio-card w-full sm:max-w-md max-h-[88dvh] sm:max-h-[88vh] rounded-t-3xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl pb-safe"
+        >
+          <div className="px-5 py-4 border-b border-[var(--border-subtle)] flex items-center justify-between shrink-0">
+            <h3 className="font-semibold text-[var(--text-primary)] text-base truncate pr-3">
+              导出作品《{book.title}》
+            </h3>
+            <button
+              type="button"
+              onClick={onClose}
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--bg-muted)] cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
 
-        <div className="p-5 space-y-2.5">
+          <div className="p-5 space-y-2.5 overflow-y-auto flex-1">
           {[
             {
               id: 'epub',
@@ -256,24 +264,25 @@ p { text-indent: 2em; margin: 0.65em 0; text-align: justify; }`
           })}
         </div>
 
-        <div className="px-5 py-4 border-t border-[var(--border-subtle)] flex justify-end gap-2.5">
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-[44px] px-4 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-muted)] cursor-pointer"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={handleDownload}
-            className="btn-primary min-h-[44px] px-5 py-2 text-xs flex items-center gap-2 cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            <span>立即导出</span>
-          </button>
+          <div className="px-5 py-4 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] flex justify-end gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={onClose}
+              className="min-h-[44px] px-4 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-muted)] cursor-pointer"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="btn-primary min-h-[44px] px-5 py-2 text-xs flex items-center gap-2 cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>立即导出</span>
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </ModalPortal>
   );
 };
