@@ -19,6 +19,7 @@ import {
   FileText,
   Feather,
   Copy,
+  FolderTree,
 } from 'lucide-react';
 import { generateUUID } from '../utils/uuid';
 import {
@@ -33,6 +34,7 @@ import {
   NovelSkill,
   SkillScope,
   SkillCategory,
+  SkillRuleTier,
 } from '../types';
 import {
   dbPut,
@@ -48,8 +50,13 @@ import {
   resolveBookSkills,
   buildUnifiedSystemPrompt,
   serializeSkillToMarkdown,
-  parseSkillMarkdown,
 } from '../services/promptEngine';
+import {
+  importSkillFilesUniversal,
+  exportSingleSkillPackage,
+  readFileTextSmart,
+} from '../services/skillPackageParser';
+import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
 import { MotionButton, StaggerCard } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 
@@ -140,6 +147,8 @@ export const SetupView: React.FC<SetupViewProps> = ({
   const [skillTriggerMode, setSkillTriggerMode] = useState<'always' | 'keyword'>('always');
   const [skillKeywordsInput, setSkillKeywordsInput] = useState('');
   const [skillPriority, setSkillPriority] = useState<'high' | 'normal'>('normal');
+  const [skillRuleTier, setSkillRuleTier] = useState<SkillRuleTier>('contract');
+  const [inspectingSkill, setInspectingSkill] = useState<NovelSkill | null>(null);
   const [isGeneratingSkillPrompt, setIsGeneratingSkillPrompt] = useState(false);
   const [confirmResetSkills, setConfirmResetSkills] = useState(false);
 
@@ -347,6 +356,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
     setSkillTriggerMode('always');
     setSkillKeywordsInput('');
     setSkillPriority('normal');
+    setSkillRuleTier('contract');
     setIsSkillModalOpen(true);
   };
 
@@ -360,6 +370,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
     setSkillTriggerMode(skill.triggerMode || 'always');
     setSkillKeywordsInput((skill.keywords || []).join(', '));
     setSkillPriority(skill.priority || 'normal');
+    setSkillRuleTier(skill.ruleTier || 'contract');
     setIsSkillModalOpen(true);
   };
 
@@ -371,10 +382,12 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
     const finalScopes: SkillScope[] = skillScopes.length > 0 ? skillScopes : ['chapter'];
     const targetSkill: NovelSkill = {
+      ...(editingSkill || {}),
       id: editingSkill ? editingSkill.id : `skill-custom-${generateUUID()}`,
       name: skillName.trim(),
       description: skillDesc.trim() || skillName.trim(),
       promptInstruction: skillInstruction.trim(),
+      ruleTier: skillRuleTier,
       category: skillCategory,
       scopes: finalScopes,
       triggerMode: skillTriggerMode,
@@ -382,6 +395,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
       priority: skillPriority,
       enabled: editingSkill ? editingSkill.enabled : true,
       isPreset: editingSkill ? editingSkill.isPreset : false,
+      packageType: editingSkill?.packageType || 'single-md',
     };
 
     await saveGlobalSkill(targetSkill);
@@ -411,13 +425,12 @@ export const SetupView: React.FC<SetupViewProps> = ({
     notify('已恢复标准 SKILL 2.0 预设技能库', 'success');
   };
 
-  const handleExportSingleSkillMd = (skill: NovelSkill) => {
-    const md = serializeSkillToMarkdown(skill);
-    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+  const handleExportSingleSkillMd = async (skill: NovelSkill) => {
+    const { blob, filename } = await exportSingleSkillPackage(skill, serializeSkillToMarkdown);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${skill.name.replace(/[\\/:*?"<>|]/g, '_')}.SKILL.md`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -426,17 +439,21 @@ export const SetupView: React.FC<SetupViewProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    let importedCount = 0;
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const content = await file.text();
-      const parsedSkill = parseSkillMarkdown(content, file.name);
-      await saveGlobalSkill(parsedSkill);
-      importedCount++;
+    try {
+      const { skills: importedList, summary } = await importSkillFilesUniversal(files);
+      for (const parsedSkill of importedList) {
+        await saveGlobalSkill(parsedSkill);
+      }
+      await onRefreshGlobalSkills();
+      notify(summary, 'success');
+      if (importedList.length === 1 && importedList[0].packageType === 'zip-package') {
+        setInspectingSkill(importedList[0]);
+      }
+    } catch (err: any) {
+      notify(`导入技能包失败：${err.message || '请确认文件为 .zip 或 .md 格式'}`, 'error');
+    } finally {
+      e.target.value = '';
     }
-    await onRefreshGlobalSkills();
-    e.target.value = '';
-    notify(`已按标准 SKILL.md 规范导入 ${importedCount} 项技能`, 'success');
   };
 
   const handleGenerateSkillInstructionWithAI = async () => {
@@ -697,17 +714,19 @@ export const SetupView: React.FC<SetupViewProps> = ({
     }
   };
 
-  // Style & History Handlers
-  const handleStyleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Style & History Handlers (Smart UTF-8 / GB18030 decoding to eliminate Chinese txt mojibake)
+  const handleStyleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setStyleReference((event.target?.result as string) || '');
-      notify(`已载入文风参考文件：${file.name}`, 'success');
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+    try {
+      const decoded = await readFileTextSmart(file);
+      setStyleReference(decoded);
+      notify(`已无损载入文风参考文件：${file.name}`, 'success');
+    } catch {
+      notify('读取文风文件失败，请确认文件为纯文本格式', 'error');
+    } finally {
+      e.target.value = '';
+    }
   };
 
   const handleSaveStyleSnapshot = async () => {
@@ -1277,17 +1296,17 @@ export const SetupView: React.FC<SetupViewProps> = ({
                 SKILL 2.0 规范化写作技能挂载
               </h2>
               <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-                每项 SKILL 均明确声明作用阶段（大纲构思 / 章节正文 / 走向重掷 / 段落精修）与触发条件，兼容标准 YAML 头部的 <code className="font-mono">SKILL.md</code> 文件导入导出。
+                兼容完整多文件 <code className="font-mono">.zip</code> 工程包（含 <code className="font-mono">SKILL.md</code> + <code className="font-mono">references/</code> 按需渐进路由）及单文件 <code className="font-mono">.md</code>，自动识别 UTF-8 / GB18030 编码杜绝乱码。
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <label className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer">
                 <Upload className="w-3.5 h-3.5" />
-                <span>导入 SKILL.md</span>
+                <span>导入 SKILL (.zip / .md)</span>
                 <input
                   type="file"
-                  accept=".md,.txt"
+                  accept=".zip,.md,.txt"
                   multiple
                   onChange={handleImportSkillMdFiles}
                   className="hidden"
@@ -1341,6 +1360,8 @@ export const SetupView: React.FC<SetupViewProps> = ({
                 skill.triggerMode === 'keyword'
                   ? `关键词触发 (${(skill.keywords || []).slice(0, 4).join('、')}${(skill.keywords || []).length > 4 ? '…' : ''})`
                   : '常驻激活';
+              const refCount = skill.references?.length || 0;
+              const isZipPkg = skill.packageType === 'zip-package' || refCount > 0;
 
               return (
                 <StaggerCard
@@ -1355,6 +1376,14 @@ export const SetupView: React.FC<SetupViewProps> = ({
                         onSelect: () => handleToggleSkill(skill.id),
                       },
                       {
+                        id: 'inspect-pkg',
+                        label: isZipPkg
+                          ? `检视工程包与参考路由 (${refCount} 份文档)`
+                          : '检视 SKILL 结构与契约详情',
+                        icon: <FolderTree className="w-3.5 h-3.5" />,
+                        onSelect: () => setInspectingSkill(skill),
+                      },
+                      {
                         id: 'edit-skill',
                         label: '编辑 SKILL 指令与触发范围',
                         icon: <Edit3 className="w-3.5 h-3.5" />,
@@ -1362,7 +1391,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
                       },
                       {
                         id: 'export-md',
-                        label: '导出标准 SKILL.md',
+                        label: isZipPkg ? '导出完整 .skill.zip 工程包' : '导出标准 SKILL.md',
                         icon: <Download className="w-3.5 h-3.5" />,
                         onSelect: () => handleExportSingleSkillMd(skill),
                       },
@@ -1402,15 +1431,29 @@ export const SetupView: React.FC<SetupViewProps> = ({
                         />
                         <span className="font-semibold text-sm text-[var(--text-primary)] truncate">
                           {skill.name}
+                          {skill.version && (
+                            <span className="ml-1.5 font-mono text-[11px] font-normal text-[var(--text-muted)]">
+                              v{skill.version}
+                            </span>
+                          )}
                         </span>
                       </label>
 
                       <div className="flex items-center gap-1 shrink-0">
                         <MotionButton
                           type="button"
+                          onClick={() => setInspectingSkill(skill)}
+                          className="min-h-[36px] px-2 flex items-center justify-center gap-1 rounded-lg text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-muted)]"
+                          title="检视技能包结构与参考文档按需路由"
+                        >
+                          <FolderTree className="w-3.5 h-3.5" />
+                          {refCount > 0 && <span className="tabular-nums">{refCount}</span>}
+                        </MotionButton>
+                        <MotionButton
+                          type="button"
                           onClick={() => handleExportSingleSkillMd(skill)}
                           className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-muted)]"
-                          title="导出为标准 SKILL.md"
+                          title={isZipPkg ? '导出 .skill.zip 工程包' : '导出为标准 SKILL.md'}
                         >
                           <Download className="w-3.5 h-3.5" />
                         </MotionButton>
@@ -1434,10 +1477,12 @@ export const SetupView: React.FC<SetupViewProps> = ({
                     </div>
 
                     <p className="text-[11px] text-[var(--text-muted)]">
-                      {CATEGORY_LABELS[skill.category || 'custom']} · {skill.priority === 'high' ? '核心高权重' : '常规权重'} · {scopes} · {triggerDesc}
+                      {isZipPkg ? `ZIP工程包 (${refCount}参考路由)` : '单文件MD'} ·{' '}
+                      {skill.ruleTier === 'advisory' ? '质量建议' : '结构契约'} ·{' '}
+                      {CATEGORY_LABELS[skill.category || 'custom']} · {scopes} · {triggerDesc}
                     </p>
 
-                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed line-clamp-2">
                       {skill.description}
                     </p>
                   </div>
@@ -1843,6 +1888,18 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">规则层级</label>
+                  <select
+                    value={skillRuleTier}
+                    onChange={(e) => setSkillRuleTier(e.target.value as SkillRuleTier)}
+                    className="studio-input w-full px-3 py-2.5 text-xs"
+                  >
+                    <option value="contract">结构契约 (Contract · 硬性必守)</option>
+                    <option value="advisory">质量建议 (Advisory · 弹性校准)</option>
+                  </select>
+                </div>
+
+                <div>
                   <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">触发模式</label>
                   <select
                     value={skillTriggerMode}
@@ -1855,7 +1912,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
                 </div>
 
                 {skillTriggerMode === 'keyword' && (
-                  <div>
+                  <div className="sm:col-span-2">
                     <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">触发关键词（逗号分隔）</label>
                     <input
                       type="text"
@@ -1921,7 +1978,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
               <div>
                 <h3 className="text-base font-bold text-[var(--text-primary)]">Prompt 与 SKILL 真实挂载透视镜</h3>
                 <p className="text-xs text-[var(--text-muted)]">
-                  实时核验各个创作环节真正注入给大模型的 System Prompt 结构，杜绝“假开关”。
+                  实时核验各个创作环节真正注入给大模型的 System Prompt 与渐进式参考文档路由，杜绝“假开关”。
                 </p>
               </div>
               <button
@@ -1975,14 +2032,22 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
             {currentAuditReport.activeSkills.length > 0 && (
               <div className="space-y-1.5">
-                <p className="text-xs font-semibold text-[var(--text-primary)]">当前阶段实际注入的 SKILL 列表：</p>
+                <p className="text-xs font-semibold text-[var(--text-primary)]">当前阶段实际注入的 SKILL 与按需子文档路由：</p>
                 <div className="text-xs text-[var(--text-secondary)] space-y-1">
-                  {currentAuditReport.activeSkills.map(({ skill, reason, matchedKeywords }) => (
-                    <div key={skill.id} className="py-1 border-b border-[var(--border-subtle)] last:border-b-0">
-                      <span className="font-medium text-[var(--text-primary)]">{skill.name}</span>
-                      <span className="text-[var(--text-muted)]">
-                        {' '}· {reason === 'keyword' ? `命中词: ${matchedKeywords.join('/')}` : '常驻规则'}
-                      </span>
+                  {currentAuditReport.activeSkills.map(({ skill, reason, matchedKeywords, activeRefs }) => (
+                    <div key={skill.id} className="py-1.5 border-b border-[var(--border-subtle)] last:border-b-0 space-y-0.5">
+                      <div>
+                        <span className="font-medium text-[var(--text-primary)]">{skill.name}</span>
+                        <span className="text-[var(--text-muted)]">
+                          {' '}· {skill.ruleTier === 'advisory' ? '质量建议' : '结构契约'} ·{' '}
+                          {reason === 'keyword' ? `命中词: ${matchedKeywords.join('/')}` : '常驻规则'}
+                        </span>
+                      </div>
+                      {activeRefs && activeRefs.length > 0 && (
+                        <p className="text-[11px] text-[var(--text-muted)] pl-3">
+                          ↳ 按需挂载参考库：{activeRefs.map((ar) => ar.doc.title).join('、')}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1999,6 +2064,19 @@ export const SetupView: React.FC<SetupViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {inspectingSkill && (
+        <SkillPackageInspectorModal
+          skill={skills.find((s) => s.id === inspectingSkill.id) || inspectingSkill}
+          onClose={() => setInspectingSkill(null)}
+          onUpdateSkill={async (updated) => {
+            await saveGlobalSkill(updated);
+            await onRefreshGlobalSkills();
+            setSkills((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+            setInspectingSkill(updated);
+          }}
+        />
       )}
     </div>
   );

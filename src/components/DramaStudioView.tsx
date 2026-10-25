@@ -24,6 +24,7 @@ import {
   ChevronDown,
   ChevronUp,
   Layers,
+  MessageSquarePlus,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -69,9 +70,12 @@ import {
   SNAPPY_EASE,
 } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
+import { DramaIdeaConsultant } from './DramaIdeaConsultant';
 
 const VISUAL_STYLES: DramaVisualStyle[] = [
+  '2.5D精致厚涂精绘',
   '国漫厚涂精绘',
+  '日韩唯美赛璐璐网漫',
   '日韩赛璐璐网漫',
   '暗黑赛博霓虹',
   '新中式古风玄幻',
@@ -234,6 +238,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
   const [extractStreamText, setExtractStreamText] = useState('');
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [isConsultantOpen, setIsConsultantOpen] = useState<boolean>(!currentProject);
 
   useEffect(() => {
     if (currentProject) {
@@ -252,6 +257,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setCharacterAssets(currentProject.characterAssets || []);
       setSceneAnchors(currentProject.sceneAnchors || []);
       setEpisodePlan(currentProject.episodePlan || []);
+      setIsConsultantOpen(!currentProject.title && !currentProject.synopsis);
     } else {
       setTitle('');
       setTrackId(defaultTrack.id);
@@ -268,6 +274,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setCharacterAssets([]);
       setSceneAnchors([]);
       setEpisodePlan([]);
+      setIsConsultantOpen(true);
     }
   }, [currentProject?.id]);
 
@@ -430,8 +437,20 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <MotionButton
             type="button"
+            onClick={() => setIsConsultantOpen((prev) => !prev)}
+            className={`min-h-[44px] px-4 py-2 rounded-xl border text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+              isConsultantOpen
+                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)] font-semibold'
+                : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-[var(--text-secondary)]'
+            }`}
+          >
+            <MessageSquarePlus className="w-4 h-4 text-[var(--accent)]" />
+            <span>{isConsultantOpen ? '收起 AI 立项顾问' : '只有模糊想法？与 AI 探讨立项'}</span>
+          </MotionButton>
+          <MotionButton
+            type="button"
             onClick={handleManualSave}
-            className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium cursor-pointer"
+            className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium whitespace-nowrap cursor-pointer"
           >
             保存立项档案
           </MotionButton>
@@ -443,13 +462,52 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
               const nextEp = (proj.episodes?.length || 0) + 1;
               onStartEpisodeInWriter(proj, nextEp);
             }}
-            className="btn-primary min-h-[44px] px-5 py-2 text-xs sm:text-sm flex items-center gap-2 cursor-pointer"
+            className="btn-primary min-h-[44px] px-5 py-2 text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap cursor-pointer"
           >
             <Film className="w-4 h-4" />
             <span>保存并进入剧本台</span>
           </MotionButton>
         </div>
       </section>
+
+      {isConsultantOpen && (
+        <DramaIdeaConsultant
+          configs={configs}
+          uiSettings={uiSettings}
+          mode="setup"
+          existingProjectId={currentProject?.id}
+          existingCreatedAt={currentProject?.createdAt}
+          onConfirmOption={async (adoptedProj) => {
+            setTitle(adoptedProj.title);
+            setTrackId(adoptedProj.trackId);
+            setChannel(adoptedProj.channel);
+            setVisualStyle(adoptedProj.visualStyle);
+            setAspectRatio(adoptedProj.aspectRatio);
+            setPaywallEpisodeIndex(adoptedProj.paywallEpisodeIndex);
+            setLogline(adoptedProj.logline);
+            setTargetAudience(adoptedProj.targetAudience);
+            setGolden3SecHook(adoptedProj.golden3SecHook);
+            setSynopsis(adoptedProj.synopsis);
+            if (adoptedProj.characterAssets.length > 0) {
+              setCharacterAssets(adoptedProj.characterAssets);
+            }
+            const mergedProj: DramaProject = {
+              ...adoptedProj,
+              preferredScriptFormat,
+              totalPlannedEpisodes,
+              episodes: currentProject?.episodes || [],
+              sourceNovelId: currentProject?.sourceNovelId,
+            };
+            await onSaveProject(mergedProj);
+            setIsConsultantOpen(false);
+            setStatusMsg({
+              type: 'success',
+              text: `已确认选用《${adoptedProj.title}》方案并自动填入全套立项规格与 ${adoptedProj.characterAssets.length} 位初始主角立绘！您可以直接点击下方「AI 一键提取角色固定立绘词 + 分集卡点目录」补全场景与前12集节拍。`,
+            });
+            triggerQuickToast(`《${adoptedProj.title}》已自动填入立项档案`);
+          }}
+        />
+      )}
 
       {statusMsg && (
         <div

@@ -15,6 +15,7 @@ import {
   FileSpreadsheet,
   Compass,
   Copy,
+  MessageSquarePlus,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import {
@@ -41,6 +42,7 @@ import {
   MotionButton,
 } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
+import { DramaIdeaConsultant } from './DramaIdeaConsultant';
 
 interface DramaLibraryViewProps {
   projects: DramaProject[];
@@ -433,6 +435,7 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
   onAdoptPitchAsProject,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
+  const [radarTab, setRadarTab] = useState<'consultant' | 'tracks'>('consultant');
   const [selectedTrack, setSelectedTrack] = useState<DramaTrackPreset>(HOT_DRAMA_TRACKS[0]);
   const [customSpark, setCustomSpark] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -526,21 +529,77 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
 
   return (
     <div className="space-y-6 sm:space-y-8">
-      {/* Header */}
-      <section className="pb-5 border-b border-[var(--border-subtle)] space-y-1.5">
-        <p className="text-xs text-[var(--text-muted)]">
-          大众商业趋势驱动 · 黄金前3秒留存模型 · 赛道卡片支持右键一键孵化企划
-        </p>
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[var(--text-primary)] font-editorial-serif">
-          AI 漫剧热门赛道雷达与选题孵化
-        </h1>
-        <p className="text-xs sm:text-sm text-[var(--text-secondary)] max-w-3xl leading-relaxed">
-          不同于个人自由小说创作，商业漫剧讲究高完播率与情绪最大公约数。点选下方当红赛道即可查看爆款节拍拆解，并调用 AI 一次性孵化 3 套商业立项方案。
-        </p>
+      {/* Header + Dual Incubation Mode Switcher */}
+      <section className="pb-5 border-b border-[var(--border-subtle)] space-y-4">
+        <div className="space-y-1.5">
+          <p className="text-xs text-[var(--text-muted)]">
+            大众商业趋势驱动 · 模糊脑洞立项探讨顾问 · 黄金前3秒留存模型
+          </p>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[var(--text-primary)] font-editorial-serif">
+            AI 漫剧热门赛道雷达与立项探讨台
+          </h1>
+          <p className="text-xs sm:text-sm text-[var(--text-secondary)] max-w-3xl leading-relaxed">
+            支持两种立项路径：若您脑子里只有一个模糊构想（例如「想做一个 2.5D 精致厚涂的偶像恋爱剧」），可直接与 AI 制片顾问对话分析当季趋势并比选方案；若已有明确目标赛道，也可在下方赛道公式库一键孵化企划。
+          </p>
+        </div>
+
+        <div className="inline-flex items-center gap-1.5 p-1 studio-muted overflow-x-auto no-scrollbar max-w-full">
+          <button
+            type="button"
+            onClick={() => setRadarTab('consultant')}
+            className={`relative min-h-[40px] px-4 py-2 rounded-xl text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+              radarTab === 'consultant'
+                ? 'text-[var(--text-primary)] font-semibold'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {radarTab === 'consultant' && (
+              <motion.span
+                layoutId="drama-radar-mode-pill"
+                transition={SPRING_INDICATOR}
+                className="absolute inset-0 bg-[var(--bg-surface)] rounded-xl shadow-2xs"
+              />
+            )}
+            <MessageSquarePlus className="w-4 h-4 text-[var(--accent)] relative z-10" />
+            <span className="relative z-10">模糊构想 · 与 AI 探讨立项</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setRadarTab('tracks')}
+            className={`relative min-h-[40px] px-4 py-2 rounded-xl text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+              radarTab === 'tracks'
+                ? 'text-[var(--text-primary)] font-semibold'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {radarTab === 'tracks' && (
+              <motion.span
+                layoutId="drama-radar-mode-pill"
+                transition={SPRING_INDICATOR}
+                className="absolute inset-0 bg-[var(--bg-surface)] rounded-xl shadow-2xs"
+              />
+            )}
+            <Flame className="w-4 h-4 text-[var(--accent)] relative z-10" />
+            <span className="relative z-10 tabular-nums">热门赛道公式雷达 ({HOT_DRAMA_TRACKS.length})</span>
+          </button>
+        </div>
       </section>
 
-      {/* 6 Viral Track Selector Cards */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+      {radarTab === 'consultant' ? (
+        <DramaIdeaConsultant
+          configs={configs}
+          uiSettings={uiSettings}
+          mode="radar"
+          onConfirmOption={(newProj) => {
+            triggerQuickToast(`已确认《${newProj.title}》方案，正在进入正式立项台...`);
+            onAdoptPitchAsProject(newProj);
+          }}
+        />
+      ) : (
+        <>
+          {/* Viral Track Selector Cards */}
+          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
         {HOT_DRAMA_TRACKS.map((track, idx) => {
           const isSelected = selectedTrack.id === track.id;
           return (
@@ -772,6 +831,8 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
           </div>
         )}
       </section>
+        </>
+      )}
     </div>
   );
 };

@@ -9,6 +9,9 @@ import {
   DramaShot,
   DramaScriptFormat,
   DRAMA_SCRIPT_FORMATS,
+  DramaVisualStyle,
+  DramaAspectRatio,
+  DramaAudienceChannel,
 } from '../types';
 import { generateUUID } from '../utils/uuid';
 
@@ -19,6 +22,40 @@ export interface DramaPitchProposal {
   golden3SecHook: string;
   paywallEpisodeIndex: number;
   synopsis: string;
+}
+
+export interface DramaConsultantCharacterSeed {
+  name: string;
+  roleTag: string;
+  ageAndArchetype: string;
+  appearanceZh: string;
+  visualPromptEn: string;
+  voicePersona: string;
+  signatureTrait: string;
+}
+
+export interface DramaConsultantOption {
+  optionId: string;
+  directionTag: string;
+  title: string;
+  trackId: string;
+  channel: DramaAudienceChannel;
+  visualStyle: DramaVisualStyle;
+  aspectRatio: DramaAspectRatio;
+  paywallEpisodeIndex: number;
+  marketFitReason: string;
+  logline: string;
+  targetAudience: string;
+  golden3SecHook: string;
+  synopsis: string;
+  seedCharacters: DramaConsultantCharacterSeed[];
+}
+
+export interface DramaConsultantResponse {
+  marketTrendAnalysis: string;
+  consultantReply: string;
+  options: DramaConsultantOption[];
+  followUpChips: string[];
 }
 
 /**
@@ -866,3 +903,169 @@ export function exportDramaProjectToMarkdown(project: DramaProject): string {
 
   return `# 《${project.title}》AI 漫剧工业化制作圣经\n\n- **热门赛道**：${project.trackName}（${project.channel}）\n- **视觉规格**：${project.visualStyle} · ${project.aspectRatio}\n- **规划集数**：${project.totalPlannedEpisodes} 集（核心付费卡点：第 ${project.paywallEpisodeIndex} 集）\n- **核心卖点 (Logline)**：${project.logline}\n- **开篇黄金前3秒**：${project.golden3SecHook}\n\n## 一、全剧商业大纲\n\n${project.synopsis}\n\n## 二、角色视觉一致性立绘档案\n\n${charMd || '暂未建档'}\n\n## 三、分集甲方标准剧本\n\n${epMd || '暂无已生成分集'}`;
 }
+
+/**
+ * 模糊构想 · AI 漫剧立项探讨顾问（支持多轮探讨、当季市场热度分析、画风适配诊断，并给出 3 套差异化立项建议方案供用户一键确认立项）
+ */
+const VALID_VISUAL_STYLES: DramaVisualStyle[] = [
+  '2.5D精致厚涂精绘',
+  '国漫厚涂精绘',
+  '日韩唯美赛璐璐网漫',
+  '日韩赛璐璐网漫',
+  '暗黑赛博霓虹',
+  '新中式古风玄幻',
+  '写实电影感漫剧',
+  '美式硬派漫画',
+];
+
+const VALID_CHANNELS: DramaAudienceChannel[] = ['女频爆款', '男频爆款', '全民脑洞', '悬疑惊悚'];
+
+export function buildDramaConsultantMessages(
+  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>
+): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  const trackCatalog = HOT_DRAMA_TRACKS.map(
+    (t) =>
+      `- trackId: "${t.id}" | 频道: ${t.channel} | 赛道名: ${t.name} | 热度: ${t.heatLabel} | 推荐画风: ${t.visualStyleRecommend} | 核心爽点: ${t.coreEmotion}`
+  ).join('\n');
+
+  const system = `${COMMERCIAL_DRAMA_CONSTITUTION}
+
+你现在是国内一线商业 AI 漫剧与竖屏动态漫【首席立项策划顾问 & 总制片人】。
+许多创作者来到立项台时，脑海里往往只有一个非常模糊的构想（例如：“我想做一个 2.5D 精致厚涂风格的偶像恋爱剧，其他的我什么都不知道该设定些什么”），或者只想到一个视觉画风、一个碎片场景、一对模糊人设。
+
+你的核心职责是与创作者进行专业、敏锐、及时的立项探讨：
+1. 【当季市场热度与画风诊断 (marketTrendAnalysis)】：结合当前抖音、红果短剧、快手、B站动态漫及小红书最火爆的商业漫剧数据与大众情绪爽点，客观分析用户这个模糊构想的市场潜力、受众痛点，以及其提到的画风（如 2.5D 精致厚涂在舞台呼吸光影、微表情拉扯、眼神高光上的独特优势）该如何放大完播率与付费率。
+2. 【制片人贴心立项建议 (consultantReply)】：用清晰、鼓励且干货满满的制片人口吻回应用户的想法（若用户在多轮对话中提出了修改意见，请精准响应调整），告诉他最适合切入的人设反差公式与避坑要点。
+3. 【3 套差异化可落地立项方案 (options)】：围绕用户的模糊构想，一次性发散设计 3 个截然不同切入点（如：极致反差契约向、双强宿敌重逢向、救赎逆袭爽感向等）的完整商业漫剧立项卡，供用户直接对比选择、一键进入立项阶段！
+   - 每套方案必须匹配下方合法的 \`trackId\`、\`channel\`（女频爆款/男频爆款/全民脑洞/悬疑惊悚）与 \`visualStyle\`（优先尊重用户指定的画风，如“2.5D精致厚涂精绘”）。
+   - 每套方案必须包含 2~3 位核心主角的初始人设与固定立绘描述（\`seedCharacters\`），让用户确认方案后无需从零手填即可直接进入立项与第1集创作。
+
+【平台可选热门赛道库】：
+${trackCatalog}
+
+【合法画风枚举】：${VALID_VISUAL_STYLES.join(' / ')}
+
+请严格输出纯 JSON 对象（用 \`\`\`json 包裹，严禁在代码块外堆砌多余废话），JSON 结构必须严格如下：
+\`\`\`json
+{
+  "marketTrendAnalysis": "120~220字：针对用户模糊构想的当下漫剧市场热度诊断、大众喜好风向、画风视听优势与商业避坑点",
+  "consultantReply": "80~160字：制片人给创作者的直接探讨反馈与设定破局思路",
+  "options": [
+    {
+      "optionId": "opt-1",
+      "directionTag": "方向01 · 简短定位标签（如：错位契约·舞台暗恋拉扯）",
+      "title": "极具网感与点击欲的漫剧剧名（不含书名号）",
+      "trackId": "从上方赛道库中选取最匹配的 trackId（如 track-idol-romance）",
+      "channel": "女频爆款",
+      "visualStyle": "2.5D精致厚涂精绘",
+      "aspectRatio": "9:16 竖屏短剧",
+      "paywallEpisodeIndex": 10,
+      "marketFitReason": "一句话说明该方向为什么能打爆完播率与付费转化",
+      "logline": "一句话商业核心卖点（50~90字，点明男女主/主角极致身份反差与核心拉扯爽点）",
+      "targetAudience": "精准核心受众画像与情绪痛点",
+      "golden3SecHook": "第1集黄金前3秒具体画面奇观、肢体冲突与首句抓耳台词",
+      "synopsis": "分三阶段（第1-9集免费留存高频拉扯/爽点、第10-12集核心付费大反转钩子、第13集后主线高潮闭环）的完整商业故事大纲（260~400字）",
+      "seedCharacters": [
+        {
+          "name": "主角姓名",
+          "roleTag": "核心女主 / 核心男主",
+          "ageAndArchetype": "年龄与高反差人设标签（如：22岁 · 跌落神坛的天才词曲人×伪装小透明）",
+          "appearanceZh": "适配该画风的中文固定立绘特征（发色发型、五官气质、标志性常驻穿搭与配饰）",
+          "visualPromptEn": "Consistent English AI art prompt tags matching the visualStyle and 9:16 aspect ratio",
+          "voicePersona": "TTS配音音色与情绪指导",
+          "signatureTrait": "标志性镜头微动作或随身信物道具"
+        }
+      ]
+    }
+  ],
+  "followUpChips": [
+    "给创作者追问微调的快捷建议1（如：把男主改成表面毒舌冷漠、私下偷偷听女主Demo的顶流导师）",
+    "给创作者追问微调的快捷建议2（如：加入重生回到选秀总决赛直播事故前3分钟的高能开局）",
+    "给创作者追问微调的快捷建议3（如：强化双强事业线，少一点误会虐恋，多一点联手打脸反派）"
+  ]
+}
+\`\`\``;
+
+  return [
+    { role: 'system', content: system },
+    ...conversationHistory.map((turn) => ({
+      role: turn.role,
+      content: turn.content,
+    })),
+  ];
+}
+
+export function parseDramaConsultantResponse(raw: string): DramaConsultantResponse {
+  const cleaned = extractJsonString(raw);
+  try {
+    const parsed = JSON.parse(cleaned);
+    const rawOptions = Array.isArray(parsed.options) ? parsed.options : [];
+
+    const options: DramaConsultantOption[] = rawOptions.map((opt: any, idx: number) => {
+      const matchedTrack =
+        HOT_DRAMA_TRACKS.find((t) => t.id === opt.trackId) ||
+        HOT_DRAMA_TRACKS.find((t) => opt.visualStyle?.includes('2.5D') && t.id === 'track-idol-romance') ||
+        HOT_DRAMA_TRACKS[0];
+
+      const styleCandidate = String(opt.visualStyle || '').trim() as DramaVisualStyle;
+      const visualStyle: DramaVisualStyle = VALID_VISUAL_STYLES.includes(styleCandidate)
+        ? styleCandidate
+        : matchedTrack.visualStyleRecommend;
+
+      const channelCandidate = String(opt.channel || '').trim() as DramaAudienceChannel;
+      const channel: DramaAudienceChannel = VALID_CHANNELS.includes(channelCandidate)
+        ? channelCandidate
+        : matchedTrack.channel;
+
+      const aspectRatio: DramaAspectRatio =
+        opt.aspectRatio === '16:9 横屏中剧' ? '16:9 横屏中剧' : '9:16 竖屏短剧';
+
+      const seedCharacters: DramaConsultantCharacterSeed[] = Array.isArray(opt.seedCharacters)
+        ? opt.seedCharacters.map((c: any) => ({
+            name: String(c.name || '核心角色'),
+            roleTag: String(c.roleTag || '主要角色'),
+            ageAndArchetype: String(c.ageAndArchetype || ''),
+            appearanceZh: String(c.appearanceZh || ''),
+            visualPromptEn: String(c.visualPromptEn || ''),
+            voicePersona: String(c.voicePersona || ''),
+            signatureTrait: String(c.signatureTrait || ''),
+          }))
+        : [];
+
+      return {
+        optionId: String(opt.optionId || `opt-${idx + 1}-${generateUUID()}`),
+        directionTag: String(opt.directionTag || `立项方案 0${idx + 1}`),
+        title: String(opt.title || '未命名爆款企划').replace(/[《》]/g, '').trim(),
+        trackId: matchedTrack.id,
+        channel,
+        visualStyle,
+        aspectRatio,
+        paywallEpisodeIndex: Number(opt.paywallEpisodeIndex) || 10,
+        marketFitReason: String(opt.marketFitReason || ''),
+        logline: String(opt.logline || ''),
+        targetAudience: String(opt.targetAudience || matchedTrack.targetAudience),
+        golden3SecHook: String(opt.golden3SecHook || ''),
+        synopsis: String(opt.synopsis || ''),
+        seedCharacters,
+      };
+    });
+
+    return {
+      marketTrendAnalysis: String(parsed.marketTrendAnalysis || ''),
+      consultantReply: String(parsed.consultantReply || ''),
+      options,
+      followUpChips: Array.isArray(parsed.followUpChips)
+        ? parsed.followUpChips.map((s: any) => String(s)).filter(Boolean)
+        : [],
+    };
+  } catch (e) {
+    console.warn('Failed to parse DramaConsultantResponse JSON:', e);
+    return {
+      marketTrendAnalysis: '',
+      consultantReply: raw.trim(),
+      options: [],
+      followUpChips: [],
+    };
+  }
+}
+

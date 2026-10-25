@@ -25,12 +25,40 @@ export interface LorebookEntry {
 
 export type SkillScope = 'outline' | 'chapter' | 'reroll' | 'polish';
 export type SkillCategory = 'style' | 'rule' | 'preference' | 'structure' | 'custom';
+export type SkillRuleTier = 'contract' | 'advisory';
+
+export interface SkillReferenceDoc {
+  id: string;
+  path: string; // e.g. "references/叙事层生成契约.md"
+  title: string;
+  content: string;
+  sizeBytes: number;
+  routingTask?: string; // Extracted from SKILL.md routing table
+  keywords?: string[]; // Keywords for progressive on-demand context injection
+  alwaysLoad?: boolean; // If true, always mount when parent skill is active
+}
+
+export interface SkillScriptMeta {
+  path: string; // e.g. "scripts/prose_metrics.py"
+  name: string;
+  purpose?: string;
+  sizeBytes: number;
+}
+
+export interface SkillQualityTarget {
+  metric: string;
+  medianTarget: string;
+  note?: string;
+}
 
 export interface NovelSkill {
   id: string;
-  name: string;
-  description: string;
-  promptInstruction: string;
+  slug?: string; // Technical identifier from YAML `name:` (e.g. novel-character-dialogue)
+  name: string; // Human readable name (`display_name` or `name`)
+  version?: string;
+  description: string; // Supports `description_zh` + `description`
+  promptInstruction: string; // Entry point instruction / distilled SKILL.md body
+  ruleTier?: SkillRuleTier; // 'contract' (硬性阻断契约) vs 'advisory' (弹性质量观察)
   category?: SkillCategory;
   scopes?: SkillScope[];
   triggerMode?: 'always' | 'keyword';
@@ -38,6 +66,11 @@ export interface NovelSkill {
   priority?: 'high' | 'normal';
   enabled: boolean;
   isPreset?: boolean;
+  packageType?: 'single-md' | 'zip-package';
+  references?: SkillReferenceDoc[]; // Sub-documents inside references/ (progressive disclosure)
+  scriptsMeta?: SkillScriptMeta[]; // Auxiliary scripts metadata from scripts/
+  qualityTargets?: SkillQualityTarget[]; // Measurable prose targets parsed from SKILL.md
+  rawSkillMd?: string; // Original lossless SKILL.md for faithful round-trip export
 }
 
 export interface DomesticApiPreset {
@@ -357,7 +390,9 @@ export interface HistoryItem {
 
 export type DramaAudienceChannel = '男频爆款' | '女频爆款' | '全民脑洞' | '悬疑惊悚';
 export type DramaVisualStyle =
+  | '2.5D精致厚涂精绘'
   | '国漫厚涂精绘'
+  | '日韩唯美赛璐璐网漫'
   | '日韩赛璐璐网漫'
   | '暗黑赛博霓虹'
   | '新中式古风玄幻'
@@ -458,6 +493,19 @@ export const HOT_DRAMA_TRACKS: DramaTrackPreset[] = [
     paywallHookStrategy: '第9集卡点：众人以为成功逃出副本回到现实，主角却指着镜子里的倒影说：“不对，真正的第二阶段才刚开始。”',
     visualStyleRecommend: '新中式古风玄幻',
     avoidTaboos: '禁止纯文字解谜说教，所有线索必须体现在画面特写道具（如倒走的挂钟、多出来的一双绣花鞋）中。',
+  },
+  {
+    id: 'track-idol-romance',
+    name: '偶像甜宠 / 娱乐圈双强暧昧拉扯',
+    channel: '女频爆款',
+    heatLabel: '2.5D高颜值吸睛王牌',
+    targetAudience: '16-35岁年轻女性与泛二次元受众，极度吃2.5D精致厚涂神仙颜值、舞台高光与极限暧昧张力',
+    coreEmotion: '极致心动苏感 + 顶流身份反差掉马 + 舞台/镜头前克制与私下占有欲拉满',
+    golden3SecFormula: '万人演唱会聚光灯骤然熄灭或后台休息室门锁咔哒落下，高冷顶流导师/死对头将女主抵在化妆镜前，指腹擦过她微红眼尾：“镜头关了，现在还要装不认识我？”',
+    pacingStructure: '每集90秒高频心动节拍：公开场合身份悬殊/针锋相对 → 突发舞台危机或直播事故 → 极近距离救场护短/耳麦私语 → 集末狗仔快门闪光或隐藏契约曝光。',
+    paywallHookStrategy: '第10集卡点：直播总决赛/红毯盛典现场，绿茶对家恶意放出黑料逼女主退圈，顶流男主直接切掉全场伴奏拿起麦公开唯一私密录音。',
+    visualStyleRecommend: '2.5D精致厚涂精绘',
+    avoidTaboos: '严禁男女主颜值崩坏或路人化穿搭；严禁超过两集的无聊商业通告流水账；每集必须有至少1个可截图当壁纸的2.5D高光眼神拉丝特写。',
   },
 ];
 

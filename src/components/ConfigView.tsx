@@ -17,6 +17,7 @@ import {
   Globe,
   ShieldCheck,
   Copy,
+  FolderTree,
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { motion } from 'motion/react';
@@ -28,6 +29,7 @@ import {
   NovelSkill,
   SkillScope,
   SkillCategory,
+  SkillRuleTier,
   DOMESTIC_API_PRESETS,
   DomesticApiPreset,
   ThemeName,
@@ -45,7 +47,12 @@ import {
   resetGlobalSkills,
 } from '../services/db';
 import { testAndFetchModels, chatCompletion } from '../services/apiClient';
-import { serializeSkillToMarkdown, parseSkillMarkdown } from '../services/promptEngine';
+import { serializeSkillToMarkdown } from '../services/promptEngine';
+import {
+  importSkillFilesUniversal,
+  exportSingleSkillPackage,
+} from '../services/skillPackageParser';
+import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
 import { PWAInstallButton } from './PWAInstallButton';
 import { SPRING_INDICATOR, MotionButton, StaggerCard, StaggerList, StaggerItem } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
@@ -130,6 +137,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
   const [skillTriggerMode, setSkillTriggerMode] = useState<'always' | 'keyword'>('always');
   const [skillKeywordsInput, setSkillKeywordsInput] = useState('');
   const [skillPriority, setSkillPriority] = useState<'high' | 'normal'>('normal');
+  const [skillRuleTier, setSkillRuleTier] = useState<SkillRuleTier>('contract');
+  const [inspectingSkill, setInspectingSkill] = useState<NovelSkill | null>(null);
   const [isGeneratingSkillPrompt, setIsGeneratingSkillPrompt] = useState(false);
   const [skillStatusMsg, setSkillStatusMsg] = useState('');
   const [confirmResetSkills, setConfirmResetSkills] = useState(false);
@@ -357,6 +366,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
     setSkillTriggerMode('always');
     setSkillKeywordsInput('');
     setSkillPriority('normal');
+    setSkillRuleTier('contract');
     setIsSkillModalOpen(true);
   };
 
@@ -370,16 +380,19 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
     setSkillTriggerMode(skill.triggerMode || 'always');
     setSkillKeywordsInput((skill.keywords || []).join(', '));
     setSkillPriority(skill.priority || 'normal');
+    setSkillRuleTier(skill.ruleTier || 'contract');
     setIsSkillModalOpen(true);
   };
 
   const handleSaveSkill = async () => {
     if (!skillName.trim() || !skillInstruction.trim()) return;
     const targetSkill: NovelSkill = {
+      ...(editingSkill || {}),
       id: editingSkill ? editingSkill.id : `skill-custom-${generateUUID()}`,
       name: skillName.trim(),
       description: skillDesc.trim() || skillName.trim(),
       promptInstruction: skillInstruction.trim(),
+      ruleTier: skillRuleTier,
       category: skillCategory,
       scopes: skillScopes.length > 0 ? skillScopes : ['chapter'],
       triggerMode: skillTriggerMode,
@@ -387,6 +400,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
       priority: skillPriority,
       enabled: editingSkill ? editingSkill.enabled : true,
       isPreset: editingSkill ? editingSkill.isPreset : false,
+      packageType: editingSkill?.packageType || 'single-md',
     };
 
     await saveGlobalSkill(targetSkill);
@@ -396,16 +410,37 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
     setTimeout(() => setSkillStatusMsg(''), 3500);
   };
 
+  const handleExportSingleSkill = async (skill: NovelSkill) => {
+    const { blob, filename } = await exportSingleSkillPackage(skill, serializeSkillToMarkdown);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleExportAllSkillsZip = async () => {
     const zip = new JSZip();
     globalSkills.forEach((sk) => {
-      zip.file(`${sk.name.replace(/[\\/:*?"<>|]/g, '_')}.SKILL.md`, serializeSkillToMarkdown(sk));
+      const safeFolder = (sk.slug || sk.name).replace(/[\\/:*?"<>|]/g, '_');
+      if (sk.packageType === 'zip-package' || (sk.references && sk.references.length > 0)) {
+        const folder = zip.folder(safeFolder)!;
+        folder.file('SKILL.md', '\uFEFF' + (sk.rawSkillMd || serializeSkillToMarkdown(sk)));
+        (sk.references || []).forEach((ref) => {
+          const cleanPath = ref.path.startsWith('references/') ? ref.path : `references/${ref.path}`;
+          folder.file(cleanPath, '\uFEFF' + ref.content);
+        });
+      } else {
+        zip.file(`${safeFolder}.SKILL.md`, '\uFEFF' + serializeSkillToMarkdown(sk));
+      }
     });
     const blob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `AI小说家_SKILL规范包_${globalSkills.length}项.zip`;
+    const brand = (uiSettings.studioBrandName || '墨映工坊').trim() || '墨映工坊';
+    a.download = `${brand}_SKILL规范包_${globalSkills.length}项.zip`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -413,17 +448,21 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
   const handleImportSkillFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    let count = 0;
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const text = await file.text();
-      const parsed = parseSkillMarkdown(text, file.name);
-      await saveGlobalSkill(parsed);
-      count++;
+    try {
+      const { skills: importedList, summary } = await importSkillFilesUniversal(files);
+      for (const sk of importedList) {
+        await saveGlobalSkill(sk);
+      }
+      await onRefreshGlobalSkills();
+      setSkillStatusMsg(summary);
+      if (importedList.length === 1 && importedList[0].packageType === 'zip-package') {
+        setInspectingSkill(importedList[0]);
+      }
+    } catch (err: any) {
+      setSkillStatusMsg(`导入解析失败：${err.message || '请确认为有效的 .zip 或 .md 技能包'}`);
+    } finally {
+      e.target.value = '';
     }
-    await onRefreshGlobalSkills();
-    e.target.value = '';
-    setSkillStatusMsg(`成功导入 ${count} 个标准 SKILL.md 技能文件`);
   };
 
   const handleGenerateSkillInstructionWithAI = async () => {
@@ -1030,19 +1069,19 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
         <section className="studio-card p-5 sm:p-7 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
             <div className="space-y-1">
-              <h2 className="text-base font-bold text-[var(--text-primary)]">全局 SKILL 2.0 写作规范中心</h2>
-              <p className="text-xs text-[var(--text-muted)]">
-                在此修改任意技能的底层规则后，您书库中的所有新老作品均会自动同步最新指令（不会停留在旧快照），并支持标准 YAML 头部的 <code className="font-mono">SKILL.md</code> 导入导出。
+              <h2 className="text-base font-bold text-[var(--text-primary)]">全局 SKILL 2.0 工程规范中心</h2>
+              <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                原生兼容完整多文件 <code className="font-mono">.zip</code> 技能压缩包（含 <code className="font-mono">SKILL.md</code> 主路由、<code className="font-mono">references/</code> 按需渐进披露参考库与 <code className="font-mono">scripts/</code> 索引）以及单文件 <code className="font-mono">.md</code>，内置 UTF-8 / GB18030 智能防乱码解码器。
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <label className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
                 <Upload className="w-3.5 h-3.5" />
-                <span>导入 SKILL.md</span>
+                <span>导入 SKILL (.zip / .md)</span>
                 <input
                   type="file"
-                  accept=".md,.txt"
+                  accept=".zip,.md,.txt"
                   multiple
                   onChange={handleImportSkillFiles}
                   className="hidden"
@@ -1103,12 +1142,22 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
               const scopesText = (skill.scopes && skill.scopes.length > 0 ? skill.scopes : ['chapter', 'polish'])
                 .map((s) => SCOPE_LABELS[s])
                 .join(' / ');
+              const refCount = skill.references?.length || 0;
+              const isZipPkg = skill.packageType === 'zip-package' || refCount > 0;
               return (
                 <StaggerCard
                   key={skill.id}
                   index={idx}
                   onContextMenu={(e) =>
                     openContextMenu(e, `SKILL · ${skill.name}`, [
+                      {
+                        id: 'inspect-skill',
+                        label: isZipPkg
+                          ? `检视工程包与参考路由 (${refCount} 份文档)`
+                          : '检视 SKILL 结构与契约详情',
+                        icon: <FolderTree className="w-3.5 h-3.5" />,
+                        onSelect: () => setInspectingSkill(skill),
+                      },
                       {
                         id: 'edit-skill',
                         label: '编辑 SKILL 规则与触发器',
@@ -1126,19 +1175,9 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                       },
                       {
                         id: 'export-skill-md',
-                        label: '导出为标准 SKILL.md',
+                        label: isZipPkg ? '导出完整 .skill.zip 工程包' : '导出标准 SKILL.md',
                         icon: <Download className="w-3.5 h-3.5" />,
-                        onSelect: () => {
-                          const blob = new Blob([serializeSkillToMarkdown(skill)], {
-                            type: 'text/markdown;charset=utf-8',
-                          });
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          a.download = `${skill.name.replace(/[\\/:*?"<>|]/g, '_')}.SKILL.md`;
-                          a.click();
-                          URL.revokeObjectURL(url);
-                        },
+                        onSelect: () => handleExportSingleSkill(skill),
                       },
                       {
                         id: 'del-skill',
@@ -1158,8 +1197,34 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                 >
                   <div className="space-y-1.5">
                     <div className="flex items-start justify-between gap-2">
-                      <h3 className="text-sm font-bold text-[var(--text-primary)]">{skill.name}</h3>
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-bold text-[var(--text-primary)] truncate">
+                          {skill.name}
+                          {skill.version && (
+                            <span className="ml-1.5 font-mono text-[11px] font-normal text-[var(--text-muted)]">
+                              v{skill.version}
+                            </span>
+                          )}
+                        </h3>
+                      </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        <MotionButton
+                          type="button"
+                          onClick={() => setInspectingSkill(skill)}
+                          className="min-h-[34px] px-2 flex items-center justify-center gap-1 rounded-lg text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-muted)]"
+                          title="检视技能包结构与按需参考文档路由"
+                        >
+                          <FolderTree className="w-3.5 h-3.5" />
+                          {refCount > 0 && <span className="tabular-nums">{refCount}</span>}
+                        </MotionButton>
+                        <MotionButton
+                          type="button"
+                          onClick={() => handleExportSingleSkill(skill)}
+                          className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-muted)]"
+                          title={isZipPkg ? '导出 .skill.zip 工程包' : '导出 SKILL.md'}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </MotionButton>
                         <MotionButton
                           type="button"
                           onClick={() => handleOpenEditSkillModal(skill)}
@@ -1183,12 +1248,16 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                     </div>
 
                     <p className="text-[11px] text-[var(--text-muted)]">
+                      {isZipPkg ? `ZIP工程包 (${refCount}参考路由)` : '单文件MD'} ·{' '}
+                      {skill.ruleTier === 'advisory' ? '质量建议' : '结构契约'} ·{' '}
                       {CATEGORY_LABELS[skill.category || 'custom']} · {scopesText} ·{' '}
                       {skill.triggerMode === 'keyword'
                         ? `关键词唤醒 (${(skill.keywords || []).slice(0, 4).join('、')})`
                         : '常驻生效'}
                     </p>
-                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{skill.description}</p>
+                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed line-clamp-2">
+                      {skill.description}
+                    </p>
                   </div>
 
                   <div className="p-2.5 studio-muted text-[11px] text-[var(--text-muted)] font-mono line-clamp-2">
@@ -1512,6 +1581,17 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
+                  <label className="block mb-1 text-[var(--text-secondary)]">规则层级 (Rule Tier)</label>
+                  <select
+                    value={skillRuleTier}
+                    onChange={(e) => setSkillRuleTier(e.target.value as SkillRuleTier)}
+                    className="studio-input w-full px-3 py-2 text-xs"
+                  >
+                    <option value="contract">结构契约 (Contract · 硬性必守)</option>
+                    <option value="advisory">质量目标 (Advisory · 弹性校准)</option>
+                  </select>
+                </div>
+                <div>
                   <label className="block mb-1 text-[var(--text-secondary)]">触发方式</label>
                   <select
                     value={skillTriggerMode}
@@ -1523,7 +1603,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                   </select>
                 </div>
                 {skillTriggerMode === 'keyword' && (
-                  <div>
+                  <div className="sm:col-span-2">
                     <label className="block mb-1 text-[var(--text-secondary)]">触发词（逗号分隔）</label>
                     <input
                       type="text"
@@ -1572,6 +1652,18 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {inspectingSkill && (
+        <SkillPackageInspectorModal
+          skill={globalSkills.find((s) => s.id === inspectingSkill.id) || inspectingSkill}
+          onClose={() => setInspectingSkill(null)}
+          onUpdateSkill={async (updated) => {
+            await saveGlobalSkill(updated);
+            await onRefreshGlobalSkills();
+            setInspectingSkill(updated);
+          }}
+        />
       )}
     </div>
   );

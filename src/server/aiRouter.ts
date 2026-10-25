@@ -7,7 +7,10 @@ function getGenAI() {
   if (!apiKey) {
     throw new Error('服务器端 GEMINI_API_KEY 未配置');
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+  });
 }
 
 // Built-in supported Gemini models list

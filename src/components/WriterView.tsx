@@ -1753,12 +1753,23 @@ ${chapterTail}
                 <p className="text-[var(--text-muted)]">当前未勾选任何章节类 SKILL</p>
               ) : (
                 <div className="divide-y divide-[var(--border-subtle)] border border-[var(--border-subtle)] rounded-xl px-3">
-                  {liveAuditReport.activeSkills.map(({ skill, reason, matchedKeywords }) => (
-                    <div key={skill.id} className="py-2 flex items-center justify-between gap-2">
-                      <span className="font-medium text-[var(--text-primary)]">{skill.name}</span>
-                      <span className="text-[11px] text-[var(--text-muted)] shrink-0">
-                        {reason === 'keyword' ? `关键词唤醒: ${matchedKeywords.join('/')}` : '常驻生效'}
-                      </span>
+                  {liveAuditReport.activeSkills.map(({ skill, reason, matchedKeywords, activeRefs }) => (
+                    <div key={skill.id} className="py-2 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-[var(--text-primary)]">
+                          {skill.name}
+                          {skill.version ? ` v${skill.version}` : ''}
+                        </span>
+                        <span className="text-[11px] text-[var(--text-muted)] shrink-0">
+                          {skill.ruleTier === 'advisory' ? '质量建议 · ' : ''}
+                          {reason === 'keyword' ? `关键词唤醒: ${matchedKeywords.join('/')}` : '常驻生效'}
+                        </span>
+                      </div>
+                      {activeRefs && activeRefs.length > 0 && (
+                        <p className="text-[11px] text-[var(--text-muted)]">
+                          ↳ 按需路由子文档：{activeRefs.map((ar) => ar.doc.title).join('、')}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>

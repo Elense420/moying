@@ -1,10 +1,24 @@
-import { Book, LorebookEntry, NovelSkill, SkillScope, SkillCategory } from '../types';
-import { generateUUID } from '../utils/uuid';
+import {
+  Book,
+  LorebookEntry,
+  NovelSkill,
+  SkillScope,
+  SkillCategory,
+  SkillReferenceDoc,
+} from '../types';
+import { parseSingleSkillMarkdown } from './skillPackageParser';
+
+export interface ActiveSkillRefHit {
+  doc: SkillReferenceDoc;
+  reason: 'core' | 'keyword';
+  matchedKeywords: string[];
+}
 
 export interface ActiveSkillMatch {
   skill: NovelSkill;
   reason: 'always' | 'keyword';
   matchedKeywords: string[];
+  activeRefs: ActiveSkillRefHit[];
 }
 
 export interface ActiveLoreMatch {
@@ -26,7 +40,7 @@ export interface PromptAuditReport {
 
 /**
  * Merges latest Global Skills with a Book's per-book skill toggle states.
- * Guarantees that editing a skill's instruction in the Global Skill Hub immediately
+ * Guarantees that editing a skill's instruction or references in the Global Skill Hub immediately
  * takes effect across ALL books without stale snapshots, while respecting per-book toggles!
  */
 export function resolveBookSkills(book: Book | null | undefined, globalSkills: NovelSkill[]): NovelSkill[] {
@@ -57,6 +71,45 @@ export function resolveBookSkills(book: Book | null | undefined, globalSkills: N
 }
 
 /**
+ * Progressive Disclosure Reference Router:
+ * Given an active multi-file SKILL package, selects at most 3 high-relevance sub-documents
+ * from `references/` based on core contract flag or context keyword matches, preventing context bloat!
+ */
+function routeSkillReferences(
+  skill: NovelSkill,
+  lowerCorpus: string
+): ActiveSkillRefHit[] {
+  if (!skill.references || skill.references.length === 0) return [];
+
+  const hits: ActiveSkillRefHit[] = [];
+
+  for (const doc of skill.references) {
+    // Skip raw large JSON parameter tables unless explicitly pinned as core
+    if (doc.path.endsWith('.json') && !doc.alwaysLoad) continue;
+
+    if (doc.alwaysLoad) {
+      hits.push({ doc, reason: 'core', matchedKeywords: [] });
+      continue;
+    }
+
+    const kws = doc.keywords || [];
+    const matched = kws.filter((kw) => kw.length >= 2 && lowerCorpus.includes(kw.toLowerCase()));
+    if (matched.length > 0) {
+      hits.push({ doc, reason: 'keyword', matchedKeywords: matched });
+    }
+  }
+
+  // Sort: core contracts first, then by number of matched keywords descending, cap at top 3
+  hits.sort((a, b) => {
+    if (a.reason === 'core' && b.reason !== 'core') return -1;
+    if (a.reason !== 'core' && b.reason === 'core') return 1;
+    return b.matchedKeywords.length - a.matchedKeywords.length;
+  });
+
+  return hits.slice(0, 3);
+}
+
+/**
  * Evaluates which Skills should fire for a given lifecycle scope and context text.
  */
 export function evaluateSkillsForScope(
@@ -80,19 +133,23 @@ export function evaluateSkillsForScope(
     if (sk.triggerMode === 'keyword' && sk.keywords && sk.keywords.length > 0) {
       const hits = sk.keywords.filter((kw) => kw.trim() && lowerCorpus.includes(kw.trim().toLowerCase()));
       if (hits.length > 0) {
-        active.push({ skill: sk, reason: 'keyword', matchedKeywords: hits });
+        const activeRefs = routeSkillReferences(sk, lowerCorpus);
+        active.push({ skill: sk, reason: 'keyword', matchedKeywords: hits, activeRefs });
       } else {
         standby.push(sk);
       }
     } else {
-      active.push({ skill: sk, reason: 'always', matchedKeywords: [] });
+      const activeRefs = routeSkillReferences(sk, lowerCorpus);
+      active.push({ skill: sk, reason: 'always', matchedKeywords: [], activeRefs });
     }
   }
 
-  // Sort high priority skills first
+  // Sort high priority & contract tier skills first
   active.sort((a, b) => {
     if (a.skill.priority === 'high' && b.skill.priority !== 'high') return -1;
     if (a.skill.priority !== 'high' && b.skill.priority === 'high') return 1;
+    if (a.skill.ruleTier !== 'advisory' && b.skill.ruleTier === 'advisory') return -1;
+    if (a.skill.ruleTier === 'advisory' && b.skill.ruleTier !== 'advisory') return 1;
     return 0;
   });
 
@@ -158,17 +215,50 @@ export function formatLorebookPromptBlock(matches: ActiveLoreMatch[]): string {
 }
 
 /**
- * Formats matched SKILL 2.0 items into structured system rules.
+ * Formats matched SKILL items (including progressively routed `references/` sub-docs and quality targets)
+ * into clean, layered system rules.
  */
 export function formatSkillsPromptBlock(matches: ActiveSkillMatch[]): string {
   if (matches.length === 0) return '';
-  const lines = matches.map(({ skill, reason, matchedKeywords }, idx) => {
-    const priorityTag = skill.priority === 'high' ? '[核心铁律]' : '[规范执行]';
+  const lines = matches.map(({ skill, reason, matchedKeywords, activeRefs }, idx) => {
+    const tierBadge =
+      skill.ruleTier === 'advisory'
+        ? '[弹性质量参照 · Advisory]'
+        : skill.priority === 'high'
+        ? '[核心结构契约 · 严禁违背]'
+        : '[规范执行契约]';
+    const verLabel = skill.version ? ` v${skill.version}` : '';
     const triggerTag = reason === 'keyword' ? ` (触发词: ${matchedKeywords.join('/')})` : '';
-    return `${idx + 1}. ${priorityTag}【${skill.name}】${triggerTag}：\n${skill.promptInstruction}`;
+
+    let block = `${idx + 1}. ${tierBadge}【${skill.name}${verLabel}】${triggerTag}：\n${skill.promptInstruction}`;
+
+    // Append measurable prose targets if present
+    if (skill.qualityTargets && skill.qualityTargets.length > 0) {
+      const targetSummary = skill.qualityTargets
+        .slice(0, 6)
+        .map((t) => `${t.metric}: ${t.medianTarget}`)
+        .join(' | ');
+      block += `\n  [量化质量基准参照]：${targetSummary}`;
+    }
+
+    // Append progressively routed reference sub-documents (capped per doc to keep context crisp)
+    if (activeRefs && activeRefs.length > 0) {
+      const refBlocks = activeRefs.map((r) => {
+        const snippet =
+          r.doc.content.length > 1600
+            ? r.doc.content.slice(0, 1600).trim() + '\n...(节选核心契约)...'
+            : r.doc.content.trim();
+        const routeWhy =
+          r.reason === 'core' ? '核心契约常驻' : `按需路由命中: ${r.matchedKeywords.join('/')}`;
+        return `  --- 挂载子规范《${r.doc.title}》(${routeWhy}) ---\n${snippet}`;
+      });
+      block += `\n${refBlocks.join('\n\n')}`;
+    }
+
+    return block;
   });
 
-  return `\n\n# 已挂载 SKILL 写作技能规范 (必须严格执行)\n${lines.join('\n\n')}`;
+  return `\n\n# 已挂载 SKILL 写作技能工程规范 (含渐进路由子文档)\n${lines.join('\n\n')}`;
 }
 
 /**
@@ -262,12 +352,12 @@ export function buildUnifiedSystemPrompt(params: {
   const loreSource = s?.lorebook || [];
   const { active: activeLore, standby: standbyLore } = evaluateLorebook(
     loreSource,
-    contextCorpus,
+    `${s?.genre || ''}\n${contextCorpus}`,
     forceAllLore || scope === 'outline'
   );
   systemPrompt += formatLorebookPromptBlock(activeLore);
 
-  // Resolve & Evaluate Skills
+  // Resolve & Evaluate Skills (including genre + context corpus for reference routing)
   const effectiveSkills = customSettings?.skills
     ? customSettings.skills
     : resolveBookSkills(book, globalSkills);
@@ -275,7 +365,7 @@ export function buildUnifiedSystemPrompt(params: {
   const { active: activeSkills, standby: standbySkills } = evaluateSkillsForScope(
     effectiveSkills,
     scope,
-    contextCorpus
+    `${s?.genre || ''}\n${s?.style || ''}\n${contextCorpus}`
   );
   systemPrompt += formatSkillsPromptBlock(activeSkills);
 
@@ -302,13 +392,17 @@ export function buildUnifiedSystemPrompt(params: {
 export function serializeSkillToMarkdown(skill: NovelSkill): string {
   const scopes = (skill.scopes && skill.scopes.length > 0 ? skill.scopes : ['chapter', 'polish']).join(', ');
   const keywords = (skill.keywords || []).join(', ');
+  const slugLine = skill.slug ? `name: ${skill.slug}\ndisplay_name: "${skill.name.replace(/"/g, '\\"')}"` : `name: "${skill.name.replace(/"/g, '\\"')}"`;
+  const versionLine = skill.version ? `\nversion: ${skill.version}` : '';
+  const tierLine = skill.ruleTier ? `\nruleTier: ${skill.ruleTier}` : '';
+
   return `---
-name: "${skill.name.replace(/"/g, '\\"')}"
+${slugLine}${versionLine}
 description: "${(skill.description || '').replace(/"/g, '\\"')}"
 category: ${skill.category || 'custom'}
 scopes: [${scopes}]
 triggerMode: ${skill.triggerMode || 'always'}
-priority: ${skill.priority || 'normal'}
+priority: ${skill.priority || 'normal'}${tierLine}
 keywords: [${keywords}]
 enabled: ${skill.enabled !== false}
 ---
@@ -318,75 +412,8 @@ ${skill.promptInstruction.trim()}
 }
 
 /**
- * Standard SKILL.md parser (supports single SKILL.md with YAML frontmatter)
+ * Standard SKILL.md parser (delegates to lossless multi-line YAML parser)
  */
 export function parseSkillMarkdown(rawMd: string, fallbackName: string = '导入的写作技能'): NovelSkill {
-  const trimmed = rawMd.trim();
-  const fmRegex = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/;
-  const match = trimmed.match(fmRegex);
-
-  if (!match) {
-    return {
-      id: `skill-md-${generateUUID()}`,
-      name: fallbackName.replace(/\.md$/i, ''),
-      description: '从 Markdown 文件导入的写作技能规则',
-      promptInstruction: trimmed,
-      category: 'custom',
-      scopes: ['chapter', 'polish'],
-      triggerMode: 'always',
-      priority: 'normal',
-      enabled: true,
-      isPreset: false,
-    };
-  }
-
-  const yamlPart = match[1];
-  const bodyPart = match[2].trim();
-  const meta: Record<string, string> = {};
-
-  yamlPart.split(/\r?\n/).forEach((line) => {
-    const idx = line.indexOf(':');
-    if (idx > 0) {
-      const key = line.slice(0, idx).trim();
-      let val = line.slice(idx + 1).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      meta[key] = val;
-    }
-  });
-
-  const parseList = (raw?: string): string[] => {
-    if (!raw) return [];
-    const inner = raw.replace(/^\[|\]$/g, '').trim();
-    if (!inner) return [];
-    return inner
-      .split(/[,，]/)
-      .map((s) => s.trim().replace(/^["']|["']$/g, ''))
-      .filter(Boolean);
-  };
-
-  const validScopes: SkillScope[] = ['outline', 'chapter', 'reroll', 'polish'];
-  const parsedScopes = parseList(meta.scopes || meta.scope).filter((s): s is SkillScope =>
-    validScopes.includes(s as SkillScope)
-  );
-
-  const validCategories: SkillCategory[] = ['style', 'rule', 'preference', 'structure', 'custom'];
-  const cat = validCategories.includes(meta.category as SkillCategory)
-    ? (meta.category as SkillCategory)
-    : 'custom';
-
-  return {
-    id: `skill-md-${generateUUID()}`,
-    name: meta.name || fallbackName.replace(/\.md$/i, ''),
-    description: meta.description || meta.name || '标准 SKILL.md 导入技能',
-    promptInstruction: bodyPart || trimmed,
-    category: cat,
-    scopes: parsedScopes.length > 0 ? parsedScopes : ['chapter', 'polish'],
-    triggerMode: meta.triggerMode === 'keyword' ? 'keyword' : 'always',
-    keywords: parseList(meta.keywords),
-    priority: meta.priority === 'high' ? 'high' : 'normal',
-    enabled: meta.enabled !== 'false',
-    isPreset: false,
-  };
+  return parseSingleSkillMarkdown(rawMd, fallbackName);
 }
