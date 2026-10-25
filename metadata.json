@@ -1,0 +1,8 @@
+{
+  "name": "墨映工坊",
+  "description": "一款具备灵感供给站、智能连载扩写、风格学习、大纲迭代与多API配置的AI小说创作与书库管理工具。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,292 @@
+@import "tailwindcss";
+
+@layer base {
+  :root,
+  [data-theme="ink"],
+  [data-theme="white"] {
+    --bg-canvas: #f7f6f2;
+    --bg-surface: #ffffff;
+    --bg-muted: #f0eee8;
+    --border-subtle: #e5e2da;
+    --text-primary: #18181b;
+    --text-secondary: #52525b;
+    --text-muted: #71717a;
+    --accent: #18181b;
+    --accent-hover: #27272a;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(24, 24, 27, 0.07);
+    --chapter-content-font-size: 1.08rem;
+  }
+
+  .dark,
+  .dark[data-theme="ink"],
+  .dark[data-theme="white"] {
+    --bg-canvas: #111110;
+    --bg-surface: #191917;
+    --bg-muted: #23221f;
+    --border-subtle: #2c2b27;
+    --text-primary: #ece9e2;
+    --text-secondary: #a8a49c;
+    --text-muted: #78756e;
+    --accent: #e5e0d5;
+    --accent-hover: #f5f2eb;
+    --accent-fg: #141413;
+    --accent-soft: rgba(229, 224, 213, 0.12);
+  }
+
+  [data-theme="celadon"],
+  [data-theme="green"] {
+    --accent: #0f766e;
+    --accent-hover: #115e59;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(15, 118, 110, 0.1);
+  }
+  .dark[data-theme="celadon"],
+  .dark[data-theme="green"] {
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+    --accent-fg: #042f2e;
+    --accent-soft: rgba(45, 212, 191, 0.14);
+  }
+
+  [data-theme="indigo"],
+  [data-theme="blue"],
+  [data-theme="purple"] {
+    --accent: #3730a3;
+    --accent-hover: #312e81;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(55, 48, 163, 0.09);
+  }
+  .dark[data-theme="indigo"],
+  .dark[data-theme="blue"],
+  .dark[data-theme="purple"] {
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-fg: #1e1b4b;
+    --accent-soft: rgba(129, 140, 248, 0.14);
+  }
+
+  [data-theme="cinnabar"],
+  [data-theme="pink"] {
+    --accent: #be123c;
+    --accent-hover: #9f1239;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(190, 18, 60, 0.09);
+  }
+  .dark[data-theme="cinnabar"],
+  .dark[data-theme="pink"] {
+    --accent: #fb7185;
+    --accent-hover: #fda4af;
+    --accent-fg: #4c0519;
+    --accent-soft: rgba(251, 113, 133, 0.14);
+  }
+
+  [data-theme="amber"],
+  [data-theme="yellow"] {
+    --accent: #b45309;
+    --accent-hover: #92400e;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(180, 83, 9, 0.1);
+  }
+  .dark[data-theme="amber"],
+  .dark[data-theme="yellow"] {
+    --accent: #fbbf24;
+    --accent-hover: #fcd34d;
+    --accent-fg: #451a03;
+    --accent-soft: rgba(251, 191, 36, 0.14);
+  }
+
+  html {
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    font-family: "PingFang SC", "HarmonyOS Sans SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .dark body {
+    letter-spacing: 0.01em;
+  }
+}
+
+/* Editorial Surface System (Clean Border & Elevation, Zero Thick Left Accent Bars) */
+.studio-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 1rem;
+  transition: border-color 180ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.studio-card-hover {
+  position: relative;
+}
+
+.studio-card-hover:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+  box-shadow: 0 12px 28px -16px rgba(0, 0, 0, 0.16);
+}
+
+/* Right-Click Context Menu Floating Anchor (Set via CSS custom properties on ref) */
+.context-menu-floating {
+  left: var(--ctx-x, 16px);
+  top: var(--ctx-y, 16px);
+}
+
+/* Dual-Track Ambient Top Aura */
+.ambient-aura-layer {
+  pointer-events: none;
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 340px;
+  z-index: 0;
+  opacity: 0.75;
+  transition: opacity 300ms ease;
+}
+
+.ambient-aura-novel {
+  background: radial-gradient(ellipse 75% 100% at 50% -25%, var(--accent-soft), transparent 72%);
+}
+
+.ambient-aura-drama {
+  background:
+    radial-gradient(ellipse 55% 95% at 22% -20%, rgba(225, 29, 72, 0.08), transparent 70%),
+    radial-gradient(ellipse 55% 95% at 78% -20%, rgba(79, 70, 229, 0.09), transparent 70%);
+}
+
+.dark .ambient-aura-drama {
+  background:
+    radial-gradient(ellipse 55% 95% at 22% -20%, rgba(251, 113, 133, 0.11), transparent 70%),
+    radial-gradient(ellipse 55% 95% at 78% -20%, rgba(129, 140, 248, 0.12), transparent 70%);
+}
+
+@keyframes shimmerSweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.animate-shimmer-sweep {
+  animation: shimmerSweep 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Skeleton Bone Shimmer */
+.skeleton-bone {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--bg-muted);
+  border-radius: 0.625rem;
+}
+
+.skeleton-bone::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--bg-surface) 65%, transparent) 50%,
+    transparent 100%
+  );
+  animation: shimmerSweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-card,
+  .studio-card-hover,
+  .btn-primary {
+    transition: none !important;
+    transform: none !important;
+  }
+  .animate-shimmer-sweep,
+  .skeleton-bone::after {
+    animation: none !important;
+  }
+}
+
+.studio-muted {
+  background-color: var(--bg-muted);
+  border-radius: 0.75rem;
+}
+
+.studio-input {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-radius: 0.75rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.studio-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.btn-primary {
+  background-color: var(--accent);
+  color: var(--accent-fg);
+  border-radius: 0.75rem;
+  font-weight: 600;
+  transition: opacity 150ms ease, box-shadow 160ms ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.94;
+  box-shadow: 0 6px 18px -6px var(--accent-soft);
+}
+
+/* Literary Manuscript Typography */
+.font-editorial-serif {
+  font-family: "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", Georgia, serif;
+}
+
+.chapter-canvas {
+  font-size: var(--chapter-content-font-size);
+  line-height: 1.92;
+  letter-spacing: 0.025em;
+}
+
+/* Safe area padding for iPhone Home Indicator */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Subtle custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 117, 110, 0.28);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 117, 110, 0.5);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

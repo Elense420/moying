@@ -1,0 +1,2782 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Sparkles,
+  Plus,
+  Trash2,
+  Copy,
+  Check,
+  Film,
+  Loader2,
+  ShieldCheck,
+  FileSpreadsheet,
+  Download,
+  BookOpen,
+  Wand2,
+  ListVideo,
+  X,
+  UserCheck,
+  MapPin,
+  Flame,
+  Edit3,
+  FileText,
+  Upload,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  Layers,
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  DramaProject,
+  DramaVisualStyle,
+  DramaAspectRatio,
+  DramaAudienceChannel,
+  HOT_DRAMA_TRACKS,
+  DramaCharacterAsset,
+  DramaSceneAnchor,
+  DramaEpisodePlanItem,
+  DramaEpisode,
+  DramaShot,
+  DramaScriptFormat,
+  DRAMA_SCRIPT_FORMATS,
+  ApiConfig,
+  UiSettings,
+  Book,
+} from '../types';
+import { streamChatCompletion, chatCompletion } from '../services/apiClient';
+import {
+  buildDramaAssetExtractionMessages,
+  parseDramaAssetsJson,
+  buildLiteraryScriptMessages,
+  parseLiteraryScriptEpisode,
+  buildStandardizeClientScriptMessages,
+  buildBreakdownScriptToShotsMessages,
+  parseBreakdownShotsJson,
+  buildDramaEpisodeMessages,
+  parseGeneratedDramaEpisode,
+  cleanMessyClientScriptLocal,
+  extractJsonString,
+  exportDramaEpisodeToCsv,
+  exportDramaProjectToMarkdown,
+} from '../services/dramaPromptEngine';
+import { generateUUID } from '../utils/uuid';
+import {
+  SPRING_INDICATOR,
+  StaggerCard,
+  StaggerList,
+  StaggerItem,
+  MotionButton,
+  SNAPPY_EASE,
+} from './MotionPrimitives';
+import { useContextMenu } from './ContextMenu';
+
+const VISUAL_STYLES: DramaVisualStyle[] = [
+  '国漫厚涂精绘',
+  '日韩赛璐璐网漫',
+  '暗黑赛博霓虹',
+  '新中式古风玄幻',
+  '写实电影感漫剧',
+  '美式硬派漫画',
+];
+
+const ASPECT_RATIOS: DramaAspectRatio[] = ['9:16 竖屏短剧', '16:9 横屏中剧'];
+
+/**
+ * Renders an authentic industry literary script with clean typographic hierarchy
+ * (**Scene Header**, 出场人物, △ Action Beat, 【音效】, Character Dialogue)
+ */
+const FormattedIndustryScriptLines: React.FC<{ scriptText: string }> = ({ scriptText }) => {
+  const lines = (scriptText || '').split('\n');
+
+  return (
+    <div className="space-y-2 text-xs sm:text-sm leading-relaxed font-sans">
+      {lines.map((rawLine, idx) => {
+        const line = rawLine.trim();
+        if (!line) {
+          return <div key={idx} className="h-2" />;
+        }
+
+        // Scene header: **47-1 ...** or 31-1 ... 日/夜 内/外 or 第X集
+        const cleanHeader = line.replace(/^\*\*|\*\*$/g, '').trim();
+        const isEpisodeHeading = /^第[零一二三四五六七八九十百\d]+集/.test(cleanHeader);
+        const isSceneHeader =
+          line.startsWith('**') ||
+          /^\d+\s*[-—]\s*\d+\s+/.test(cleanHeader);
+
+        if (isEpisodeHeading) {
+          return (
+            <div
+              key={idx}
+              className="pt-2 pb-1 text-base sm:text-lg font-bold text-[var(--text-primary)] font-editorial-serif border-b border-[var(--border-subtle)]"
+            >
+              {cleanHeader}
+            </div>
+          );
+        }
+
+        if (isSceneHeader) {
+          return (
+            <div
+              key={idx}
+              className="mt-4 pt-2.5 pb-1.5 px-3 rounded-lg studio-muted font-bold text-[var(--text-primary)] tracking-tight"
+            >
+              {cleanHeader}
+            </div>
+          );
+        }
+
+        // Cast list: 出场人物：...
+        if (/^出场人物[：:]/.test(line)) {
+          return (
+            <div key={idx} className="px-1 text-xs font-medium text-[var(--text-muted)]">
+              {line}
+            </div>
+          );
+        }
+
+        // Triangle visual beat: △ ...
+        if (line.startsWith('△')) {
+          return (
+            <div
+              key={idx}
+              className="pl-2.5 py-0.5 text-[var(--text-secondary)] flex items-start gap-2"
+            >
+              <span className="font-bold text-[var(--accent)] shrink-0 select-none">△</span>
+              <span>{line.replace(/^△\s*/, '')}</span>
+            </div>
+          );
+        }
+
+        // Explicit SFX cue: 【音效】...
+        if (line.startsWith('【音效】') || line.startsWith('[音效]')) {
+          return (
+            <div
+              key={idx}
+              className="pl-2.5 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-400"
+            >
+              {line}
+            </div>
+          );
+        }
+
+        // Character Dialogue: 角色名（...）：台词 or 角色名：台词
+        const dialogueMatch = line.match(/^([^：:\s]{1,16})([：:])(.*)$/);
+        if (dialogueMatch) {
+          const [, speakerPart, , spokenPart] = dialogueMatch;
+          return (
+            <div key={idx} className="pl-2.5 py-0.5 text-[var(--text-primary)]">
+              <span className="font-bold">{speakerPart}：</span>
+              <span>{spokenPart}</span>
+            </div>
+          );
+        }
+
+        // English subtitle line or minimalist action line
+        const isEnglishSubtitle = /^[A-Za-z0-9"',.?!\-\s()’“”]+$/.test(line);
+        if (isEnglishSubtitle) {
+          return (
+            <div key={idx} className="pl-6 text-xs italic text-[var(--text-muted)]">
+              {line}
+            </div>
+          );
+        }
+
+        return (
+          <div key={idx} className="pl-2.5 py-0.5 text-[var(--text-secondary)]">
+            {line}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ============================================================================
+// 1. 漫剧立项、角色固定立绘词与分集卡点目录 (DramaSetupView)
+// ============================================================================
+
+interface DramaSetupViewProps {
+  currentProject: DramaProject | null;
+  configs: ApiConfig[];
+  uiSettings: UiSettings;
+  onSaveProject: (project: DramaProject) => Promise<void>;
+  onStartEpisodeInWriter: (project: DramaProject, episodeIndex: number, presetBeat?: string) => void;
+}
+
+export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
+  currentProject,
+  configs,
+  uiSettings,
+  onSaveProject,
+  onStartEpisodeInWriter,
+}) => {
+  const { openContextMenu, triggerQuickToast } = useContextMenu();
+  const defaultTrack = HOT_DRAMA_TRACKS[0];
+
+  const [title, setTitle] = useState('');
+  const [trackId, setTrackId] = useState(defaultTrack.id);
+  const [channel, setChannel] = useState<DramaAudienceChannel>(defaultTrack.channel);
+  const [visualStyle, setVisualStyle] = useState<DramaVisualStyle>(defaultTrack.visualStyleRecommend);
+  const [aspectRatio, setAspectRatio] = useState<DramaAspectRatio>('9:16 竖屏短剧');
+  const [preferredScriptFormat, setPreferredScriptFormat] =
+    useState<DramaScriptFormat>('triangle_standard');
+  const [totalPlannedEpisodes, setTotalPlannedEpisodes] = useState<number>(40);
+  const [paywallEpisodeIndex, setPaywallEpisodeIndex] = useState<number>(10);
+  const [logline, setLogline] = useState('');
+  const [targetAudience, setTargetAudience] = useState(defaultTrack.targetAudience);
+  const [golden3SecHook, setGolden3SecHook] = useState('');
+  const [synopsis, setSynopsis] = useState('');
+  const [characterAssets, setCharacterAssets] = useState<DramaCharacterAsset[]>([]);
+  const [sceneAnchors, setSceneAnchors] = useState<DramaSceneAnchor[]>([]);
+  const [episodePlan, setEpisodePlan] = useState<DramaEpisodePlanItem[]>([]);
+
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractStreamText, setExtractStreamText] = useState('');
+  const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (currentProject) {
+      setTitle(currentProject.title);
+      setTrackId(currentProject.trackId);
+      setChannel(currentProject.channel);
+      setVisualStyle(currentProject.visualStyle);
+      setAspectRatio(currentProject.aspectRatio);
+      setPreferredScriptFormat(currentProject.preferredScriptFormat || 'triangle_standard');
+      setTotalPlannedEpisodes(currentProject.totalPlannedEpisodes || 40);
+      setPaywallEpisodeIndex(currentProject.paywallEpisodeIndex || 10);
+      setLogline(currentProject.logline || '');
+      setTargetAudience(currentProject.targetAudience || '');
+      setGolden3SecHook(currentProject.golden3SecHook || '');
+      setSynopsis(currentProject.synopsis || '');
+      setCharacterAssets(currentProject.characterAssets || []);
+      setSceneAnchors(currentProject.sceneAnchors || []);
+      setEpisodePlan(currentProject.episodePlan || []);
+    } else {
+      setTitle('');
+      setTrackId(defaultTrack.id);
+      setChannel(defaultTrack.channel);
+      setVisualStyle(defaultTrack.visualStyleRecommend);
+      setAspectRatio('9:16 竖屏短剧');
+      setPreferredScriptFormat('triangle_standard');
+      setTotalPlannedEpisodes(40);
+      setPaywallEpisodeIndex(10);
+      setLogline('');
+      setTargetAudience(defaultTrack.targetAudience);
+      setGolden3SecHook('');
+      setSynopsis('');
+      setCharacterAssets([]);
+      setSceneAnchors([]);
+      setEpisodePlan([]);
+    }
+  }, [currentProject?.id]);
+
+  const handleTrackSelect = (newTrackId: string) => {
+    setTrackId(newTrackId);
+    const found = HOT_DRAMA_TRACKS.find((t) => t.id === newTrackId);
+    if (found) {
+      setChannel(found.channel);
+      setVisualStyle(found.visualStyleRecommend);
+      if (!targetAudience.trim()) setTargetAudience(found.targetAudience);
+    }
+  };
+
+  const buildSnapshotProject = (): DramaProject => {
+    const now = Date.now();
+    const matchedTrack = HOT_DRAMA_TRACKS.find((t) => t.id === trackId) || defaultTrack;
+    return {
+      id: currentProject?.id || generateUUID(),
+      title: title.trim() || '未命名爆款漫剧',
+      createdAt: currentProject?.createdAt || now,
+      lastModifiedAt: now,
+      trackId,
+      trackName: matchedTrack.name,
+      channel,
+      visualStyle,
+      aspectRatio,
+      preferredScriptFormat,
+      totalPlannedEpisodes,
+      paywallEpisodeIndex,
+      logline,
+      targetAudience,
+      golden3SecHook,
+      synopsis,
+      characterAssets,
+      sceneAnchors,
+      episodePlan,
+      episodes: currentProject?.episodes || [],
+      sourceNovelId: currentProject?.sourceNovelId,
+    };
+  };
+
+  const handleManualSave = async () => {
+    if (!title.trim()) {
+      setStatusMsg({ type: 'error', text: '请先填写漫剧剧名后再保存立项' });
+      return;
+    }
+    const proj = buildSnapshotProject();
+    await onSaveProject(proj);
+    setStatusMsg({ type: 'success', text: `《${proj.title}》立项规格与视觉资产已保存` });
+    triggerQuickToast('漫剧立项档案已保存');
+  };
+
+  const handleAiExtractAssetsAndBeats = async () => {
+    if (!title.trim() || !synopsis.trim()) {
+      setStatusMsg({
+        type: 'error',
+        text: '请先填写「漫剧剧名」与「全剧商业大纲」（或前往热门赛道雷达一键采纳企划），再执行 AI 视觉资产提取。',
+      });
+      return;
+    }
+
+    const cfgId = uiSettings.writerApiCfgId || uiSettings.inspirationApiCfgId;
+    const cfg = configs.find((c) => c.id === cfgId) || configs[0];
+    const model = uiSettings.writerApiModel || cfg?.modelsCache?.[0]?.id || 'gemini-3.6-flash';
+
+    if (!cfg) {
+      setStatusMsg({ type: 'error', text: '未检测到可用模型线路，请先在「引擎与技能」中配置' });
+      return;
+    }
+
+    setIsExtracting(true);
+    setExtractStreamText('');
+    setStatusMsg({ type: 'info', text: 'AI 视觉总监正在锁定角色固定立绘词、核心场景锚点与前12集卡点目录...' });
+
+    try {
+      const snapshot = buildSnapshotProject();
+      const messages = buildDramaAssetExtractionMessages(snapshot);
+      let rawAccum = '';
+      const res = await streamChatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages,
+        temperature: 0.75,
+        onChunk: (chunk) => {
+          rawAccum += chunk;
+          setExtractStreamText(rawAccum);
+        },
+      });
+
+      const parsed = parseDramaAssetsJson(res.content || rawAccum);
+      setCharacterAssets(parsed.characterAssets);
+      setSceneAnchors(parsed.sceneAnchors);
+      setEpisodePlan(parsed.episodePlan);
+
+      const updatedProj: DramaProject = {
+        ...snapshot,
+        characterAssets: parsed.characterAssets,
+        sceneAnchors: parsed.sceneAnchors,
+        episodePlan: parsed.episodePlan,
+        lastModifiedAt: Date.now(),
+      };
+      await onSaveProject(updatedProj);
+      setStatusMsg({
+        type: 'success',
+        text: `已成功锁定 ${parsed.characterAssets.length} 位角色立绘固定词、${parsed.sceneAnchors.length} 处场景锚点与 ${parsed.episodePlan.length} 集分集卡点目录！`,
+      });
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: `提取视觉资产失败：${err.message}` });
+    } finally {
+      setIsExtracting(false);
+      setExtractStreamText('');
+    }
+  };
+
+  const copyText = (key: string, val: string, toastMsg = '已复制到剪贴板') => {
+    navigator.clipboard.writeText(val);
+    setCopiedKey(key);
+    triggerQuickToast(toastMsg);
+    setTimeout(() => setCopiedKey(null), 1600);
+  };
+
+  const addBlankCharacter = () => {
+    setCharacterAssets((prev) => [
+      ...prev,
+      {
+        id: generateUUID(),
+        name: '新角色',
+        roleTag: '核心配角',
+        ageAndArchetype: '22岁 · 鲜明反差人设',
+        appearanceZh: '',
+        visualPromptEn: '',
+        voicePersona: '',
+        signatureTrait: '',
+      },
+    ]);
+  };
+
+  const updateCharField = (id: string, field: keyof DramaCharacterAsset, value: string) => {
+    setCharacterAssets((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, [field]: value } : c))
+    );
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-6 sm:space-y-8">
+      {/* XP Isolation Notice & Header */}
+      <section className="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-5 border-b border-[var(--border-subtle)]">
+        <div className="space-y-1.5">
+          <div className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+            <ShieldCheck className="w-4 h-4 shrink-0" />
+            <span>商业剧本纯净模式：已物理隔离个人小说 XP 宪法，严格对齐市面甲方标准文学剧本与后期分镜双层规范</span>
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[var(--text-primary)] font-editorial-serif">
+            {currentProject ? `《${title || currentProject.title}》立项与视觉资产` : '新建 AI 漫剧商业立项'}
+          </h1>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <MotionButton
+            type="button"
+            onClick={handleManualSave}
+            className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium cursor-pointer"
+          >
+            保存立项档案
+          </MotionButton>
+          <MotionButton
+            type="button"
+            onClick={async () => {
+              const proj = buildSnapshotProject();
+              await onSaveProject(proj);
+              const nextEp = (proj.episodes?.length || 0) + 1;
+              onStartEpisodeInWriter(proj, nextEp);
+            }}
+            className="btn-primary min-h-[44px] px-5 py-2 text-xs sm:text-sm flex items-center gap-2 cursor-pointer"
+          >
+            <Film className="w-4 h-4" />
+            <span>保存并进入剧本台</span>
+          </MotionButton>
+        </div>
+      </section>
+
+      {statusMsg && (
+        <div
+          className={`p-3.5 rounded-xl text-xs font-medium border ${
+            statusMsg.type === 'error'
+              ? 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'
+              : statusMsg.type === 'success'
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+              : 'studio-muted border-[var(--border-subtle)] text-[var(--text-secondary)]'
+          }`}
+        >
+          {statusMsg.text}
+        </div>
+      )}
+
+      {/* Part 1: Commercial Specs & Synopsis */}
+      <section className="studio-card p-5 sm:p-7 space-y-5">
+        <h2 className="text-base font-bold text-[var(--text-primary)] border-b border-[var(--border-subtle)] pb-3">
+          一、商业漫剧规格与默认甲方剧本流派
+        </h2>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+          <div className="sm:col-span-2">
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">漫剧剧名 *</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="例：零下七十度：我的百亿安全屋寸步不让"
+              className="studio-input w-full min-h-[42px] px-3.5 py-2 text-sm font-semibold"
+            />
+          </div>
+
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">绑定热门赛道</label>
+            <select
+              value={trackId}
+              onChange={(e) => handleTrackSelect(e.target.value)}
+              className="studio-input w-full min-h-[42px] px-3 py-2 text-xs"
+            >
+              {HOT_DRAMA_TRACKS.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.channel} · {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">默认文学剧本规范</label>
+            <select
+              value={preferredScriptFormat}
+              onChange={(e) => setPreferredScriptFormat(e.target.value as DramaScriptFormat)}
+              className="studio-input w-full min-h-[42px] px-3 py-2 text-xs font-medium"
+            >
+              {DRAMA_SCRIPT_FORMATS.map((fmt) => (
+                <option key={fmt.id} value={fmt.id}>
+                  {fmt.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">全局统一 AI 画风</label>
+            <select
+              value={visualStyle}
+              onChange={(e) => setVisualStyle(e.target.value as DramaVisualStyle)}
+              className="studio-input w-full min-h-[42px] px-3 py-2 text-xs"
+            >
+              {VISUAL_STYLES.map((style) => (
+                <option key={style} value={style}>
+                  {style}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">成片画幅比例</label>
+            <select
+              value={aspectRatio}
+              onChange={(e) => setAspectRatio(e.target.value as DramaAspectRatio)}
+              className="studio-input w-full min-h-[42px] px-3 py-2 text-xs"
+            >
+              {ASPECT_RATIOS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">规划总集数</label>
+            <input
+              type="number"
+              min={6}
+              max={120}
+              value={totalPlannedEpisodes}
+              onChange={(e) => setTotalPlannedEpisodes(Number(e.target.value) || 40)}
+              className="studio-input w-full min-h-[42px] px-3.5 py-2 text-xs tabular-nums"
+            />
+          </div>
+
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">核心付费卡点集（第10-12集）</label>
+            <input
+              type="number"
+              min={3}
+              max={30}
+              value={paywallEpisodeIndex}
+              onChange={(e) => setPaywallEpisodeIndex(Number(e.target.value) || 10)}
+              className="studio-input w-full min-h-[42px] px-3.5 py-2 text-xs tabular-nums"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">一句话商业卖点 (Logline)</label>
+            <textarea
+              rows={2}
+              value={logline}
+              onChange={(e) => setLogline(e.target.value)}
+              placeholder="用一句话点明主角极致处境反差与核心爽点..."
+              className="studio-input w-full p-3 text-xs leading-relaxed"
+            />
+          </div>
+          <div>
+            <label className="block mb-1.5 font-medium text-[var(--text-secondary)]">⚡ 开篇第 1 集黄金前 3 秒生死钩子</label>
+            <textarea
+              rows={2}
+              value={golden3SecHook}
+              onChange={(e) => setGolden3SecHook(e.target.value)}
+              placeholder="前3秒必须出现的视觉奇观、极端冲突或倒计时画面..."
+              className="studio-input w-full p-3 text-xs leading-relaxed"
+            />
+          </div>
+        </div>
+
+        <div className="text-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-1.5">
+            <label className="font-medium text-[var(--text-secondary)]">
+              全剧商业三阶段大纲（免费留存期 → 付费卡点大钩子 → 主线高潮）*
+            </label>
+            <MotionButton
+              type="button"
+              disabled={isExtracting}
+              onClick={handleAiExtractAssetsAndBeats}
+              className="btn-primary min-h-[38px] px-4 py-1.5 text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+            >
+              {isExtracting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>正在生成立绘资产与分集表...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>AI 一键提取角色固定立绘词 + 分集卡点目录</span>
+                </>
+              )}
+            </MotionButton>
+          </div>
+          <textarea
+            rows={5}
+            value={synopsis}
+            onChange={(e) => setSynopsis(e.target.value)}
+            placeholder="输入故事主线梗概，然后点击右上角「AI 一键提取角色固定立绘词 + 分集卡点目录」..."
+            className="studio-input w-full p-3.5 text-xs sm:text-sm leading-relaxed"
+          />
+          {isExtracting && extractStreamText && (
+            <div className="mt-3 p-3.5 rounded-xl studio-muted space-y-2">
+              <div className="h-1 w-full rounded-full bg-[var(--border-subtle)] overflow-hidden">
+                <div className="h-full w-1/2 bg-[var(--accent)] rounded-full animate-shimmer-sweep" />
+              </div>
+              <p className="text-[11px] font-mono text-[var(--text-muted)] line-clamp-3 whitespace-pre-wrap">
+                {extractStreamText}
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Part 2: Character Visual Consistency Lock Cards */}
+      <section className="studio-card p-5 sm:p-7 space-y-4">
+        <div className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-3">
+          <div className="space-y-0.5">
+            <h2 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+              <UserCheck className="w-4 h-4 text-[var(--accent)]" />
+              <span>二、角色视觉立绘固定词卡 ({characterAssets.length})</span>
+            </h2>
+            <p className="text-xs text-[var(--text-muted)]">
+              上游写 △ 文学剧本时只保留人物姓名与性格口吻（绝不啰嗦复读外貌）；下游拆解 AI 分镜单时才会自动织入这些固定立绘词。支持右键卡片快捷复制。
+            </p>
+          </div>
+          <MotionButton
+            type="button"
+            onClick={addBlankCharacter}
+            className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1 hover:bg-[var(--bg-muted)] cursor-pointer shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>手动添加角色</span>
+          </MotionButton>
+        </div>
+
+        {characterAssets.length === 0 ? (
+          <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">
+            暂未锁定角色立绘资产。填写上方大纲后点击「AI 一键提取角色固定立绘词」，系统将自动生成中英双语生图固定词。
+          </p>
+        ) : (
+          <StaggerList className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {characterAssets.map((char) => (
+              <StaggerItem
+                key={char.id}
+                onContextMenu={(e) =>
+                  openContextMenu(
+                    e,
+                    [
+                      {
+                        id: 'copy-zh',
+                        label: '复制中文立绘固定词',
+                        icon: <Copy className="w-3.5 h-3.5" />,
+                        onSelect: () => copyText(`zh-${char.id}`, char.appearanceZh, `已复制「${char.name}」中文立绘词`),
+                      },
+                      {
+                        id: 'copy-en',
+                        label: '复制英文 MJ/Runway Tag',
+                        icon: <Copy className="w-3.5 h-3.5" />,
+                        onSelect: () => copyText(`en-${char.id}`, char.visualPromptEn, `已复制「${char.name}」英文 Tag`),
+                      },
+                      {
+                        id: 'copy-voice',
+                        label: '复制 TTS 配音音色指导',
+                        icon: <FileText className="w-3.5 h-3.5" />,
+                        onSelect: () => copyText(`vo-${char.id}`, char.voicePersona, `已复制「${char.name}」配音指导`),
+                      },
+                      {
+                        id: 'del-char',
+                        label: '删除该角色立绘卡',
+                        icon: <Trash2 className="w-3.5 h-3.5" />,
+                        danger: true,
+                        dividerBefore: true,
+                        onSelect: () => setCharacterAssets((prev) => prev.filter((item) => item.id !== char.id)),
+                      },
+                    ],
+                    `角色资产 · ${char.name}`
+                  )
+                }
+                className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/50 space-y-3 text-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-1">
+                    <input
+                      type="text"
+                      value={char.name}
+                      onChange={(e) => updateCharField(char.id, 'name', e.target.value)}
+                      className="studio-input px-2.5 py-1.5 font-bold text-sm w-28"
+                    />
+                    <input
+                      type="text"
+                      value={char.roleTag}
+                      onChange={(e) => updateCharField(char.id, 'roleTag', e.target.value)}
+                      className="studio-input px-2.5 py-1.5 text-xs flex-1"
+                    />
+                  </div>
+                  <MotionButton
+                    type="button"
+                    onClick={() => setCharacterAssets((prev) => prev.filter((item) => item.id !== char.id))}
+                    className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-rose-600 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </MotionButton>
+                </div>
+
+                <div>
+                  <label className="block mb-1 text-[var(--text-muted)]">人设与年龄定位</label>
+                  <input
+                    type="text"
+                    value={char.ageAndArchetype}
+                    onChange={(e) => updateCharField(char.id, 'ageAndArchetype', e.target.value)}
+                    className="studio-input w-full px-3 py-1.5 text-xs"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[var(--text-muted)]">中文立绘固定词（即梦 / 可灵垫图与描述）</label>
+                    <button
+                      type="button"
+                      onClick={() => copyText(`zh-${char.id}`, char.appearanceZh)}
+                      className="text-[11px] text-[var(--accent)] flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedKey === `zh-${char.id}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                      <span>复制</span>
+                    </button>
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={char.appearanceZh}
+                    onChange={(e) => updateCharField(char.id, 'appearanceZh', e.target.value)}
+                    className="studio-input w-full p-2.5 text-xs leading-relaxed"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[var(--text-muted)]">英文一致性生图 Tag（Midjourney / Runway）</label>
+                    <button
+                      type="button"
+                      onClick={() => copyText(`en-${char.id}`, char.visualPromptEn)}
+                      className="text-[11px] text-[var(--accent)] flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedKey === `en-${char.id}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                      <span>复制 Tag</span>
+                    </button>
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={char.visualPromptEn}
+                    onChange={(e) => updateCharField(char.id, 'visualPromptEn', e.target.value)}
+                    className="studio-input w-full p-2.5 font-mono text-[11px] leading-relaxed"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="block mb-1 text-[var(--text-muted)]">TTS 配音音色指导</label>
+                    <input
+                      type="text"
+                      value={char.voicePersona}
+                      onChange={(e) => updateCharField(char.id, 'voicePersona', e.target.value)}
+                      className="studio-input w-full px-2.5 py-1.5 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-[var(--text-muted)]">标志性道具 / 镜头动作</label>
+                    <input
+                      type="text"
+                      value={char.signatureTrait}
+                      onChange={(e) => updateCharField(char.id, 'signatureTrait', e.target.value)}
+                      className="studio-input w-full px-2.5 py-1.5 text-xs"
+                    />
+                  </div>
+                </div>
+              </StaggerItem>
+            ))}
+          </StaggerList>
+        )}
+      </section>
+
+      {/* Part 3: Scene Anchors & Planned Episode Paywall Roadmap */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <section className="lg:col-span-5 studio-card p-5 sm:p-6 space-y-4">
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
+            <h2 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-[var(--accent)]" />
+              <span>核心场景视觉锚点 ({sceneAnchors.length})</span>
+            </h2>
+            <MotionButton
+              type="button"
+              onClick={() =>
+                setSceneAnchors((prev) => [
+                  ...prev,
+                  {
+                    id: generateUUID(),
+                    sceneName: '新场景',
+                    lightingAndMood: '高反差冷暖光影',
+                    visualPromptZh: '',
+                    visualPromptEn: '',
+                  },
+                ])
+              }
+              className="text-xs font-medium text-[var(--accent)] flex items-center gap-1 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>新增场景</span>
+            </MotionButton>
+          </div>
+
+          {sceneAnchors.length === 0 ? (
+            <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">
+              提取资产后将在此展示高频主场景光影锚点。
+            </p>
+          ) : (
+            <StaggerList className="space-y-3">
+              {sceneAnchors.map((sc) => (
+                <StaggerItem
+                  key={sc.id}
+                  className="p-3.5 rounded-xl border border-[var(--border-subtle)] space-y-2 text-xs"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <input
+                      type="text"
+                      value={sc.sceneName}
+                      onChange={(e) =>
+                        setSceneAnchors((prev) =>
+                          prev.map((item) => (item.id === sc.id ? { ...item, sceneName: e.target.value } : item))
+                        )
+                      }
+                      className="studio-input px-2.5 py-1 font-semibold flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSceneAnchors((prev) => prev.filter((item) => item.id !== sc.id))}
+                      className="text-[var(--text-muted)] hover:text-rose-600 p-1 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={sc.visualPromptZh}
+                    onChange={(e) =>
+                      setSceneAnchors((prev) =>
+                        prev.map((item) => (item.id === sc.id ? { ...item, visualPromptZh: e.target.value } : item))
+                      )
+                    }
+                    placeholder="中文场景布景与光影固定描述..."
+                    className="studio-input w-full p-2 text-xs"
+                  />
+                </StaggerItem>
+              ))}
+            </StaggerList>
+          )}
+        </section>
+
+        <section className="lg:col-span-7 studio-card p-5 sm:p-6 space-y-4">
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
+            <h2 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+              <Flame className="w-4 h-4 text-[var(--accent)]" />
+              <span>商业分集节拍与付费卡点规划 ({episodePlan.length} 集)</span>
+            </h2>
+          </div>
+
+          {episodePlan.length === 0 ? (
+            <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">
+              点击上方「AI 一键提取角色固定立绘词 + 分集卡点目录」，自动生成前 12 集起承转合与付费卡点规划。
+            </p>
+          ) : (
+            <StaggerList className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+              {episodePlan.map((ep) => {
+                const isPaywall = ep.hookType === '核心付费卡点' || ep.episodeIndex === paywallEpisodeIndex;
+                const alreadyShot = currentProject?.episodes?.some((e) => e.index === ep.episodeIndex);
+                return (
+                  <StaggerItem
+                    key={ep.episodeIndex}
+                    onContextMenu={(e) =>
+                      openContextMenu(
+                        e,
+                        [
+                          {
+                            id: 'shoot-ep',
+                            label: alreadyShot ? `打开第 ${ep.episodeIndex} 集剧本` : `立即执笔第 ${ep.episodeIndex} 集剧本`,
+                            icon: <Film className="w-3.5 h-3.5" />,
+                            onSelect: async () => {
+                              const proj = buildSnapshotProject();
+                              await onSaveProject(proj);
+                              onStartEpisodeInWriter(proj, ep.episodeIndex, `${ep.title}：${ep.beatSummary}`);
+                            },
+                          },
+                          {
+                            id: 'copy-beat',
+                            label: '复制本集剧情节拍梗概',
+                            icon: <Copy className="w-3.5 h-3.5" />,
+                            onSelect: () =>
+                              copyText(`beat-${ep.episodeIndex}`, `第${ep.episodeIndex}集《${ep.title}》：${ep.beatSummary}`),
+                          },
+                          {
+                            id: 'set-paywall',
+                            label: `将第 ${ep.episodeIndex} 集设为付费卡点`,
+                            icon: <Flame className="w-3.5 h-3.5" />,
+                            onSelect: () => {
+                              setPaywallEpisodeIndex(ep.episodeIndex);
+                              triggerQuickToast(`已将第 ${ep.episodeIndex} 集设为付费卡点`);
+                            },
+                          },
+                        ],
+                        `分集大纲 · 第 ${ep.episodeIndex} 集`
+                      )
+                    }
+                    className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+                      isPaywall
+                        ? 'border-amber-500/45 bg-amber-500/5'
+                        : 'border-[var(--border-subtle)] bg-[var(--bg-surface)]'
+                    }`}
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold tabular-nums text-[var(--text-primary)]">
+                          第 {ep.episodeIndex} 集 · {ep.title}
+                        </span>
+                        <span
+                          className={`text-[11px] font-semibold ${
+                            isPaywall ? 'text-amber-600 dark:text-amber-400' : 'text-[var(--text-muted)]'
+                          }`}
+                        >
+                          {isPaywall ? '🔥 核心付费卡点' : ep.hookType}
+                        </span>
+                        {alreadyShot && (
+                          <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                            ✓ 已出本
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[var(--text-secondary)] leading-relaxed">{ep.beatSummary}</p>
+                    </div>
+
+                    <MotionButton
+                      type="button"
+                      onClick={async () => {
+                        const proj = buildSnapshotProject();
+                        await onSaveProject(proj);
+                        onStartEpisodeInWriter(proj, ep.episodeIndex, `${ep.title}：${ep.beatSummary}`);
+                      }}
+                      className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[var(--border-subtle)] hover:border-[var(--accent)] text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      {alreadyShot ? '查看剧本' : '写此集 →'}
+                    </MotionButton>
+                  </StaggerItem>
+                );
+              })}
+            </StaggerList>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
+// 2. 双层漫剧工作台：上游「甲方标准文学剧本(△本)」 ↔ 下游「AI 分镜拆解单」
+// ============================================================================
+
+interface DramaWriterViewProps {
+  currentProject: DramaProject | null;
+  targetEpisodeIndex: number;
+  setTargetEpisodeIndex: (idx: number) => void;
+  presetDirectorBeat?: string;
+  clearPresetDirectorBeat?: () => void;
+  books: Book[];
+  configs: ApiConfig[];
+  uiSettings: UiSettings;
+  onSaveProject: (project: DramaProject) => Promise<void>;
+  onGoToDramaSetup: () => void;
+}
+
+export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
+  currentProject,
+  targetEpisodeIndex,
+  setTargetEpisodeIndex,
+  presetDirectorBeat,
+  clearPresetDirectorBeat,
+  books,
+  configs,
+  uiSettings,
+  onSaveProject,
+  onGoToDramaSetup,
+}) => {
+  const { openContextMenu, triggerQuickToast } = useContextMenu();
+
+  // Default to 'script' (authentic upstream client △ literary script!)
+  const [viewMode, setViewMode] = useState<'script' | 'storyboard'>('script');
+  const [scriptFormat, setScriptFormat] = useState<DramaScriptFormat>(
+    currentProject?.preferredScriptFormat || 'triangle_standard'
+  );
+  const [isEditingRawScript, setIsEditingRawScript] = useState(false);
+  const [draftScriptText, setDraftScriptText] = useState('');
+  const [isFormatGuideOpen, setIsFormatGuideOpen] = useState(false);
+
+  const [directorInput, setDirectorInput] = useState('');
+  const [targetShotCount, setTargetShotCount] = useState<number>(8);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatingStageLabel, setGeneratingStageLabel] = useState('');
+  const [streamRawText, setStreamRawText] = useState('');
+  const [streamProgress, setStreamProgress] = useState(0);
+  const [errorAlert, setErrorAlert] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [polishingShotId, setPolishingShotId] = useState<string | null>(null);
+  const [editingShotId, setEditingShotId] = useState<string | null>(null);
+
+  // Client Messy Script Import & Wash Modal
+  const [isWashModalOpen, setIsWashModalOpen] = useState(false);
+  const [messyClientInput, setMessyClientInput] = useState('');
+  const [isWashingScript, setIsWashingScript] = useState(false);
+
+  // Mobile Episode Drawer & Novel-to-Drama Adaptation Modal
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
+  const [isAdaptModalOpen, setIsAdaptModalOpen] = useState(false);
+  const [selectedBookId, setSelectedBookId] = useState<string>(books[0]?.id || '');
+  const [selectedBookChapterIdx, setSelectedBookChapterIdx] = useState<number>(0);
+
+  useEffect(() => {
+    if (currentProject?.preferredScriptFormat) {
+      setScriptFormat(currentProject.preferredScriptFormat);
+    }
+  }, [currentProject?.id]);
+
+  useEffect(() => {
+    if (presetDirectorBeat) {
+      setDirectorInput(presetDirectorBeat);
+      if (clearPresetDirectorBeat) clearPresetDirectorBeat();
+    }
+  }, [presetDirectorBeat]);
+
+  const sortedEpisodes = [...(currentProject?.episodes || [])].sort((a, b) => a.index - b.index);
+  const activeEpisode: DramaEpisode | undefined = sortedEpisodes.find(
+    (e) => e.index === targetEpisodeIndex
+  );
+
+  useEffect(() => {
+    if (activeEpisode) {
+      setDraftScriptText(activeEpisode.rawScriptText || '');
+      if (activeEpisode.scriptFormat) {
+        setScriptFormat(activeEpisode.scriptFormat);
+      }
+      setIsEditingRawScript(false);
+    }
+  }, [activeEpisode?.id, activeEpisode?.updatedAt]);
+
+  if (!currentProject) {
+    return (
+      <div className="studio-card p-10 sm:p-14 text-center space-y-4 max-w-2xl mx-auto">
+        <Film className="w-10 h-10 mx-auto text-[var(--text-muted)]" />
+        <h2 className="text-lg font-bold text-[var(--text-primary)]">尚未选择漫剧项目</h2>
+        <p className="text-xs sm:text-sm text-[var(--text-secondary)]">
+          请先在「漫剧片单」中选择一部剧目，或前往「立项与立绘」创建一部商业漫剧项目。
+        </p>
+        <MotionButton
+          type="button"
+          onClick={onGoToDramaSetup}
+          className="btn-primary min-h-[44px] px-5 py-2.5 text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer"
+        >
+          <Plus className="w-4 h-4" />
+          <span>前往立项新漫剧</span>
+        </MotionButton>
+      </div>
+    );
+  }
+
+  const nextEpisodeNumber =
+    sortedEpisodes.length > 0 ? sortedEpisodes[sortedEpisodes.length - 1].index + 1 : 1;
+
+  const getWriterApi = () => {
+    const cfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
+    const model = uiSettings.writerApiModel || cfg?.modelsCache?.[0]?.id || 'gemini-3.6-flash';
+    return { cfg, model };
+  };
+
+  const handleCopy = (id: string, text: string, label = '已复制到剪贴板') => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    triggerQuickToast(label);
+    setTimeout(() => setCopiedId(null), 1600);
+  };
+
+  const handleExportEpisodeTxt = (ep: DramaEpisode) => {
+    const content = `${ep.title}\n\n${ep.rawScriptText}`;
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `《${currentProject.title}》_第${ep.index}集标准剧本.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    triggerQuickToast(`已导出第 ${ep.index} 集 .txt 标准剧本`);
+  };
+
+  /**
+   * 上游主流程：仅生成干净极简的「甲方标准文学剧本（△三角本 / 国漫极简音效本 / 出海双语本）」
+   */
+  const executeGenerateLiteraryScriptOnly = async (
+    epNumberToWrite: number,
+    customInstruction: string,
+    novelSource?: { novelTitle: string; chapterTitle: string; chapterText: string } | null
+  ) => {
+    const { cfg, model } = getWriterApi();
+    if (!cfg) {
+      setErrorAlert('未找到可用的 API 线路，请前往「引擎与技能」配置。');
+      return;
+    }
+
+    setIsGenerating(true);
+    setGeneratingStageLabel(
+      `正在按「${DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat)?.name}」撰写第 ${epNumberToWrite} 集极简文学剧本...`
+    );
+    setErrorAlert(null);
+    setStreamRawText('');
+    setStreamProgress(10);
+    setTargetEpisodeIndex(epNumberToWrite);
+    setViewMode('script');
+
+    const startTime = Date.now();
+
+    try {
+      const messages = buildLiteraryScriptMessages({
+        project: currentProject,
+        episodeIndex: epNumberToWrite,
+        scriptFormat,
+        directorInstruction: customInstruction,
+        sourceNovelChapter: novelSource,
+      });
+
+      let fullRaw = '';
+      const res = await streamChatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages,
+        temperature: 0.82,
+        onChunk: (chunk) => {
+          fullRaw += chunk;
+          setStreamRawText(fullRaw);
+          const pct = Math.min(95, Math.max(12, Math.round((fullRaw.length / 1300) * 100)));
+          setStreamProgress(pct);
+        },
+      });
+
+      const finalRaw = (res.content || fullRaw).trim();
+      if (!finalRaw) {
+        setErrorAlert('⚠️ 模型本次发生空回，原指令已保留，请直接点击重试！');
+        return;
+      }
+
+      const isPaywall = epNumberToWrite === currentProject.paywallEpisodeIndex;
+      const existingEp = currentProject.episodes.find((e) => e.index === epNumberToWrite);
+      const newEpisode = parseLiteraryScriptEpisode(
+        finalRaw,
+        epNumberToWrite,
+        scriptFormat,
+        isPaywall,
+        existingEp?.shots || []
+      );
+
+      if (!newEpisode.rawScriptText.trim()) {
+        setErrorAlert('⚠️ 模型返回内容未能解析出有效剧本正文，请重试。');
+        return;
+      }
+
+      const fmtName = DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat)?.name || '标准剧本';
+      const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+      newEpisode.meta = `格式: ${fmtName} | 模型: ${model} | 耗时 ${elapsedSec}s${
+        newEpisode.shots.length > 0 ? ` | 已拆解 ${newEpisode.shots.length} 镜` : ' | 待拆解后期分镜'
+      }`;
+
+      const otherEps = (currentProject.episodes || []).filter((e) => e.index !== epNumberToWrite);
+      const updatedProject: DramaProject = {
+        ...currentProject,
+        preferredScriptFormat: scriptFormat,
+        episodes: [...otherEps, newEpisode].sort((a, b) => a.index - b.index),
+        lastModifiedAt: Date.now(),
+      };
+
+      await onSaveProject(updatedProject);
+      setStreamProgress(100);
+      setDirectorInput('');
+      triggerQuickToast(`第 ${epNumberToWrite} 集甲方标准剧本已生成！`);
+    } catch (err: any) {
+      setErrorAlert(`标准剧本生成异常：${err.message || '网络中断'}（指令已保留）`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  /**
+   * 下游拆解流程：由当前已定稿的「甲方标准文学剧本」一键拆解为「AI 漫剧后期生图分镜单」
+   */
+  const executeBreakdownShotsFromScript = async () => {
+    if (!activeEpisode || !activeEpisode.rawScriptText.trim()) {
+      setErrorAlert('当前集尚无文学剧本正文，请先撰写或导入标准剧本后再拆解分镜。');
+      return;
+    }
+
+    const { cfg, model } = getWriterApi();
+    if (!cfg) return;
+
+    setIsGenerating(true);
+    setGeneratingStageLabel(
+      `正在将第 ${activeEpisode.index} 集 △ 文学剧本拆解为 ${targetShotCount} 镜 AI 生图执行单（自动融合角色立绘固定词）...`
+    );
+    setErrorAlert(null);
+    setStreamRawText('');
+    setStreamProgress(8);
+
+    const startTime = Date.now();
+
+    try {
+      const scriptSource = isEditingRawScript ? draftScriptText : activeEpisode.rawScriptText;
+      const messages = buildBreakdownScriptToShotsMessages({
+        project: currentProject,
+        episodeIndex: activeEpisode.index,
+        literaryScriptText: scriptSource,
+        targetShotCount,
+      });
+
+      let fullRaw = '';
+      const res = await streamChatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages,
+        temperature: 0.76,
+        onChunk: (chunk) => {
+          fullRaw += chunk;
+          setStreamRawText(fullRaw);
+          const est = targetShotCount * 320;
+          setStreamProgress(Math.min(95, Math.max(10, Math.round((fullRaw.length / est) * 100))));
+        },
+      });
+
+      const shots = parseBreakdownShotsJson(res.content || fullRaw);
+      if (shots.length === 0) {
+        setErrorAlert('⚠️ 未能解析出有效分镜数组，请重试拆解。');
+        return;
+      }
+
+      const totalSec = shots.reduce((s, item) => s + (item.durationSec || 5), 0);
+      const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+      const updatedEp: DramaEpisode = {
+        ...activeEpisode,
+        rawScriptText: scriptSource,
+        shots,
+        targetDurationSec: totalSec,
+        meta: `由文学本拆解 ${shots.length} 镜 | 预计 ${totalSec}秒 | 模型: ${model} | 耗时 ${elapsedSec}s`,
+        updatedAt: Date.now(),
+      };
+
+      const updatedProject: DramaProject = {
+        ...currentProject,
+        episodes: currentProject.episodes.map((e) => (e.id === activeEpisode.id ? updatedEp : e)),
+        lastModifiedAt: Date.now(),
+      };
+
+      await onSaveProject(updatedProject);
+      setIsEditingRawScript(false);
+      setViewMode('storyboard');
+      triggerQuickToast(`成功拆解出 ${shots.length} 镜 AI 生图执行表！`);
+    } catch (err: any) {
+      setErrorAlert(`拆解后期分镜失败：${err.message}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  /**
+   * 一步全流程模式：同时生成标准 △ 文学剧本 + 下游 AI 分镜执行单
+   */
+  const executeGenerateFullPipelineEpisode = async (
+    epNumberToShoot: number,
+    customInstruction: string,
+    novelSource?: { novelTitle: string; chapterTitle: string; chapterText: string } | null
+  ) => {
+    const { cfg, model } = getWriterApi();
+    if (!cfg) {
+      setErrorAlert('未找到可用的 API 线路，请前往「引擎与技能」配置。');
+      return;
+    }
+
+    setIsGenerating(true);
+    setGeneratingStageLabel(
+      `正在同步生成第 ${epNumberToShoot} 集「甲方标准 △ 剧本 + ${targetShotCount} 镜后期生图拆解单」...`
+    );
+    setErrorAlert(null);
+    setStreamRawText('');
+    setStreamProgress(6);
+    setTargetEpisodeIndex(epNumberToShoot);
+
+    const startTime = Date.now();
+
+    try {
+      const messages = buildDramaEpisodeMessages({
+        project: currentProject,
+        episodeIndex: epNumberToShoot,
+        scriptFormat,
+        directorInstruction: customInstruction,
+        targetShotCount,
+        sourceNovelChapter: novelSource,
+      });
+
+      let fullRaw = '';
+      const res = await streamChatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages,
+        temperature: 0.82,
+        onChunk: (chunk) => {
+          fullRaw += chunk;
+          setStreamRawText(fullRaw);
+          const estimatedTotalChars = targetShotCount * 380 + 800;
+          const pct = Math.min(94, Math.max(8, Math.round((fullRaw.length / estimatedTotalChars) * 100)));
+          setStreamProgress(pct);
+        },
+      });
+
+      const finalRaw = (res.content || fullRaw).trim();
+      if (!finalRaw) {
+        setErrorAlert('⚠️ 模型本次发生空回，执导指令已为您原样保留，请点击重试！');
+        return;
+      }
+
+      const isPaywall = epNumberToShoot === currentProject.paywallEpisodeIndex;
+      const newEpisode = parseGeneratedDramaEpisode(
+        finalRaw,
+        epNumberToShoot,
+        isPaywall,
+        scriptFormat
+      );
+
+      const elapsedMs = Date.now() - startTime;
+      const fmtName = DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat)?.name || '标准剧本';
+      newEpisode.meta = `格式: ${fmtName} | ${newEpisode.shots.length}镜 | 约${newEpisode.targetDurationSec}秒 | 耗时 ${(elapsedMs / 1000).toFixed(1)}s`;
+
+      const otherEps = (currentProject.episodes || []).filter((e) => e.index !== epNumberToShoot);
+      const updatedProject: DramaProject = {
+        ...currentProject,
+        preferredScriptFormat: scriptFormat,
+        episodes: [...otherEps, newEpisode].sort((a, b) => a.index - b.index),
+        lastModifiedAt: Date.now(),
+      };
+
+      await onSaveProject(updatedProject);
+      setStreamProgress(100);
+      setDirectorInput('');
+      triggerQuickToast(`第 ${epNumberToShoot} 集剧本与分镜已同步生成！`);
+    } catch (err: any) {
+      setErrorAlert(`全流程生成异常：${err.message || '网络中断'}（指令已保留）`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  /**
+   * 保存手动编辑后的文学剧本
+   */
+  const handleSaveEditedRawScript = async () => {
+    if (!activeEpisode) return;
+    const cleaned = cleanMessyClientScriptLocal(draftScriptText);
+    const updatedEp: DramaEpisode = {
+      ...activeEpisode,
+      scriptFormat,
+      rawScriptText: cleaned,
+      updatedAt: Date.now(),
+    };
+    const updatedProject: DramaProject = {
+      ...currentProject,
+      episodes: currentProject.episodes.map((e) => (e.id === activeEpisode.id ? updatedEp : e)),
+      lastModifiedAt: Date.now(),
+    };
+    await onSaveProject(updatedProject);
+    setDraftScriptText(cleaned);
+    setIsEditingRawScript(false);
+    triggerQuickToast('标准剧本微调已保存');
+  };
+
+  /**
+   * 甲方乱稿上传/粘贴一键规范化洗稿入库
+   */
+  const handleAiWashClientScript = async () => {
+    if (!messyClientInput.trim()) return;
+    const { cfg, model } = getWriterApi();
+    if (!cfg) return;
+
+    setIsWashingScript(true);
+    try {
+      const epIdx = activeEpisode ? activeEpisode.index : targetEpisodeIndex;
+      const messages = buildStandardizeClientScriptMessages({
+        messyScript: messyClientInput,
+        targetFormat: scriptFormat,
+        episodeIndex: epIdx,
+      });
+
+      const res = await chatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages,
+        temperature: 0.5,
+      });
+
+      const parsed = JSON.parse(extractJsonString(res.content));
+      const washedText = cleanMessyClientScriptLocal(String(parsed.scriptText || messyClientInput));
+
+      const newEp: DramaEpisode = {
+        id: activeEpisode?.id || generateUUID(),
+        index: epIdx,
+        title: String(parsed.title || `第${epIdx}集`),
+        isPaywallHook: epIdx === currentProject.paywallEpisodeIndex,
+        targetDurationSec: activeEpisode?.targetDurationSec || 95,
+        coreConflictSummary: String(parsed.coreConflictSummary || '由甲方来稿清洗导入'),
+        opening3SecHook: String(parsed.opening3SecHook || '见第一场开篇动作'),
+        endingCliffhanger: String(parsed.endingCliffhanger || '见本集末尾悬念'),
+        scriptFormat,
+        rawScriptText: washedText,
+        shots: activeEpisode?.shots || [],
+        meta: `甲方来稿 AI 规范化洗稿完成 | 格式: ${
+          DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat)?.name
+        }`,
+        updatedAt: Date.now(),
+      };
+
+      const otherEps = (currentProject.episodes || []).filter((e) => e.index !== epIdx);
+      await onSaveProject({
+        ...currentProject,
+        episodes: [...otherEps, newEp].sort((a, b) => a.index - b.index),
+        lastModifiedAt: Date.now(),
+      });
+
+      setIsWashModalOpen(false);
+      setMessyClientInput('');
+      setViewMode('script');
+      triggerQuickToast(`甲方来稿已清洗为规范第 ${epIdx} 集剧本！`);
+    } catch (err: any) {
+      setErrorAlert(`甲方剧本规范化失败：${err.message}`);
+    } finally {
+      setIsWashingScript(false);
+    }
+  };
+
+  const handleUploadClientTxtFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const raw = await file.text();
+    setMessyClientInput(cleanMessyClientScriptLocal(raw));
+    e.target.value = '';
+    triggerQuickToast(`已读取文件「${file.name}」并自动清除 Word 标记`);
+  };
+
+  const handlePolishSingleShot = async (shot: DramaShot) => {
+    if (!activeEpisode) return;
+    const { cfg, model } = getWriterApi();
+    if (!cfg) return;
+
+    setPolishingShotId(shot.id);
+    try {
+      const charContext = currentProject.characterAssets
+        .map((c) => `${c.name}：${c.appearanceZh} (${c.visualPromptEn})`)
+        .join('\n');
+
+      const prompt = `你是顶级 AI 漫剧分镜导演。请精修升级以下单镜的【中文生图提示词】、【英文Tag】与【台词张力】，保持角色立绘一致并强化画面冲击力（画风：${currentProject.visualStyle}，画幅：${currentProject.aspectRatio}）：
+角色固定外观参考：
+${charContext}
+
+原分镜：
+- 景别运镜：${shot.shotSizeAndCamera}
+- 原画面描述：${shot.visualDescription}
+- 原动作：${shot.actionAndExpression}
+- 原台词(${shot.dialogueSpeaker})：${shot.dialogueText}
+
+请仅输出合法 JSON：
+\`\`\`json
+{
+  "shotSizeAndCamera": "升级后的景别与运镜",
+  "visualDescription": "升级后更具电影光影感与角色外观锚点的中文即梦/可灵生图词",
+  "imagePromptEn": "Upgraded English prompt tags",
+  "actionAndExpression": "更细腻有张力的肢体微表情",
+  "dialogueText": "更短促抓耳的台词（无台词则留空）",
+  "sfxAndBgm": "更精准的音效卡点"
+}
+\`\`\``;
+
+      const res = await chatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.78,
+      });
+
+      const parsed = JSON.parse(extractJsonString(res.content));
+
+      const updatedShots = activeEpisode.shots.map((s) =>
+        s.id === shot.id
+          ? {
+              ...s,
+              shotSizeAndCamera: parsed.shotSizeAndCamera || s.shotSizeAndCamera,
+              visualDescription: parsed.visualDescription || s.visualDescription,
+              imagePromptEn: parsed.imagePromptEn || s.imagePromptEn,
+              actionAndExpression: parsed.actionAndExpression || s.actionAndExpression,
+              dialogueText: parsed.dialogueText ?? s.dialogueText,
+              sfxAndBgm: parsed.sfxAndBgm || s.sfxAndBgm,
+            }
+          : s
+      );
+
+      const updatedEp: DramaEpisode = {
+        ...activeEpisode,
+        shots: updatedShots,
+        updatedAt: Date.now(),
+      };
+
+      const updatedProject: DramaProject = {
+        ...currentProject,
+        episodes: currentProject.episodes.map((e) => (e.id === activeEpisode.id ? updatedEp : e)),
+        lastModifiedAt: Date.now(),
+      };
+      await onSaveProject(updatedProject);
+      triggerQuickToast(`镜号 ${String(shot.shotNumber).padStart(2, '0')} 精修完成`);
+    } catch (e: any) {
+      setErrorAlert(`单镜精修失败：${e.message}`);
+    } finally {
+      setPolishingShotId(null);
+    }
+  };
+
+  const handleUpdateShotField = async (
+    shotId: string,
+    field: keyof DramaShot,
+    value: string | number
+  ) => {
+    if (!activeEpisode) return;
+    const updatedShots = activeEpisode.shots.map((s) =>
+      s.id === shotId ? { ...s, [field]: value } : s
+    );
+    const updatedEp: DramaEpisode = {
+      ...activeEpisode,
+      shots: updatedShots,
+      updatedAt: Date.now(),
+    };
+    const updatedProject: DramaProject = {
+      ...currentProject,
+      episodes: currentProject.episodes.map((e) => (e.id === activeEpisode.id ? updatedEp : e)),
+      lastModifiedAt: Date.now(),
+    };
+    await onSaveProject(updatedProject);
+  };
+
+  const handleExportCurrentCsv = (epToExport?: DramaEpisode) => {
+    const ep = epToExport || activeEpisode;
+    if (!ep || ep.shots.length === 0) return;
+    const csv = exportDramaEpisodeToCsv(currentProject, ep);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `《${currentProject.title}》_第${ep.index}集分镜表.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    triggerQuickToast(`已导出第 ${ep.index} 集 CSV 分镜单`);
+  };
+
+  const handleExportFullMd = () => {
+    const md = exportDramaProjectToMarkdown(currentProject);
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `《${currentProject.title}》_全剧漫剧剧本.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    triggerQuickToast('已导出全剧漫剧制作圣经 (.md)');
+  };
+
+  const selectedSourceBook = books.find((b) => b.id === selectedBookId) || books[0];
+  const currentFormatSpec =
+    DRAMA_SCRIPT_FORMATS.find((f) => f.id === scriptFormat) || DRAMA_SCRIPT_FORMATS[0];
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* Left Desktop Sidebar: Episode List + Wash Client Script + Novel-to-Drama Bridge + Character Asset Quick Copy */}
+      <aside className="hidden lg:block lg:col-span-3 space-y-4 sticky top-22">
+        <div className="studio-card p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2.5">
+            <div className="min-w-0">
+              <p className="text-[11px] text-[var(--text-muted)] truncate">{currentProject.trackName}</p>
+              <h2 className="text-sm font-bold text-[var(--text-primary)] truncate font-editorial-serif">
+                《{currentProject.title}》
+              </h2>
+            </div>
+            <MotionButton
+              type="button"
+              onClick={onGoToDramaSetup}
+              className="text-xs text-[var(--accent)] font-medium shrink-0 cursor-pointer"
+            >
+              立绘资产
+            </MotionButton>
+          </div>
+
+          {/* Episode Switcher with Stagger & Right-Click Menu */}
+          <StaggerList className="space-y-1 max-h-68 overflow-y-auto pr-1">
+            {sortedEpisodes.map((ep) => {
+              const active = ep.index === targetEpisodeIndex;
+              return (
+                <StaggerItem
+                  key={ep.id}
+                  onContextMenu={(e) =>
+                    openContextMenu(
+                      e,
+                      [
+                        {
+                          id: 'switch-ep',
+                          label: `打开第 ${ep.index} 集`,
+                          icon: <FileText className="w-3.5 h-3.5" />,
+                          onSelect: () => setTargetEpisodeIndex(ep.index),
+                        },
+                        {
+                          id: 'copy-script',
+                          label: '复制本集标准文学剧本',
+                          icon: <Copy className="w-3.5 h-3.5" />,
+                          onSelect: () =>
+                            handleCopy(`ep-ctx-${ep.id}`, ep.rawScriptText, `已复制第 ${ep.index} 集剧本`),
+                        },
+                        {
+                          id: 'dl-txt',
+                          label: '导出本集 .txt 剧本',
+                          icon: <Download className="w-3.5 h-3.5" />,
+                          onSelect: () => handleExportEpisodeTxt(ep),
+                        },
+                        {
+                          id: 'dl-csv',
+                          label: '导出本集 CSV 分镜表',
+                          icon: <FileSpreadsheet className="w-3.5 h-3.5" />,
+                          disabled: ep.shots.length === 0,
+                          onSelect: () => handleExportCurrentCsv(ep),
+                        },
+                      ],
+                      ep.title
+                    )
+                  }
+                >
+                  <button
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={() => setTargetEpisodeIndex(ep.index)}
+                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-colors flex items-center justify-between gap-2 cursor-pointer ${
+                      active
+                        ? 'bg-[var(--accent)] text-[var(--accent-fg)] font-semibold'
+                        : 'hover:bg-[var(--bg-muted)] text-[var(--text-secondary)]'
+                    }`}
+                  >
+                    <span className="truncate">
+                      {ep.isPaywallHook ? '🔥 ' : ''}
+                      {ep.title}
+                    </span>
+                    <span className="text-[10px] opacity-80 tabular-nums shrink-0">
+                      {ep.shots.length > 0 ? `${ep.shots.length}镜` : '剧本'}
+                    </span>
+                  </button>
+                </StaggerItem>
+              );
+            })}
+
+            <MotionButton
+              type="button"
+              disabled={isGenerating}
+              onClick={() => setTargetEpisodeIndex(nextEpisodeNumber)}
+              className={`w-full text-left px-3 py-2.5 rounded-xl text-xs border border-dashed transition-colors flex items-center gap-1.5 cursor-pointer ${
+                !activeEpisode
+                  ? 'border-[var(--accent)] text-[var(--text-primary)] font-semibold bg-[var(--accent-soft)]'
+                  : 'border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>筹备第 {nextEpisodeNumber} 集新剧本</span>
+            </MotionButton>
+          </StaggerList>
+
+          {/* Wash Messy Client Script Tool */}
+          <div className="space-y-2 pt-1 border-t border-[var(--border-subtle)]">
+            <MotionButton
+              type="button"
+              disabled={isGenerating}
+              onClick={() => setIsWashModalOpen(true)}
+              className="w-full min-h-[40px] px-3 py-2 rounded-xl border border-[var(--border-subtle)] hover:border-[var(--accent)] text-xs font-medium text-[var(--text-primary)] flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-[var(--accent)]" />
+              <span>导入/清洗甲方乱稿剧本</span>
+            </MotionButton>
+
+            {books.length > 0 && (
+              <MotionButton
+                type="button"
+                disabled={isGenerating}
+                onClick={() => setIsAdaptModalOpen(true)}
+                className="w-full min-h-[40px] px-3 py-2 rounded-xl studio-muted hover:bg-[var(--accent-soft)] text-xs font-medium text-[var(--text-primary)] flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-[var(--accent)]" />
+                <span>从小说章节改编剧本</span>
+              </MotionButton>
+            )}
+          </div>
+        </div>
+
+        {/* Locked Character Visual Reference */}
+        {currentProject.characterAssets.length > 0 && (
+          <div className="studio-card p-4 space-y-2.5 text-xs">
+            <h3 className="font-bold text-[var(--text-primary)]">角色立绘固定词速查</h3>
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              {currentProject.characterAssets.map((c) => (
+                <div
+                  key={c.id}
+                  onContextMenu={(e) =>
+                    openContextMenu(
+                      e,
+                      [
+                        {
+                          id: 'c-zh',
+                          label: '复制中文立绘词',
+                          icon: <Copy className="w-3.5 h-3.5" />,
+                          onSelect: () => handleCopy(`side-${c.id}`, c.appearanceZh, `已复制「${c.name}」中文外观`),
+                        },
+                        {
+                          id: 'c-en',
+                          label: '复制英文生图 Tag',
+                          icon: <Copy className="w-3.5 h-3.5" />,
+                          onSelect: () => handleCopy(`side-en-${c.id}`, c.visualPromptEn, `已复制「${c.name}」英文 Tag`),
+                        },
+                      ],
+                      c.name
+                    )
+                  }
+                  className="p-2.5 studio-muted space-y-1 cursor-context-menu"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-[var(--text-primary)]">{c.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(`side-${c.id}`, c.appearanceZh)}
+                      className="text-[11px] text-[var(--accent)] cursor-pointer"
+                    >
+                      {copiedId === `side-${c.id}` ? '已复制' : '复制外观'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-secondary)] line-clamp-2">{c.appearanceZh}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </aside>
+
+      {/* Main Two-Stage Script & Storyboard Workspace */}
+      <div className="lg:col-span-9 space-y-5">
+        {/* Top Action Bar: Stage 1 (甲方标准剧本) <-> Stage 2 (后期分镜拆解单) */}
+        <section className="studio-card p-4 sm:p-5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <MotionButton
+                type="button"
+                onClick={() => setIsMobileDrawerOpen(true)}
+                className="lg:hidden min-h-[40px] px-3 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1.5"
+              >
+                <ListVideo className="w-4 h-4" />
+                <span>选集 ({sortedEpisodes.length})</span>
+              </MotionButton>
+
+              <div className="flex items-center p-1 studio-muted">
+                {[
+                  { id: 'script', label: '① 甲方标准剧本 (△本)' },
+                  {
+                    id: 'storyboard',
+                    label: `② 后期分镜拆解单${
+                      activeEpisode?.shots?.length ? ` (${activeEpisode.shots.length}镜)` : ''
+                    }`,
+                  },
+                ].map((m) => {
+                  const active = viewMode === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setViewMode(m.id as 'script' | 'storyboard')}
+                      className={`relative min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-medium cursor-pointer transition-colors ${
+                        active ? 'text-[var(--text-primary)] font-semibold' : 'text-[var(--text-secondary)]'
+                      }`}
+                    >
+                      {active && (
+                        <motion.span
+                          layoutId="drama-viewmode-pill"
+                          transition={SPRING_INDICATOR}
+                          className="absolute inset-0 bg-[var(--bg-surface)] rounded-lg shadow-2xs"
+                        />
+                      )}
+                      <span className="relative z-10">{m.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Script Format School Selector */}
+              <select
+                value={scriptFormat}
+                disabled={isGenerating}
+                onChange={(e) => setScriptFormat(e.target.value as DramaScriptFormat)}
+                aria-label="选择甲方剧本行业规范"
+                className="studio-input min-h-[36px] px-3 py-1.5 text-xs font-medium cursor-pointer"
+              >
+                {DRAMA_SCRIPT_FORMATS.map((fmt) => (
+                  <option key={fmt.id} value={fmt.id}>
+                    规范：{fmt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <MotionButton
+                type="button"
+                onClick={() => setIsFormatGuideOpen((v) => !v)}
+                className="min-h-[38px] px-3 py-1.5 rounded-xl studio-muted text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
+              >
+                <HelpCircle className="w-3.5 h-3.5 text-[var(--accent)]" />
+                <span>甲方剧本行规揭秘</span>
+                {isFormatGuideOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </MotionButton>
+
+              <MotionButton
+                type="button"
+                disabled={isGenerating}
+                onClick={() => setIsWashModalOpen(true)}
+                className="lg:hidden min-h-[38px] px-3 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>洗乱稿</span>
+              </MotionButton>
+
+              {activeEpisode && activeEpisode.shots.length > 0 && (
+                <MotionButton
+                  type="button"
+                  onClick={() => handleExportCurrentCsv()}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:border-[var(--accent)] text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-[var(--accent)]" />
+                  <span>导出 CSV 分镜表</span>
+                </MotionButton>
+              )}
+
+              <MotionButton
+                type="button"
+                onClick={handleExportFullMd}
+                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">全剧圣经</span>
+              </MotionButton>
+            </div>
+          </div>
+
+          {/* Collapsible Industry Script School Analysis Drawer */}
+          <AnimatePresence>
+            {isFormatGuideOpen && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: SNAPPY_EASE }}
+                className="overflow-hidden"
+              >
+                <div className="pt-3 mt-1 border-t border-[var(--border-subtle)] space-y-3 text-xs">
+                  <div className="p-3.5 rounded-xl studio-muted space-y-1.5 leading-relaxed">
+                    <p className="font-bold text-[var(--text-primary)]">
+                      💡 为什么市面上甲方给的漫剧剧本不写详细镜头、而且各家格式不一致？
+                    </p>
+                    <p className="text-[var(--text-secondary)]">
+                      在真实 AI 漫剧工业全流程中，<strong>「编剧写的文学场次本」</strong>与<strong>「后期导演拆的分镜生图单」</strong>是上下游分离的两道工序！编剧交稿只追求<strong>极简动作白描（一个 △ 就是一镜动作，零废话）+ 抓耳台词 + 音效卡点</strong>，把运镜与构图空间留给后期；而因为甲方的编剧分别来自传统短剧、网文动态漫或出海译制组，所以市面上形成了以下三大主流流派（点击即可切换当前标准）：
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {DRAMA_SCRIPT_FORMATS.map((fmt) => {
+                      const selected = fmt.id === scriptFormat;
+                      return (
+                        <button
+                          key={fmt.id}
+                          type="button"
+                          onClick={() => setScriptFormat(fmt.id)}
+                          className={`p-3.5 rounded-xl border text-left space-y-2 transition-colors cursor-pointer ${
+                            selected
+                              ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                              : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--accent)]/45'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-[var(--text-primary)]">{fmt.name}</span>
+                          </div>
+                          <p className="text-[11px] font-medium text-[var(--accent)]">{fmt.badge}</p>
+                          <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">{fmt.whyClientsUseIt}</p>
+                          <pre className="p-2 rounded-lg bg-[var(--bg-canvas)] text-[10px] text-[var(--text-muted)] whitespace-pre-wrap font-sans leading-relaxed">
+                            {fmt.sampleSnippet}
+                          </pre>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </section>
+
+        {errorAlert && (
+          <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300 leading-relaxed">
+            {errorAlert}
+          </div>
+        )}
+
+        {/* Active Streaming Generation Lock Overlay & Live Preview */}
+        {isGenerating && (
+          <section className="studio-card p-5 sm:p-6 space-y-4 border-[var(--accent)]">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />
+                <span className="text-sm font-bold text-[var(--text-primary)]">
+                  {generatingStageLabel || `正在生成第 ${targetEpisodeIndex} 集...`}
+                </span>
+              </div>
+              <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)]">
+                {streamProgress}% · 已输出 {streamRawText.length} 字
+              </span>
+            </div>
+
+            <div className="h-2 w-full rounded-full bg-[var(--bg-muted)] overflow-hidden relative">
+              <motion.div
+                initial={{ scaleX: 0.05 }}
+                animate={{ scaleX: Math.max(0.05, streamProgress / 100) }}
+                transition={{ duration: 0.25, ease: 'easeOut' }}
+                className="h-full w-full origin-left bg-[var(--accent)] rounded-full"
+              />
+            </div>
+
+            <div className="p-4 rounded-xl bg-[var(--bg-canvas)] max-h-80 overflow-y-auto font-mono text-xs text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed select-none">
+              {streamRawText || '正在连接商业漫剧编导引擎...'}
+            </div>
+          </section>
+        )}
+
+        {/* Populated Episode Script / Storyboard Canvas */}
+        {!isGenerating && activeEpisode && (
+          <div className="space-y-4">
+            {/* Episode Summary Banner */}
+            <section className="studio-card p-5 sm:p-6 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg sm:text-xl font-bold text-[var(--text-primary)] font-editorial-serif">
+                    {activeEpisode.title}
+                  </h2>
+                  {activeEpisode.isPaywallHook && (
+                    <span className="text-xs font-bold text-amber-600 dark:text-amber-400">
+                      🔥 付费卡点集
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs text-[var(--text-muted)] tabular-nums">
+                  {activeEpisode.shots.length > 0
+                    ? `已拆解 ${activeEpisode.shots.length} 镜 · 预计成片 ${activeEpisode.targetDurationSec} 秒`
+                    : `标准文学本已定稿 · 预计成片 ${activeEpisode.targetDurationSec} 秒`}
+                </span>
+              </div>
+
+              {activeEpisode.meta && (
+                <p className="text-[11px] text-[var(--text-muted)] font-mono">{activeEpisode.meta}</p>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-1">
+                <div className="p-3.5 studio-muted space-y-1">
+                  <span className="font-bold text-[var(--text-primary)]">⚡ 黄金前 3 秒钩子：</span>
+                  <p className="text-[var(--text-secondary)] leading-relaxed">{activeEpisode.opening3SecHook}</p>
+                </div>
+                <div className="p-3.5 studio-muted space-y-1">
+                  <span className="font-bold text-[var(--text-primary)]">🪝 集末断章悬念卡点：</span>
+                  <p className="text-[var(--text-secondary)] leading-relaxed">{activeEpisode.endingCliffhanger}</p>
+                </div>
+              </div>
+            </section>
+
+            {/* STAGE 1 (Default): Clean Industry Standard Literary Script (△ Triangle / Minimalist Manju / Bilingual) */}
+            {viewMode === 'script' ? (
+              <section
+                onContextMenu={(e) => {
+                  if (isEditingRawScript) return;
+                  openContextMenu(
+                    e,
+                    [
+                      {
+                        id: 'ctx-copy-raw',
+                        label: '一键复制整集甲方标准剧本',
+                        icon: <Copy className="w-3.5 h-3.5" />,
+                        onSelect: () =>
+                          handleCopy('raw-script', activeEpisode.rawScriptText, '整集标准剧本已复制'),
+                      },
+                      {
+                        id: 'ctx-edit-raw',
+                        label: '切换手动编辑剧本模式',
+                        icon: <Edit3 className="w-3.5 h-3.5" />,
+                        onSelect: () => {
+                          setDraftScriptText(activeEpisode.rawScriptText);
+                          setIsEditingRawScript(true);
+                        },
+                      },
+                      {
+                        id: 'ctx-breakdown',
+                        label: `由本集剧本拆解 ${targetShotCount} 镜 AI 生图单`,
+                        icon: <Layers className="w-3.5 h-3.5" />,
+                        dividerBefore: true,
+                        onSelect: executeBreakdownShotsFromScript,
+                      },
+                      {
+                        id: 'ctx-dl-txt',
+                        label: '导出 .txt 标准剧本文件',
+                        icon: <Download className="w-3.5 h-3.5" />,
+                        onSelect: () => handleExportEpisodeTxt(activeEpisode),
+                      },
+                    ],
+                    `${activeEpisode.title} · 标准文学本`
+                  );
+                }}
+                className="studio-card p-5 sm:p-8 space-y-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-[var(--border-subtle)] pb-3.5">
+                  <div className="space-y-0.5">
+                    <span className="text-xs font-bold text-[var(--text-primary)]">
+                      📄 甲方案头标准文学剧本（一句一动 · 零生图词干扰 · 右键可呼出快捷菜单）
+                    </span>
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      当前排版流派：{currentFormatSpec.name} —— 审稿满意后可点击右侧「一键拆解 AI 漫剧生图分镜单」进入后期制作
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isEditingRawScript ? (
+                      <>
+                        <MotionButton
+                          type="button"
+                          onClick={() => {
+                            setDraftScriptText(activeEpisode.rawScriptText);
+                            setIsEditingRawScript(false);
+                          }}
+                          className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium cursor-pointer"
+                        >
+                          取消
+                        </MotionButton>
+                        <MotionButton
+                          type="button"
+                          onClick={handleSaveEditedRawScript}
+                          className="btn-primary min-h-[36px] px-3.5 py-1.5 text-xs flex items-center gap-1 cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>保存剧本修改</span>
+                        </MotionButton>
+                      </>
+                    ) : (
+                      <>
+                        <MotionButton
+                          type="button"
+                          onClick={() => {
+                            setDraftScriptText(activeEpisode.rawScriptText);
+                            setIsEditingRawScript(true);
+                          }}
+                          className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium flex items-center gap-1 cursor-pointer"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>微调剧本</span>
+                        </MotionButton>
+
+                        <MotionButton
+                          type="button"
+                          onClick={() => handleExportEpisodeTxt(activeEpisode)}
+                          className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium flex items-center gap-1 cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>导出 .txt</span>
+                        </MotionButton>
+
+                        <MotionButton
+                          type="button"
+                          onClick={() => handleCopy('raw-script', activeEpisode.rawScriptText, '整集标准剧本已复制')}
+                          className="min-h-[36px] px-3 py-1.5 rounded-xl studio-muted text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
+                        >
+                          {copiedId === 'raw-script' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>复制台本</span>
+                        </MotionButton>
+                      </>
+                    )}
+
+                    <MotionButton
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={executeBreakdownShotsFromScript}
+                      className="btn-primary min-h-[36px] px-4 py-1.5 text-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>
+                        {activeEpisode.shots.length > 0
+                          ? '重新拆解后期分镜单'
+                          : '一键拆解 AI 漫剧分镜单 →'}
+                      </span>
+                    </MotionButton>
+                  </div>
+                </div>
+
+                {isEditingRawScript ? (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <span className="text-[var(--text-muted)]">快捷插入行业符号：</span>
+                      {['△ ', '【音效】：', '**1-1 场景地点 -- 日 -- 内景**\n出场人物：'].map((sym) => (
+                        <button
+                          key={sym}
+                          type="button"
+                          onClick={() => setDraftScriptText((prev) => `${prev}\n${sym}`)}
+                          className="px-2.5 py-1 rounded-lg studio-muted hover:bg-[var(--accent-soft)] text-[var(--text-primary)] font-mono cursor-pointer"
+                        >
+                          + {sym.split('\n')[0]}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea
+                      rows={18}
+                      value={draftScriptText}
+                      onChange={(e) => setDraftScriptText(e.target.value)}
+                      className="studio-input w-full p-4 font-sans text-xs sm:text-sm leading-loose"
+                    />
+                  </div>
+                ) : (
+                  <FormattedIndustryScriptLines scriptText={activeEpisode.rawScriptText} />
+                )}
+              </section>
+            ) : (
+              /* STAGE 2: Downstream Production Storyboard Shot Cards */
+              <div className="space-y-3.5">
+                {activeEpisode.shots.length === 0 ? (
+                  <div className="studio-card p-10 text-center space-y-4">
+                    <Layers className="w-9 h-9 mx-auto text-[var(--text-muted)]" />
+                    <div className="space-y-1">
+                      <h3 className="text-base font-bold text-[var(--text-primary)]">
+                        本集标准文学剧本已就绪，尚未拆解后期生图分镜单
+                      </h3>
+                      <p className="text-xs text-[var(--text-secondary)] max-w-lg mx-auto leading-relaxed">
+                        点击下方按钮，AI 后期导演将把每一条 △ 动作与台词自动转化为景别运镜，并织入角色固定立绘外貌特征词，生成可直接导入即梦/可灵/剪映的分镜表。
+                      </p>
+                    </div>
+                    <MotionButton
+                      type="button"
+                      onClick={executeBreakdownShotsFromScript}
+                      className="btn-primary min-h-[44px] px-6 py-2.5 text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      <span>由本集文学剧本拆解 {targetShotCount} 镜 AI 生图单</span>
+                    </MotionButton>
+                  </div>
+                ) : (
+                  activeEpisode.shots.map((shot, idx) => {
+                    const isEditingThis = editingShotId === shot.id;
+                    const isPolishingThis = polishingShotId === shot.id;
+
+                    return (
+                      <StaggerCard
+                        key={shot.id}
+                        index={idx}
+                        onContextMenu={(e) =>
+                          openContextMenu(
+                            e,
+                            [
+                              {
+                                id: 'shot-copy-zh',
+                                label: '复制即梦/可灵中文生图词',
+                                icon: <Copy className="w-3.5 h-3.5" />,
+                                onSelect: () =>
+                                  handleCopy(
+                                    `zh-shot-${shot.id}`,
+                                    shot.visualDescription,
+                                    `已复制镜号 ${String(shot.shotNumber).padStart(2, '0')} 中文生图词`
+                                  ),
+                              },
+                              {
+                                id: 'shot-copy-en',
+                                label: '复制 MJ/Runway 英文 Tag',
+                                icon: <Copy className="w-3.5 h-3.5" />,
+                                disabled: !shot.imagePromptEn,
+                                onSelect: () =>
+                                  handleCopy(
+                                    `en-shot-${shot.id}`,
+                                    shot.imagePromptEn || '',
+                                    `已复制镜号 ${String(shot.shotNumber).padStart(2, '0')} 英文 Tag`
+                                  ),
+                              },
+                              {
+                                id: 'shot-copy-vo',
+                                label: '复制配音台词',
+                                icon: <FileText className="w-3.5 h-3.5" />,
+                                disabled: !shot.dialogueText,
+                                onSelect: () =>
+                                  handleCopy(`vo-shot-${shot.id}`, shot.dialogueText, '配音台词已复制'),
+                              },
+                              {
+                                id: 'shot-polish',
+                                label: 'AI 精修升级此镜画面与台词',
+                                icon: <Wand2 className="w-3.5 h-3.5" />,
+                                dividerBefore: true,
+                                onSelect: () => handlePolishSingleShot(shot),
+                              },
+                              {
+                                id: 'shot-edit',
+                                label: isEditingThis ? '完成手动微调' : '手动微调此镜',
+                                icon: <Edit3 className="w-3.5 h-3.5" />,
+                                onSelect: () => setEditingShotId(isEditingThis ? null : shot.id),
+                              },
+                            ],
+                            `镜号 ${String(shot.shotNumber).padStart(2, '0')} · ${shot.shotSizeAndCamera}`
+                          )
+                        }
+                      >
+                        <article className="studio-card studio-card-hover p-4 sm:p-5 space-y-3.5 text-xs">
+                          {/* Shot Header */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="px-2.5 py-1 rounded-lg bg-[var(--accent)] text-[var(--accent-fg)] font-bold tabular-nums">
+                                镜号 {String(shot.shotNumber).padStart(2, '0')}
+                              </span>
+                              <span className="font-semibold tabular-nums text-[var(--text-primary)]">
+                                {shot.durationSec}s
+                              </span>
+                              <span aria-hidden="true" className="text-[var(--text-muted)]">·</span>
+                              <span className="font-semibold text-[var(--text-secondary)]">
+                                {shot.shotSizeAndCamera}
+                              </span>
+                              {shot.charactersInShot && (
+                                <>
+                                  <span aria-hidden="true" className="text-[var(--text-muted)]">·</span>
+                                  <span className="text-[var(--text-muted)]">出场：{shot.charactersInShot}</span>
+                                </>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              <MotionButton
+                                type="button"
+                                disabled={isPolishingThis}
+                                onClick={() => handlePolishSingleShot(shot)}
+                                className="min-h-[34px] px-2.5 py-1 rounded-lg studio-muted hover:bg-[var(--accent-soft)] text-[var(--text-primary)] font-medium flex items-center gap-1 cursor-pointer"
+                              >
+                                {isPolishingThis ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Wand2 className="w-3 h-3 text-[var(--accent)]" />
+                                )}
+                                <span>AI 精修此镜</span>
+                              </MotionButton>
+
+                              <MotionButton
+                                type="button"
+                                onClick={() => setEditingShotId(isEditingThis ? null : shot.id)}
+                                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--border-subtle)] text-[var(--text-secondary)] flex items-center gap-1 cursor-pointer"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>{isEditingThis ? '完成微调' : '手动微调'}</span>
+                              </MotionButton>
+                            </div>
+                          </div>
+
+                          {/* Visual Prompt Block */}
+                          <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                            <div className="md:col-span-7 p-3.5 rounded-xl bg-[var(--bg-canvas)] border border-[var(--border-subtle)]/70 space-y-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-[var(--text-primary)]">
+                                  🎨 中文生图/生视频提示词（即梦 / 可灵 / Vidu）
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopy(`zh-shot-${shot.id}`, shot.visualDescription)}
+                                  className="text-[11px] font-semibold text-[var(--accent)] flex items-center gap-1 cursor-pointer shrink-0"
+                                >
+                                  {copiedId === `zh-shot-${shot.id}` ? (
+                                    <>
+                                      <Check className="w-3 h-3" />
+                                      <span>已复制</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3 h-3" />
+                                      <span>一键复制</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                              {isEditingThis ? (
+                                <textarea
+                                  rows={3}
+                                  value={shot.visualDescription}
+                                  onChange={(e) => handleUpdateShotField(shot.id, 'visualDescription', e.target.value)}
+                                  className="studio-input w-full p-2 text-xs leading-relaxed"
+                                />
+                              ) : (
+                                <p className="text-[var(--text-secondary)] leading-relaxed">{shot.visualDescription}</p>
+                              )}
+                            </div>
+
+                            <div className="md:col-span-5 p-3.5 rounded-xl bg-[var(--bg-canvas)] border border-[var(--border-subtle)]/70 space-y-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-[var(--text-primary)]">🌐 MJ / Runway 英文 Tag</span>
+                                {shot.imagePromptEn && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopy(`en-shot-${shot.id}`, shot.imagePromptEn || '')}
+                                    className="text-[11px] font-semibold text-[var(--accent)] flex items-center gap-1 cursor-pointer shrink-0"
+                                  >
+                                    {copiedId === `en-shot-${shot.id}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                                    <span>复制</span>
+                                  </button>
+                                )}
+                              </div>
+                              {isEditingThis ? (
+                                <textarea
+                                  rows={3}
+                                  value={shot.imagePromptEn || ''}
+                                  onChange={(e) => handleUpdateShotField(shot.id, 'imagePromptEn', e.target.value)}
+                                  className="studio-input w-full p-2 font-mono text-[11px] leading-relaxed"
+                                />
+                              ) : (
+                                <p className="font-mono text-[11px] text-[var(--text-muted)] leading-relaxed line-clamp-4">
+                                  {shot.imagePromptEn || '—'}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Action, Dialogue & SFX Row */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-0.5">
+                            <div className="space-y-1">
+                              <span className="text-[var(--text-muted)] font-medium">△ 动作与神态反应：</span>
+                              {isEditingThis ? (
+                                <input
+                                  type="text"
+                                  value={shot.actionAndExpression}
+                                  onChange={(e) => handleUpdateShotField(shot.id, 'actionAndExpression', e.target.value)}
+                                  className="studio-input w-full px-2.5 py-1.5 text-xs"
+                                />
+                              ) : (
+                                <p className="text-[var(--text-primary)] leading-relaxed">{shot.actionAndExpression}</p>
+                              )}
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[var(--text-muted)] font-medium">
+                                配音台词（{shot.dialogueSpeaker || '无'}
+                                {shot.dialogueVoiceStyle ? ` · ${shot.dialogueVoiceStyle}` : ''}）：
+                              </span>
+                              {isEditingThis ? (
+                                <input
+                                  type="text"
+                                  value={shot.dialogueText}
+                                  onChange={(e) => handleUpdateShotField(shot.id, 'dialogueText', e.target.value)}
+                                  className="studio-input w-full px-2.5 py-1.5 text-xs"
+                                />
+                              ) : (
+                                <p className="font-semibold text-[var(--text-primary)] leading-relaxed">
+                                  {shot.dialogueText ? `“${shot.dialogueText}”` : '（纯画面镜头，无对白）'}
+                                </p>
+                              )}
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[var(--text-muted)] font-medium">【音效】与 BGM 卡点：</span>
+                              {isEditingThis ? (
+                                <input
+                                  type="text"
+                                  value={shot.sfxAndBgm}
+                                  onChange={(e) => handleUpdateShotField(shot.id, 'sfxAndBgm', e.target.value)}
+                                  className="studio-input w-full px-2.5 py-1.5 text-xs"
+                                />
+                              ) : (
+                                <p className="text-[var(--text-secondary)] leading-relaxed">{shot.sfxAndBgm}</p>
+                              )}
+                            </div>
+                          </div>
+                        </article>
+                      </StaggerCard>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Writer & Director's Control Deck */}
+        <section className="studio-card p-5 sm:p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-bold text-[var(--text-primary)]">
+              🎬 编剧/导演执笔台（目标：第 {activeEpisode ? nextEpisodeNumber : targetEpisodeIndex} 集 · 规范：{currentFormatSpec.name}）
+            </h3>
+            <div className="flex items-center gap-2 text-xs">
+              <label className="text-[var(--text-muted)]">拆解分镜密度：</label>
+              <select
+                value={targetShotCount}
+                disabled={isGenerating}
+                onChange={(e) => setTargetShotCount(Number(e.target.value))}
+                className="studio-input px-2.5 py-1.5 text-xs tabular-nums"
+              >
+                <option value={6}>6 镜（约60秒极速版）</option>
+                <option value={8}>8 镜（约90秒标准短剧）</option>
+                <option value={10}>10 镜（约110秒高密爽剧）</option>
+                <option value={12}>12 镜（约135秒重点卡点集）</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Clickable Next Episode Viral Hooks */}
+          {activeEpisode?.nextEpisodeHooks && activeEpisode.nextEpisodeHooks.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs text-[var(--text-muted)]">点选上集预埋的爆款钩子直接填入剧情指令：</p>
+              <StaggerList className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                {activeEpisode.nextEpisodeHooks.map((hook, i) => (
+                  <StaggerItem key={i}>
+                    <button
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={() => setDirectorInput(hook)}
+                      className="w-full h-full p-3 rounded-xl border border-[var(--border-subtle)] hover:border-[var(--accent)] text-left text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] leading-relaxed transition-colors cursor-pointer"
+                    >
+                      {hook}
+                    </button>
+                  </StaggerItem>
+                ))}
+              </StaggerList>
+            </div>
+          )}
+
+          <textarea
+            rows={3}
+            disabled={isGenerating}
+            value={directorInput}
+            onChange={(e) => setDirectorInput(e.target.value)}
+            placeholder="输入本集冲突事件（留空则自动按分集卡点目录与热门赛道公式推进；生成标准剧本时严禁废话，只出干净利落的场头、△动作与台词）..."
+            className="studio-input w-full p-3.5 text-xs sm:text-sm leading-relaxed disabled:opacity-60"
+          />
+
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <div>
+              {activeEpisode && (
+                <MotionButton
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => executeGenerateLiteraryScriptOnly(activeEpisode.index, directorInput)}
+                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium cursor-pointer disabled:opacity-50"
+                >
+                  重写当前第 {activeEpisode.index} 集剧本
+                </MotionButton>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <MotionButton
+                type="button"
+                disabled={isGenerating}
+                onClick={() =>
+                  executeGenerateFullPipelineEpisode(
+                    activeEpisode ? nextEpisodeNumber : targetEpisodeIndex,
+                    directorInput
+                  )
+                }
+                className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--accent)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+              >
+                <Layers className="w-3.5 h-3.5 text-[var(--accent)]" />
+                <span>同步出 △ 剧本 + 分镜单</span>
+              </MotionButton>
+
+              <MotionButton
+                type="button"
+                disabled={isGenerating}
+                onClick={() =>
+                  executeGenerateLiteraryScriptOnly(
+                    activeEpisode ? nextEpisodeNumber : targetEpisodeIndex,
+                    directorInput
+                  )
+                }
+                className="btn-primary min-h-[44px] px-6 py-2.5 text-xs sm:text-sm flex items-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>
+                  {activeEpisode
+                    ? `撰写第 ${nextEpisodeNumber} 集甲方标准剧本 (△本)`
+                    : `撰写第 ${targetEpisodeIndex} 集甲方标准剧本 (△本)`}
+                </span>
+              </MotionButton>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {/* Messy Client Script Import & Wash Modal */}
+      <AnimatePresence>
+        {isWashModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ duration: 0.18, ease: SNAPPY_EASE }}
+              className="w-full sm:max-w-2xl rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-[var(--text-primary)]">
+                    导入 / 清洗甲方非标来稿剧本
+                  </h3>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    自动剔除 Word 批注残余（如 [.mark]）、统一乱三角符号，并可一键重构为规范场次本再拆解 AI 分镜
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsWashModalOpen(false)}
+                  className="min-h-[38px] min-w-[38px] flex items-center justify-center text-[var(--text-muted)] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <label className="min-h-[36px] px-3.5 py-1.5 rounded-xl studio-muted hover:bg-[var(--accent-soft)] font-medium text-[var(--text-primary)] inline-flex items-center gap-1.5 cursor-pointer">
+                  <Upload className="w-3.5 h-3.5 text-[var(--accent)]" />
+                  <span>上传甲方 .txt 剧本文件</span>
+                  <input
+                    type="file"
+                    accept=".txt,.md"
+                    onChange={handleUploadClientTxtFile}
+                    className="hidden"
+                  />
+                </label>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMessyClientInput((prev) => cleanMessyClientScriptLocal(prev));
+                      triggerQuickToast('已执行毫秒级乱码标记清理');
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium cursor-pointer"
+                  >
+                    仅清除 Word 乱码符号
+                  </button>
+                </div>
+              </div>
+
+              <textarea
+                rows={10}
+                value={messyClientInput}
+                onChange={(e) => setMessyClientInput(e.target.value)}
+                placeholder="在此粘贴甲方发来的任意格式单集剧本（无论是带三角号、纯对话、带 {.mark} 标记还是偏小说化的草稿）..."
+                className="studio-input w-full p-3.5 text-xs sm:text-sm leading-relaxed font-sans"
+              />
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                <span className="text-xs text-[var(--text-muted)]">
+                  目标清洗格式：{currentFormatSpec.name}（存入第 {activeEpisode ? activeEpisode.index : targetEpisodeIndex} 集）
+                </span>
+                <div className="flex items-center gap-2">
+                  <MotionButton
+                    type="button"
+                    onClick={() => setIsWashModalOpen(false)}
+                    className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs cursor-pointer"
+                  >
+                    取消
+                  </MotionButton>
+                  <MotionButton
+                    type="button"
+                    disabled={isWashingScript || !messyClientInput.trim()}
+                    onClick={handleAiWashClientScript}
+                    className="btn-primary min-h-[42px] px-5 text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {isWashingScript ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>正在规范化重构剧本...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>AI 规范化洗稿并存入本集</span>
+                      </>
+                    )}
+                  </MotionButton>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Mobile Episode Switcher Bottom Sheet */}
+      {isMobileDrawerOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex items-end bg-black/50 backdrop-blur-xs">
+          <div className="w-full rounded-t-3xl bg-[var(--bg-surface)] border-t border-[var(--border-subtle)] p-5 space-y-4 max-h-[75vh] overflow-y-auto pb-safe">
+            <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
+              <h3 className="text-sm font-bold">选择漫剧分集</h3>
+              <button
+                type="button"
+                onClick={() => setIsMobileDrawerOpen(false)}
+                className="min-h-[38px] min-w-[38px] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {sortedEpisodes.map((ep) => (
+                <button
+                  key={ep.id}
+                  type="button"
+                  onClick={() => {
+                    setTargetEpisodeIndex(ep.index);
+                    setIsMobileDrawerOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 rounded-xl text-xs flex items-center justify-between ${
+                    ep.index === targetEpisodeIndex
+                      ? 'bg-[var(--accent)] text-[var(--accent-fg)] font-semibold'
+                      : 'studio-muted text-[var(--text-primary)]'
+                  }`}
+                >
+                  <span>{ep.title}</span>
+                  <span className="tabular-nums">
+                    {ep.shots.length > 0 ? `${ep.shots.length} 镜` : '标准本'}
+                  </span>
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setTargetEpisodeIndex(nextEpisodeNumber);
+                  setIsMobileDrawerOpen(false);
+                }}
+                className="w-full text-left px-4 py-3 rounded-xl border border-dashed border-[var(--border-subtle)] text-xs font-medium"
+              >
+                + 筹备第 {nextEpisodeNumber} 集新剧本
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Novel Chapter -> Commercial Comic-Drama Adaptation Modal */}
+      {isAdaptModalOpen && selectedSourceBook && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4">
+          <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-5 sm:p-6 shadow-2xl space-y-4 pb-safe">
+            <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
+              <h3 className="text-base font-bold text-[var(--text-primary)]">
+                小说章节跨界改编为甲方标准剧本
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsAdaptModalOpen(false)}
+                className="min-h-[38px] min-w-[38px] flex items-center justify-center text-[var(--text-muted)]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              系统将彻底砍掉原小说中的慢节奏心理独白与修辞渲染，按「{currentFormatSpec.name}」提炼为第{' '}
+              <strong>{activeEpisode ? nextEpisodeNumber : targetEpisodeIndex}</strong> 集极简动作台词剧本。
+            </p>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block mb-1 text-[var(--text-secondary)]">选择源小说</label>
+                <select
+                  value={selectedBookId}
+                  onChange={(e) => {
+                    setSelectedBookId(e.target.value);
+                    setSelectedBookChapterIdx(0);
+                  }}
+                  className="studio-input w-full min-h-[42px] px-3 py-2"
+                >
+                  {books.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      《{b.title}》（共 {b.chapters.length} 章）
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block mb-1 text-[var(--text-secondary)]">选择要改编的章节</label>
+                <select
+                  value={selectedBookChapterIdx}
+                  onChange={(e) => setSelectedBookChapterIdx(Number(e.target.value))}
+                  className="studio-input w-full min-h-[42px] px-3 py-2"
+                >
+                  {(selectedSourceBook.chapters || []).map((ch, idx) => (
+                    <option key={ch.id} value={idx}>
+                      第 {ch.index} 章：{ch.title}（{ch.text.length}字）
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <MotionButton
+                type="button"
+                onClick={() => setIsAdaptModalOpen(false)}
+                className="min-h-[42px] px-4 rounded-xl border border-[var(--border-subtle)] text-xs cursor-pointer"
+              >
+                取消
+              </MotionButton>
+              <MotionButton
+                type="button"
+                disabled={!selectedSourceBook.chapters?.length}
+                onClick={() => {
+                  const ch = selectedSourceBook.chapters[selectedBookChapterIdx];
+                  if (!ch) return;
+                  setIsAdaptModalOpen(false);
+                  const epNum = activeEpisode ? nextEpisodeNumber : targetEpisodeIndex;
+                  executeGenerateLiteraryScriptOnly(epNum, directorInput, {
+                    novelTitle: selectedSourceBook.title,
+                    chapterTitle: ch.title,
+                    chapterText: ch.text,
+                  });
+                }}
+                className="btn-primary min-h-[42px] px-5 text-xs cursor-pointer"
+              >
+                改编生成标准剧本
+              </MotionButton>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
