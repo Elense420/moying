@@ -522,10 +522,42 @@ export interface DramaCharacterAsset {
 
 export interface DramaSceneAnchor {
   id: string;
-  sceneName: string;
+  sceneName: string; // 核心场景基础名（如：顶层安全屋客厅 / 星耀演播厅后台）
+  stateVariant?: string; // 同一场景的不同状态/时段/气候变体（如：常规备战态·日·内 vs 零下70度断电结冰态·夜·内）
+  sourceRef?: string; // 锚点来源标记（如：细纲提取 / 第3集剧本自动归档）
   lightingAndMood: string;
   visualPromptZh: string;
   visualPromptEn: string;
+}
+
+export type DramaForeshadowCategory =
+  | '关键道具'
+  | '身世/人物伏笔'
+  | '核心剧情暗线'
+  | '规则/契约死穴';
+
+export type DramaForeshadowStatus = 'planted' | 'fermenting' | 'resolved';
+
+export interface DramaForeshadowItem {
+  id: string;
+  name: string; // 伏笔或关键道具名称（如：破碎银色定制耳返 / 三年前匿名版权书）
+  category: DramaForeshadowCategory;
+  ownerOrRelation: string; // 关联角色或关系（如：苏晚 ↔ 陆执）
+  plantedEpisode: number; // 首次埋设集数
+  expectedPayoffEpisode?: string; // 预计发酵或回收的集数区间（如：第10集初揭 / 第28集引爆）
+  status: DramaForeshadowStatus; // planted=待回收, fermenting=发酵推进中, resolved=已回收
+  visualAnchorNote?: string; // 关键道具的固定视觉外观描述（供分镜生图锁死道具长相）
+  payoffNote?: string; // 回收方式设计或实际回收记录
+}
+
+export interface DramaNarrativeBible {
+  worldSettingAndRules: string; // 世界观背景、核心金手指/赛制/契约底层铁律（防中后期吃书或战力崩坏）
+  storylineOverview: string; // 核心故事线与高压时间轴脉络
+  mainPlotline: string; // 贯穿全剧的核心主线矛盾、阶段目标与终极闭环
+  subPlotlines: string; // 情感暗线、群像副线与反派对照组支线设计
+  frameworkStructure: string; // 分幕商业框架结构（引流留存幕 → 首轮付费破局幕 → 升级博弈幕 → 终局高潮幕）
+  pacingStrategy: string; // 单集内秒级节奏公式与跨集波浪卡点模型（如3集小高潮、10集大反转）
+  characterArcsAndRelations: string; // 核心角色成长弧光与阶段性人物关系拉扯演变网
 }
 
 export interface DramaShot {
@@ -591,6 +623,7 @@ export interface DramaEpisode {
   isPaywallHook?: boolean; // 是否为付费卡点集/强钩子集
   targetDurationSec: number; // 默认 90~120秒
   coreConflictSummary: string; // 本集核心爽点/冲突梗概
+  continuitySummary?: string; // 长篇跨集记忆专用高密度状态账本（含剧情结果+关系进展+道具/伏笔变化）
   opening3SecHook: string; // 黄金前3秒画面与台词钩子
   endingCliffhanger: string; // 集末留存断章悬念钩子
   scriptFormat?: DramaScriptFormat; // 甲方标准文学剧本格式流派
@@ -622,11 +655,14 @@ export interface DramaProject {
   preferredScriptFormat?: DramaScriptFormat;
   episodeDurationSec?: number; // 单集目标成片时长（秒，如 60 / 90 / 120 / 180 / 240，与剧本目标字数强挂钩）
   totalPlannedEpisodes: number;
+  totalEpisodesReason?: string; // AI 自动分析最佳总集数的商业与叙事测算依据
   paywallEpisodeIndex: number; // 通常第 10 或 12 集
   logline: string; // 一句话商业核心卖点
   targetAudience: string;
   golden3SecHook: string; // 开篇第一集前3秒生死钩子
   synopsis: string; // 全剧起承转合商业大纲
+  narrativeBible?: DramaNarrativeBible; // 全剧叙事架构圣经（故事线/主线/支线/框架结构/剧情节奏/底层规则/人物弧光）
+  foreshadowingLedger?: DramaForeshadowItem[]; // 全局角色伏笔与关键道具追踪回收台账
   characterAssets: DramaCharacterAsset[];
   sceneAnchors: DramaSceneAnchor[];
   episodePlan: DramaEpisodePlanItem[];
@@ -651,12 +687,16 @@ export interface DramaCandidatePlan {
   visualStyle: DramaVisualStyle;
   aspectRatio: DramaAspectRatio;
   episodeDurationSec?: number;
+  totalPlannedEpisodes?: number;
+  totalEpisodesReason?: string;
   paywallEpisodeIndex: number;
   marketFitReason?: string;
   logline: string;
   targetAudience: string;
   golden3SecHook: string;
   synopsis: string;
+  narrativeBible?: DramaNarrativeBible;
+  foreshadowingLedger?: DramaForeshadowItem[];
   seedCharacters: DramaCharacterAsset[];
   adoptedProjectId?: string;
   adoptedAt?: number;

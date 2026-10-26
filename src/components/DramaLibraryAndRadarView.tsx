@@ -420,7 +420,15 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
                       <span aria-hidden="true">·</span>
                       <span>已拆 {shotCount} 镜</span>
                       <span aria-hidden="true">·</span>
-                      <span>立绘锁死 {charCount} 角色</span>
+                      <span>立绘 {charCount} 人</span>
+                      <span aria-hidden="true">·</span>
+                      <span>场景 {project.sceneAnchors?.length || 0} 处</span>
+                      {(project.foreshadowingLedger?.length || 0) > 0 && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>伏笔 {project.foreshadowingLedger?.length} 项</span>
+                        </>
+                      )}
                       <span aria-hidden="true">·</span>
                       <span>第 {project.paywallEpisodeIndex} 集付费点</span>
                     </div>
@@ -604,11 +612,13 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
           visualStyle: selectedTrack.visualStyleRecommend,
           aspectRatio: '9:16 竖屏短剧',
           episodeDurationSec: 90,
+          totalPlannedEpisodes: sib.totalPlannedEpisodes || 60,
           paywallEpisodeIndex: sib.paywallEpisodeIndex || 10,
           logline: sib.logline,
           targetAudience: sib.targetAudience || selectedTrack.targetAudience,
           golden3SecHook: sib.golden3SecHook,
           synopsis: sib.synopsis,
+          narrativeBible: sib.narrativeBible,
           seedCharacters: [],
         }));
       if (unselected.length > 0) {
@@ -628,12 +638,13 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
       aspectRatio: '9:16 竖屏短剧',
       preferredScriptFormat: 'triangle_standard',
       episodeDurationSec: 90,
-      totalPlannedEpisodes: 40,
+      totalPlannedEpisodes: pitch.totalPlannedEpisodes || 60,
       paywallEpisodeIndex: pitch.paywallEpisodeIndex || 10,
       logline: pitch.logline,
       targetAudience: pitch.targetAudience || selectedTrack.targetAudience,
       golden3SecHook: pitch.golden3SecHook,
       synopsis: pitch.synopsis,
+      narrativeBible: pitch.narrativeBible,
       characterAssets: [],
       sceneAnchors: [],
       episodePlan: [],

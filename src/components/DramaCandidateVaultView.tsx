@@ -49,6 +49,11 @@ export function convertCandidateToDramaProject(candidate: DramaCandidatePlan): D
     signatureTrait: c.signatureTrait,
   }));
 
+  const seededForeshadows = (candidate.foreshadowingLedger || []).map((f) => ({
+    ...f,
+    id: generateUUID(),
+  }));
+
   return {
     id: generateUUID(),
     title: candidate.title,
@@ -61,12 +66,14 @@ export function convertCandidateToDramaProject(candidate: DramaCandidatePlan): D
     aspectRatio: candidate.aspectRatio || '9:16 竖屏短剧',
     preferredScriptFormat: 'triangle_standard',
     episodeDurationSec: candidate.episodeDurationSec || 90,
-    totalPlannedEpisodes: 40,
+    totalPlannedEpisodes: candidate.totalPlannedEpisodes || 60,
     paywallEpisodeIndex: candidate.paywallEpisodeIndex || 10,
     logline: candidate.logline,
     targetAudience: candidate.targetAudience || matchedTrack.targetAudience,
     golden3SecHook: candidate.golden3SecHook,
     synopsis: candidate.synopsis,
+    narrativeBible: candidate.narrativeBible ? { ...candidate.narrativeBible } : undefined,
+    foreshadowingLedger: seededForeshadows,
     characterAssets: seededCharacters,
     sceneAnchors: [],
     episodePlan: [],
@@ -100,11 +107,26 @@ export const DramaCandidateDetailModal: React.FC<DramaCandidateDetailModalProps>
       )
       .join('\n');
 
+    const nb = candidate.narrativeBible;
+    const bibleText = nb
+      ? [
+          nb.storylineOverview ? `- 故事线脉络：${nb.storylineOverview}` : '',
+          nb.mainPlotline ? `- 核心主线：${nb.mainPlotline}` : '',
+          nb.subPlotlines ? `- 副线支线：${nb.subPlotlines}` : '',
+          nb.frameworkStructure ? `- 分幕框架：${nb.frameworkStructure}` : '',
+          nb.pacingStrategy ? `- 剧情节奏：${nb.pacingStrategy}` : '',
+          nb.worldSettingAndRules ? `- 底层规则：${nb.worldSettingAndRules}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '';
+
     const fullMd = [
       `# 备选漫剧项目计划：《${candidate.title}》`,
       `方向定位：${candidate.directionTag}`,
       `频道赛道：${candidate.channel} · ${candidate.trackName}`,
-      `视觉规格：${candidate.visualStyle} · ${candidate.aspectRatio} · 第 ${candidate.paywallEpisodeIndex} 集付费卡点`,
+      `视觉规格：${candidate.visualStyle} · ${candidate.aspectRatio} · 单集 ${candidate.episodeDurationSec || 90} 秒 · 规划 ${candidate.totalPlannedEpisodes || 60} 集 · 第 ${candidate.paywallEpisodeIndex} 集付费卡点`,
+      candidate.totalEpisodesReason ? `集数测算依据：${candidate.totalEpisodesReason}` : '',
       candidate.userPromptOrSpark ? `原始构想：${candidate.userPromptOrSpark}` : '',
       candidate.selectedSiblingTitle ? `同批次当时立项：《${candidate.selectedSiblingTitle}》` : '',
       '',
@@ -115,6 +137,7 @@ export const DramaCandidateDetailModal: React.FC<DramaCandidateDetailModalProps>
       candidate.golden3SecHook,
       '',
       charsText ? `## 预置核心角色与立绘设定\n${charsText}\n` : '',
+      bibleText ? `## 全剧叙事架构圣经\n${bibleText}\n` : '',
       `## 三阶段商业大纲`,
       candidate.synopsis,
     ]
@@ -139,7 +162,7 @@ export const DramaCandidateDetailModal: React.FC<DramaCandidateDetailModalProps>
           {/* Sticky Header */}
           <div className="px-5 py-4 sm:px-6 border-b border-[var(--border-subtle)] flex items-start justify-between gap-3 shrink-0">
             <div className="space-y-1 min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5 text-xs text-[var(--text-muted)]">
+              <div className="flex flex-wrap items-center gap-1.5 text-xs text-[var(--text-muted)] tabular-nums">
                 <span className="font-semibold text-[var(--accent)]">{candidate.directionTag}</span>
                 <span aria-hidden="true">·</span>
                 <span>
@@ -148,7 +171,13 @@ export const DramaCandidateDetailModal: React.FC<DramaCandidateDetailModalProps>
                 <span aria-hidden="true">·</span>
                 <span>{candidate.visualStyle}</span>
                 <span aria-hidden="true">·</span>
-                <span className="tabular-nums">第 {candidate.paywallEpisodeIndex} 集付费点</span>
+                <span>{candidate.aspectRatio.split(' ')[0]}</span>
+                <span aria-hidden="true">·</span>
+                <span>单集 {candidate.episodeDurationSec || 90}s</span>
+                <span aria-hidden="true">·</span>
+                <span>共 {candidate.totalPlannedEpisodes || 60} 集</span>
+                <span aria-hidden="true">·</span>
+                <span>第 {candidate.paywallEpisodeIndex} 集付费点</span>
               </div>
               <h2 className="text-lg sm:text-xl font-bold text-[var(--text-primary)] font-editorial-serif truncate">
                 《{candidate.title}》
@@ -281,6 +310,44 @@ export const DramaCandidateDetailModal: React.FC<DramaCandidateDetailModalProps>
                 </div>
               </div>
             )}
+
+            {/* Narrative Architecture Bible & Foreshadowing Seeds if available */}
+            {candidate.narrativeBible &&
+              (candidate.narrativeBible.mainPlotline ||
+                candidate.narrativeBible.subPlotlines ||
+                candidate.narrativeBible.frameworkStructure) && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-[var(--text-primary)]">
+                    全剧叙事架构圣经（主支线 · 分幕框架 · 节奏与底层规则）
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                    {candidate.narrativeBible.mainPlotline && (
+                      <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/40 space-y-1">
+                        <span className="font-bold text-[var(--text-primary)]">核心主线：</span>
+                        <p className="text-[var(--text-secondary)]">{candidate.narrativeBible.mainPlotline}</p>
+                      </div>
+                    )}
+                    {candidate.narrativeBible.subPlotlines && (
+                      <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/40 space-y-1">
+                        <span className="font-bold text-[var(--text-primary)]">副线支线：</span>
+                        <p className="text-[var(--text-secondary)]">{candidate.narrativeBible.subPlotlines}</p>
+                      </div>
+                    )}
+                    {candidate.narrativeBible.frameworkStructure && (
+                      <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/40 space-y-1">
+                        <span className="font-bold text-[var(--text-primary)]">分幕框架结构：</span>
+                        <p className="text-[var(--text-secondary)]">{candidate.narrativeBible.frameworkStructure}</p>
+                      </div>
+                    )}
+                    {candidate.narrativeBible.pacingStrategy && (
+                      <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/40 space-y-1">
+                        <span className="font-bold text-[var(--text-primary)]">剧情节奏策略：</span>
+                        <p className="text-[var(--text-secondary)]">{candidate.narrativeBible.pacingStrategy}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
             {/* 3-Stage Commercial Synopsis */}
             <div className="space-y-2">
