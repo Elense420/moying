@@ -17,6 +17,7 @@ import {
   Copy,
   MessageSquarePlus,
   FolderArchive,
+  Upload,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import {
@@ -57,6 +58,7 @@ interface DramaLibraryViewProps {
   onDeleteDrama: (project: DramaProject) => void;
   onPromoteCandidate: (candidate: DramaCandidatePlan) => void;
   onDeleteCandidate: (id: string) => void;
+  onOpenBackupRestore: (mode: 'backup' | 'restore') => void;
 }
 
 export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
@@ -69,6 +71,7 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
   onDeleteDrama,
   onPromoteCandidate,
   onDeleteCandidate,
+  onOpenBackupRestore,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
   const [librarySection, setLibrarySection] = useState<'active' | 'candidates'>('active');
@@ -168,7 +171,25 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <MotionButton
+            type="button"
+            onClick={() => onOpenBackupRestore('backup')}
+            title="支持一键全选或单选导出漫剧正式项目与备选项目计划"
+            className="min-h-[44px] px-3.5 py-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
+          >
+            <Download className="w-4 h-4 text-[var(--accent)]" />
+            <span>备份导出</span>
+          </MotionButton>
+          <MotionButton
+            type="button"
+            onClick={() => onOpenBackupRestore('restore')}
+            title="从备份文件按全选或单选恢复漫剧项目与备选计划"
+            className="min-h-[44px] px-3.5 py-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
+          >
+            <Upload className="w-4 h-4 text-[var(--accent)]" />
+            <span>恢复导入</span>
+          </MotionButton>
           <MotionButton
             type="button"
             onClick={onGoToRadar}
@@ -237,6 +258,7 @@ export const DramaLibraryView: React.FC<DramaLibraryViewProps> = ({
           onPromoteCandidate={onPromoteCandidate}
           onDeleteCandidate={onDeleteCandidate}
           onGoToConsultant={onGoToRadar}
+          onOpenBackupRestore={onOpenBackupRestore}
         />
       ) : (
         <>
@@ -511,6 +533,7 @@ interface DramaRadarViewProps {
   onAutoArchiveCandidates: (candidates: DramaCandidatePlan[], selectedTitle: string) => void;
   onPromoteCandidate: (candidate: DramaCandidatePlan) => void;
   onDeleteCandidate: (id: string) => void;
+  onOpenBackupRestore?: (mode: 'backup' | 'restore') => void;
 }
 
 export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
@@ -521,6 +544,7 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
   onAutoArchiveCandidates,
   onPromoteCandidate,
   onDeleteCandidate,
+  onOpenBackupRestore,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
   const [radarTab, setRadarTab] = useState<'consultant' | 'tracks' | 'candidates'>('consultant');
@@ -738,6 +762,7 @@ export const DramaRadarView: React.FC<DramaRadarViewProps> = ({
           onPromoteCandidate={onPromoteCandidate}
           onDeleteCandidate={onDeleteCandidate}
           onGoToConsultant={() => setRadarTab('consultant')}
+          onOpenBackupRestore={onOpenBackupRestore}
         />
       ) : radarTab === 'consultant' ? (
         <DramaIdeaConsultant

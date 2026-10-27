@@ -3,9 +3,11 @@ import {
   DramaTrackPreset,
   HOT_DRAMA_TRACKS,
   DramaCharacterAsset,
+  DramaCharacterTier,
   DramaSceneAnchor,
   DramaEpisodePlanItem,
   DramaEpisode,
+  DramaEpisodeLogicAudit,
   DramaShot,
   DramaScriptFormat,
   DRAMA_SCRIPT_FORMATS,
@@ -16,6 +18,13 @@ import {
   DramaForeshadowItem,
   DramaForeshadowCategory,
   DramaForeshadowStatus,
+  DramaStoryArc,
+  DramaStoryArcType,
+  DramaPlotRhythmPoint,
+  DramaRhythmTier,
+  DramaKeyPropItem,
+  DramaKeyPropStatus,
+  DramaScreenplaySkill,
 } from '../types';
 import { generateUUID } from '../utils/uuid';
 
@@ -187,6 +196,82 @@ const COMMERCIAL_DRAMA_CONSTITUTION = `【商业 AI 漫剧 / 短剧工业化创�
 4. 时长与字数体量强挂钩：单集设定的成片时长越长，剧本场次深度、人物交锋回合数与总字数必须按比例同步增长；既严禁将长单集缩水写成几百字短梗，也严禁靠废话描写注水。
 5. 台词短促抓耳：单句台词严格控制在 30 字以内，口语化、情绪直接、适合 AI 配音（TTS）卡点输出。
 6. 集末断章强钩子：每集最后一行必须停在“危机骤降 / 底牌揭晓前一秒 / 惊天反转定格”的最高悬念处。`;
+
+/**
+ * 强制植入 AI System Prompt 的「长文本记忆维护协议」与「编剧因果逻辑 / 角色知情权物理隔离铁律」
+ */
+export const LONG_TEXT_MEMORY_MAINTENANCE_PROTOCOL = `【长文本记忆维护协议（Long-Text Memory Maintenance Protocol · 每集强制执行）】
+1. 前 5 集深度回溯义务：在动笔生成当前集剧本前，你必须逐条核对下方注入的【前 5 集关键剧情节点、角色当前位置与身心状态、关键道具当前持有人、以及所有未闭合伏笔清单】，确保本集第一镜与上一集末尾画面无缝咬合，严禁遗忘前 5 集刚发生的冲突结果、伤势、关系破裂/结盟或筹码转移！
+2. 关键道具物权守恒：凡在【关键道具追踪表】中处于“已移交 / 遗失争夺中 / 已损毁”状态的道具，严禁凭空回到原角色手中；道具每次易手或引爆必须在 \`keyPropUpdates\` 中同步更新持有人与状态。
+3. 新出场重要人物自动建档：本集若首次出场有名字、有台词、影响后续剧情走向的【重要配角】或【阶段反派】（非“保镖甲/路人/服务员”等一次性龙套），必须在 JSON \`newCharactersIntroduced\` 中提取其人设、固定立绘描述与知情边界，以便系统自动归入角色库。
+4. 角色知情权物理隔离（严禁主角开“上帝视角”未卜先知）：
+   - 剧本中平行剪辑展示给观众看的异地场次（例如：反派B在A地密室安排手下刺杀正在B地调查的主角A），属于【观众全知信息】，**绝不等于主角A已知的信息**！
+   - 除非本集或前文明确演出了物理信息传递媒介（如：主角亲眼撞见、截获带署名的加密指令、从刺客身上搜出专属家徽/信物、审讯活口逼问出幕后主使、或收到内线情报），否则角色在台词与行动中**绝对禁止**直接喊出未谋面幕后黑手的名字或知晓不在场发生的剧情！
+5. 场次时空平滑桥接与强因果动机（严禁莫名其妙瞬移或无动机行事）：
+   - 禁止角色毫无铺垫“莫名其妙出现在某地”或“莫名其妙开始做某事”！
+   - 每一次场次切换（如从 \`X-1\` 转入 \`X-2\`）必须具备清晰的因果触发链：【上一场获得的线索/遭遇的危机/接到的指令（触发因）】→【角色去新地点的明确目的（行动动机）】→【新场次开篇第一动作为目的服务（空间落点）】。
+   - 输出 \`scriptText\` 前，你必须先填写 JSON 中的 \`logicAndPovAudit\` 自检字段，完成转场因果与角色知情权核验！`;
+
+export const DEFAULT_DRAMA_SCREENPLAY_SKILLS: DramaScreenplaySkill[] = [
+  {
+    id: 'drama-skill-epistemic-pov',
+    name: '角色知情权隔离 · 反上帝视角护栏',
+    badge: '防未卜先知',
+    description:
+      '物理隔离「观众平行视角」与「角色有限认知」。角色未亲历、无现场物证/审讯/情报媒介获知的幕后黑手或异地暗线，严禁在台词中直接说破。',
+    promptDirective:
+      '【SKILL · 角色知情权严格审计】：逐句审查本集所有角色台词——凡涉及指认幕后主使、点破阴谋或引用异地事件，必须先在场内给出可见的【获知媒介】（搜出特征信物/截获通讯/目击证人/逼供活口）；若角色尚不知情，只能针对眼前表象作出符合其当下认知的反应与推测，严禁未卜先知！',
+    enabled: true,
+    isBuiltin: true,
+  },
+  {
+    id: 'drama-skill-causal-transition',
+    name: '场次因果桥接 · 防突兀瞬移引擎',
+    badge: '强动机转场',
+    description:
+      '杜绝人物莫名其妙出现在新场景或做无头绪动作。要求每场戏切换都遵循「前场触发因 → 明确行动目标 → 下场开篇落点动作」的因果闭环。',
+    promptDirective:
+      '【SKILL · 场次因果与动机闭环】：严禁无过渡跳跃与无动机行为！每次切换地点或开启新行动前，前一场末尾须留有行动钩子（如发现地址纸条、接到紧急电话、为躲避追杀撤往安全屋），下一场首行 △ 动作直接承接该行动目的，让剧情推进丝滑且环环相扣。',
+    enabled: true,
+    isBuiltin: true,
+  },
+  {
+    id: 'drama-skill-dramatic-irony',
+    name: '信息差悬念 · 潜台词拉扯张力',
+    badge: '希区柯克悬念',
+    description:
+      '善用「观众知道刺客是谁、主角只察觉环境异常」的认知差制造紧绷感，让对白充满试探与反转，避免直白干瘪的说明文式台词。',
+    promptDirective:
+      '【SKILL · 戏剧信息差张力】：当存在平行暗线（观众知情而主角不知情）时，利用环境反常细节（如反光的狙击镜、温度骤降、熟人反常的微动作）让主角凭直觉警觉闪避并反制，保留“幕后究竟是谁”的悬念钩子直至证据浮现那一刻再引爆！',
+    enabled: true,
+    isBuiltin: true,
+  },
+];
+
+export function resolveDramaScreenplaySkills(project: DramaProject): DramaScreenplaySkill[] {
+  const saved = project.dramaSkills;
+  if (!saved || saved.length === 0) {
+    return DEFAULT_DRAMA_SCREENPLAY_SKILLS.map((s) => ({ ...s }));
+  }
+  const savedMap = new Map(saved.map((s) => [s.id, s]));
+  const mergedBuiltins = DEFAULT_DRAMA_SCREENPLAY_SKILLS.map((def) => {
+    const found = savedMap.get(def.id);
+    return found ? { ...def, ...found } : { ...def };
+  });
+  const customOnes = saved.filter(
+    (s) => !DEFAULT_DRAMA_SCREENPLAY_SKILLS.some((def) => def.id === s.id)
+  );
+  return [...mergedBuiltins, ...customOnes];
+}
+
+export function buildActiveDramaSkillsPromptBlock(project: DramaProject): string {
+  const activeSkills = resolveDramaScreenplaySkills(project).filter((s) => s.enabled);
+  if (activeSkills.length === 0) return '';
+  return (
+    `\n【已挂载漫剧编剧专业护栏 SKILL（共 ${activeSkills.length} 项，创作时必须100%贯彻）】\n` +
+    activeSkills.map((s, idx) => `${idx + 1}. ${s.promptDirective}`).join('\n')
+  );
+}
 
 export function getTrackByProject(project: DramaProject): DramaTrackPreset {
   return (
@@ -544,6 +629,7 @@ export function mergeForeshadowingLedger(
     if (matched) {
       if (targetStatus === 'resolved' && matched.status !== 'resolved') {
         matched.status = 'resolved';
+        matched.resolvedEpisode = defaultEpisode;
         updatedCount += 1;
       } else if (targetStatus === 'fermenting' && matched.status === 'planted') {
         matched.status = 'fermenting';
@@ -569,6 +655,7 @@ export function mergeForeshadowingLedger(
         expectedPayoffEpisode: raw.expectedPayoffEpisode
           ? String(raw.expectedPayoffEpisode).trim()
           : undefined,
+        resolvedEpisode: targetStatus === 'resolved' ? defaultEpisode : undefined,
         status: targetStatus,
         visualAnchorNote: raw.visualAnchorNote ? String(raw.visualAnchorNote).trim() : undefined,
         payoffNote: raw.payoffNote ? String(raw.payoffNote).trim() : undefined,
@@ -580,11 +667,400 @@ export function mergeForeshadowingLedger(
   return { merged: result, updatedCount };
 }
 
+// ============================================================================
+// 结构化故事线 (storyArcs)、节奏点 (plotRhythm)、关键道具表 (keyPropManifest) 与配角自动识别引擎
+// ============================================================================
+
+const VALID_STORY_ARC_TYPES: DramaStoryArcType[] = ['主线', '情感副线', '暗线/反派线', '群像支线'];
+const VALID_RHYTHM_TIERS: DramaRhythmTier[] = [
+  '蓄力铺垫',
+  '拉扯升级',
+  '爽点小高潮',
+  '付费大卡点',
+  '终局大爆发',
+];
+const VALID_KEY_PROP_STATUSES: DramaKeyPropStatus[] = [
+  '持有中',
+  '已移交',
+  '遗失/争夺中',
+  '已损毁',
+  '已引爆回收',
+];
+
+export function inferCharacterTier(roleTag?: string, listIdx = 0): DramaCharacterTier {
+  const tag = String(roleTag || '').trim();
+  if (/男主|女主|主角|双强主|第一主/.test(tag)) return 'protagonist';
+  if (/反派|仇家|宿敌|幕后|黑手|渣男|绿茶|恶毒|死敌|对手/.test(tag)) return 'recurring_antagonist';
+  if (/配角|闺蜜|助理|兄弟|导师|队友|长辈|盟友|线人|副线/.test(tag)) return 'major_support';
+  return listIdx < 2 ? 'protagonist' : 'major_support';
+}
+
+function normalizePersonNameKey(name: string): string {
+  return String(name || '')
+    .replace(/（.*?）|\(.*?\)/g, '')
+    .replace(/[\s·\-—_"'“”‘’《》【】\[\]:：]/g, '')
+    .toLowerCase();
+}
+
+const GENERIC_EXTRA_NAME_REGEX =
+  /^(旁白|画外音|系统|系统音|众人|路人|群演|记者|粉丝|弹幕|网友|手下|黑衣人|刺客|杀手|保镖|保安|秘书|助理甲|医生|护士|警察|服务员|司机|店员|裁判|主持人|宾客|股东|高管|士兵|丧尸|怪物|小弟|打手|女佣|管家甲|[A-Z0-9]+|[甲乙丙丁戊己\d]+|.*[甲乙丙丁\d])$/;
+
+/**
+ * 合并角色资产（支持剧本推进中自动识别新增【重要配角】与【阶段反派】，不覆盖已有主角锁定立绘词）
+ */
+export function mergeCharacterAssets(
+  existing: DramaCharacterAsset[],
+  incoming: Array<Partial<DramaCharacterAsset> & { name: string }>,
+  defaultDebutEp = 1
+): { merged: DramaCharacterAsset[]; addedCount: number; addedNames: string[] } {
+  const result: DramaCharacterAsset[] = existing.map((c, idx) => ({
+    ...c,
+    tier: c.tier || inferCharacterTier(c.roleTag, idx),
+    firstAppearanceEp: c.firstAppearanceEp || 1,
+  }));
+  let addedCount = 0;
+  const addedNames: string[] = [];
+
+  for (const raw of incoming) {
+    const cleanName = String(raw.name || '')
+      .replace(/（.*?）|\(.*?\)/g, '')
+      .trim();
+    const key = normalizePersonNameKey(cleanName);
+    if (!key || cleanName.length < 2 || cleanName.length > 10) continue;
+    if (GENERIC_EXTRA_NAME_REGEX.test(cleanName)) continue;
+
+    const existingMatch = result.find((item) => normalizePersonNameKey(item.name) === key);
+    if (existingMatch) {
+      if (!existingMatch.appearanceZh && raw.appearanceZh) {
+        existingMatch.appearanceZh = String(raw.appearanceZh).trim();
+      }
+      if (!existingMatch.visualPromptEn && raw.visualPromptEn) {
+        existingMatch.visualPromptEn = String(raw.visualPromptEn).trim();
+      }
+      if (!existingMatch.voicePersona && raw.voicePersona) {
+        existingMatch.voicePersona = String(raw.voicePersona).trim();
+      }
+      if (!existingMatch.signatureTrait && raw.signatureTrait) {
+        existingMatch.signatureTrait = String(raw.signatureTrait).trim();
+      }
+      if (raw.epistemicNote && String(raw.epistemicNote).trim()) {
+        existingMatch.epistemicNote = String(raw.epistemicNote).trim();
+      }
+      continue;
+    }
+
+    const validTier: DramaCharacterTier =
+      raw.tier === 'protagonist' ||
+      raw.tier === 'major_support' ||
+      raw.tier === 'recurring_antagonist'
+        ? raw.tier
+        : inferCharacterTier(raw.roleTag, result.length);
+
+    result.push({
+      id: raw.id || generateUUID(),
+      name: cleanName,
+      tier: validTier,
+      roleTag: String(
+        raw.roleTag || (validTier === 'recurring_antagonist' ? '阶段关键反派' : '新登场重要配角')
+      ).trim(),
+      firstAppearanceEp: Math.max(1, Number(raw.firstAppearanceEp) || defaultDebutEp),
+      ageAndArchetype: String(raw.ageAndArchetype || `第${defaultDebutEp}集登场重要人物`).trim(),
+      appearanceZh: String(raw.appearanceZh || '').trim(),
+      visualPromptEn: String(raw.visualPromptEn || '').trim(),
+      voicePersona: String(raw.voicePersona || '口吻鲜明，贴合人物身份').trim(),
+      signatureTrait: String(raw.signatureTrait || '').trim(),
+      epistemicNote: raw.epistemicNote ? String(raw.epistemicNote).trim() : undefined,
+    });
+    addedCount += 1;
+    addedNames.push(cleanName);
+  }
+
+  return { merged: result, addedCount, addedNames };
+}
+
+/**
+ * 兜底扫描器：当用户在编辑器手改剧本或导入甲方洗稿剧本时，自动从 `出场人物：` 与高频对白角色中识别尚未建档的重要配角
+ */
+export function extractSupportingCharactersFromScriptFallback(
+  rawScriptText: string,
+  existingChars: DramaCharacterAsset[],
+  episodeIndex: number,
+  visualStyle: DramaVisualStyle,
+  aspectRatio: DramaAspectRatio
+): Array<Partial<DramaCharacterAsset> & { name: string }> {
+  if (!rawScriptText) return [];
+  const existingKeys = new Set(existingChars.map((c) => normalizePersonNameKey(c.name)));
+  const headerListedNames = new Set<string>();
+  const dialogueCounts = new Map<string, number>();
+
+  const lines = rawScriptText.split('\n');
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const castMatch = line.match(/^出场人物[：:]\s*(.+)$/);
+    if (castMatch) {
+      castMatch[1]
+        .split(/[、,，/\s]+/)
+        .map((n) => n.replace(/（.*?）|\(.*?\)/g, '').trim())
+        .filter((n) => n.length >= 2 && n.length <= 8 && !GENERIC_EXTRA_NAME_REGEX.test(n))
+        .forEach((n) => headerListedNames.add(n));
+      continue;
+    }
+
+    if (line.startsWith('△') || line.startsWith('**') || line.startsWith('【')) continue;
+    const dlgMatch = line.match(/^([^：:\s（(]{2,8})(?:[（(][^）)]*[）)])?[：:](.+)$/);
+    if (dlgMatch) {
+      const speaker = dlgMatch[1].trim();
+      if (!GENERIC_EXTRA_NAME_REGEX.test(speaker) && !/^第\d+/.test(speaker)) {
+        dialogueCounts.set(speaker, (dialogueCounts.get(speaker) || 0) + 1);
+      }
+    }
+  }
+
+  const candidates = new Set<string>();
+  dialogueCounts.forEach((count, speaker) => {
+    if (count >= 2 || (count >= 1 && headerListedNames.has(speaker))) {
+      candidates.add(speaker);
+    }
+  });
+
+  const discovered: Array<Partial<DramaCharacterAsset> & { name: string }> = [];
+  candidates.forEach((name) => {
+    const key = normalizePersonNameKey(name);
+    if (!key || existingKeys.has(key)) return;
+    discovered.push({
+      name,
+      tier: 'major_support',
+      roleTag: `第${episodeIndex}集登场配角`,
+      firstAppearanceEp: episodeIndex,
+      ageAndArchetype: `第${episodeIndex}集新出场关键人物（可补充具体年龄与人设）`,
+      appearanceZh: `${visualStyle}风格，${name}，辨识度鲜明的固定发型与常驻服饰特征（第${episodeIndex}集自动识别建档）`,
+      visualPromptEn: `${visualStyle}, distinct supporting character ${name}, consistent hairstyle and outfit, ${aspectRatio.split(' ')[0]}`,
+      voicePersona: '贴合本集台词情绪的鲜明配音音色',
+      signatureTrait: `首次登场于第 ${episodeIndex} 集`,
+    });
+  });
+
+  return discovered;
+}
+
+export function normalizeStoryArcs(rawList: any): DramaStoryArc[] {
+  if (!Array.isArray(rawList)) return [];
+  return rawList
+    .filter((item: any) => item && item.title)
+    .map((item: any) => {
+      const arcTypeCandidate = String(item.arcType || '').trim() as DramaStoryArcType;
+      return {
+        id: item.id || generateUUID(),
+        title: String(item.title || '核心叙事线').trim(),
+        arcType: VALID_STORY_ARC_TYPES.includes(arcTypeCandidate) ? arcTypeCandidate : '主线',
+        spanEpisodes: String(item.spanEpisodes || '第1-60集').trim(),
+        progressPct: Math.max(0, Math.min(100, Math.round(Number(item.progressPct) || 15))),
+        currentStage: String(item.currentStage || '开局铺设').trim(),
+        coreConflictAndGoal: String(item.coreConflictAndGoal || '').trim(),
+      };
+    });
+}
+
+export function mergeStoryArcs(
+  existing: DramaStoryArc[],
+  updates: Array<Partial<DramaStoryArc> & { title?: string }>
+): DramaStoryArc[] {
+  const result = existing.map((a) => ({ ...a }));
+  for (const upd of updates) {
+    const titleKey = normalizeForeshadowKey(String(upd.title || ''));
+    if (!titleKey) continue;
+    const found = result.find((a) => {
+      const k = normalizeForeshadowKey(a.title);
+      return k === titleKey || (k.length >= 3 && titleKey.length >= 3 && (k.includes(titleKey) || titleKey.includes(k)));
+    });
+    if (found) {
+      if (typeof upd.progressPct === 'number' && !Number.isNaN(upd.progressPct)) {
+        found.progressPct = Math.max(0, Math.min(100, Math.round(upd.progressPct)));
+      }
+      if (upd.currentStage && String(upd.currentStage).trim()) {
+        found.currentStage = String(upd.currentStage).trim();
+      }
+      if (upd.coreConflictAndGoal && String(upd.coreConflictAndGoal).trim()) {
+        found.coreConflictAndGoal = String(upd.coreConflictAndGoal).trim();
+      }
+    } else if (upd.coreConflictAndGoal) {
+      const arcTypeCandidate = String(upd.arcType || '').trim() as DramaStoryArcType;
+      result.push({
+        id: generateUUID(),
+        title: String(upd.title).trim(),
+        arcType: VALID_STORY_ARC_TYPES.includes(arcTypeCandidate) ? arcTypeCandidate : '群像支线',
+        spanEpisodes: String(upd.spanEpisodes || '连载推进中').trim(),
+        progressPct: Math.max(0, Math.min(100, Math.round(Number(upd.progressPct) || 20))),
+        currentStage: String(upd.currentStage || '新支线开启').trim(),
+        coreConflictAndGoal: String(upd.coreConflictAndGoal).trim(),
+      });
+    }
+  }
+  return result;
+}
+
+export function normalizePlotRhythm(rawList: any): DramaPlotRhythmPoint[] {
+  if (!Array.isArray(rawList)) return [];
+  return rawList
+    .filter((item: any) => item && (item.anchorEpisode || item.beatGoal))
+    .map((item: any, idx: number) => {
+      const anchorEp = Math.max(1, Math.round(Number(item.anchorEpisode) || idx * 3 + 1));
+      const tierCandidate = String(item.rhythmTier || '').trim() as DramaRhythmTier;
+      return {
+        id: item.id || generateUUID(),
+        anchorEpisode: anchorEp,
+        episodeRange: String(item.episodeRange || `第${anchorEp}集`).trim(),
+        rhythmTier: VALID_RHYTHM_TIERS.includes(tierCandidate) ? tierCandidate : '爽点小高潮',
+        tensionScore: Math.max(15, Math.min(100, Math.round(Number(item.tensionScore) || 75))),
+        beatGoal: String(item.beatGoal || '').trim(),
+      };
+    })
+    .sort((a, b) => a.anchorEpisode - b.anchorEpisode);
+}
+
+/**
+ * 为「结构化看板 - 剧情节奏热力图」融合显式 `plotRhythm` 节点与 `episodePlan` 分集节拍，生成连续可视化的热力矩阵
+ */
+export function deriveEffectivePlotRhythm(project: DramaProject): DramaPlotRhythmPoint[] {
+  const explicit = [...(project.plotRhythm || [])].sort((a, b) => a.anchorEpisode - b.anchorEpisode);
+  const explicitByEp = new Map<number, DramaPlotRhythmPoint>();
+  explicit.forEach((p) => explicitByEp.set(p.anchorEpisode, p));
+
+  const plans = [...(project.episodePlan || [])].sort((a, b) => a.episodeIndex - b.episodeIndex);
+  if (plans.length === 0) return explicit;
+
+  const combined: DramaPlotRhythmPoint[] = plans.map((ep) => {
+    const matched = explicitByEp.get(ep.episodeIndex);
+    if (matched) return matched;
+
+    const isPaywall =
+      ep.hookType === '核心付费卡点' || ep.episodeIndex === project.paywallEpisodeIndex;
+    let rhythmTier: DramaRhythmTier = '拉扯升级';
+    let defaultTension = 64;
+
+    if (isPaywall) {
+      rhythmTier = '付费大卡点';
+      defaultTension = 96;
+    } else if (ep.hookType === '反转高潮') {
+      rhythmTier = ep.episodeIndex >= (project.totalPlannedEpisodes || 60) - 3 ? '终局大爆发' : '爽点小高潮';
+      defaultTension = 88;
+    } else if (ep.hookType === '小高潮爽点') {
+      rhythmTier = '爽点小高潮';
+      defaultTension = 82;
+    } else if (ep.episodeIndex === 1) {
+      rhythmTier = '爽点小高潮';
+      defaultTension = 86;
+    } else if (ep.episodeIndex % 3 === 2) {
+      rhythmTier = '蓄力铺垫';
+      defaultTension = 52;
+    }
+
+    return {
+      id: `plan-rhythm-${ep.episodeIndex}`,
+      anchorEpisode: ep.episodeIndex,
+      episodeRange: `第${ep.episodeIndex}集`,
+      rhythmTier,
+      tensionScore: ep.tensionScore || defaultTension,
+      beatGoal: `《${ep.title}》：${ep.beatSummary}`,
+    };
+  });
+
+  // Also append any explicit future rhythm milestones beyond max planned episode
+  const maxPlanEp = plans[plans.length - 1]?.episodeIndex || 0;
+  explicit.forEach((p) => {
+    if (p.anchorEpisode > maxPlanEp) {
+      combined.push(p);
+    }
+  });
+
+  return combined.sort((a, b) => a.anchorEpisode - b.anchorEpisode);
+}
+
+export function normalizeKeyPropManifest(rawList: any): DramaKeyPropItem[] {
+  if (!Array.isArray(rawList)) return [];
+  return rawList
+    .filter((item: any) => item && item.name)
+    .map((item: any) => {
+      const statusCandidate = String(item.status || '').trim() as DramaKeyPropStatus;
+      return {
+        id: item.id || generateUUID(),
+        name: String(item.name || '').trim(),
+        currentHolder: String(item.currentHolder || '待明确持有人').trim(),
+        debutEpisode: Math.max(1, Math.round(Number(item.debutEpisode) || 1)),
+        milestoneEpisodes: String(item.milestoneEpisodes || '贯穿主线').trim(),
+        visualSpec: String(item.visualSpec || '').trim(),
+        narrativeFunction: String(item.narrativeFunction || '').trim(),
+        status: VALID_KEY_PROP_STATUSES.includes(statusCandidate) ? statusCandidate : '持有中',
+      };
+    });
+}
+
+export function mergeKeyPropManifest(
+  existing: DramaKeyPropItem[],
+  incoming: Array<Partial<DramaKeyPropItem> & { name: string }>,
+  defaultEp = 1
+): { merged: DramaKeyPropItem[]; updatedCount: number } {
+  const result = existing.map((p) => ({ ...p }));
+  let updatedCount = 0;
+
+  for (const raw of incoming) {
+    const cleanName = String(raw.name || '').trim();
+    const key = normalizeForeshadowKey(cleanName);
+    if (!key) continue;
+
+    const statusCandidate = String(raw.status || '').trim() as DramaKeyPropStatus;
+    const validStatus: DramaKeyPropStatus = VALID_KEY_PROP_STATUSES.includes(statusCandidate)
+      ? statusCandidate
+      : '持有中';
+
+    const matched = result.find((item) => {
+      const ik = normalizeForeshadowKey(item.name);
+      return ik === key || (ik.length >= 3 && key.length >= 3 && (ik.includes(key) || key.includes(ik)));
+    });
+
+    if (matched) {
+      if (raw.currentHolder && String(raw.currentHolder).trim()) {
+        matched.currentHolder = String(raw.currentHolder).trim();
+      }
+      if (raw.status && VALID_KEY_PROP_STATUSES.includes(statusCandidate)) {
+        matched.status = validStatus;
+      }
+      if (!matched.visualSpec && raw.visualSpec) {
+        matched.visualSpec = String(raw.visualSpec).trim();
+      }
+      if (raw.narrativeFunction && String(raw.narrativeFunction).trim()) {
+        matched.narrativeFunction = String(raw.narrativeFunction).trim();
+      }
+      if (raw.milestoneEpisodes && String(raw.milestoneEpisodes).trim()) {
+        matched.milestoneEpisodes = String(raw.milestoneEpisodes).trim();
+      }
+      updatedCount += 1;
+    } else {
+      result.push({
+        id: raw.id || generateUUID(),
+        name: cleanName,
+        currentHolder: String(raw.currentHolder || '核心角色').trim(),
+        debutEpisode: Math.max(1, Number(raw.debutEpisode) || defaultEp),
+        milestoneEpisodes: String(raw.milestoneEpisodes || `第${defaultEp}集登场`).trim(),
+        visualSpec: String(raw.visualSpec || '').trim(),
+        narrativeFunction: String(raw.narrativeFunction || '关键剧情触发信物/证据').trim(),
+        status: validStatus,
+      });
+      updatedCount += 1;
+    }
+  }
+
+  return { merged: result, updatedCount };
+}
+
 /**
  * 每集剧本生成或洗稿完成后自动调用：
  * 1. 自动从 AI 返回的 `episodeSceneAnchors` + 剧本场头双通道提取新场景或「同场景不同状态」，严格去重后写入 `sceneAnchors`；
- * 2. 自动根据 `foreshadowingUpdates` 更新全局伏笔与关键道具台账（新埋设 / 发酵推进 / 标记已回收）；
- * 3. 自动固化本集 `continuitySummary` 供后续几十集连载滚动记忆使用。
+ * 2. 自动根据 `foreshadowingUpdates` 更新全局伏笔台账，并根据 `keyPropUpdates` 更新关键道具追踪表 `keyPropManifest`；
+ * 3. 自动根据 `newCharactersIntroduced` + 剧本对话兜底扫描识别新出场【重要配角/阶段反派】，归入 `characterAssets`；
+ * 4. 自动更新多线叙事进度 `storyArcs` 与本集因果/防上帝视角审计报告 `logicAudit`。
  */
 export function applyEpisodeContinuityUpdates(params: {
   project: DramaProject;
@@ -592,23 +1068,69 @@ export function applyEpisodeContinuityUpdates(params: {
   episode: DramaEpisode;
 }): {
   episode: DramaEpisode;
+  characterAssets: DramaCharacterAsset[];
   sceneAnchors: DramaSceneAnchor[];
   foreshadowingLedger: DramaForeshadowItem[];
+  keyPropManifest: DramaKeyPropItem[];
+  storyArcs: DramaStoryArc[];
+  addedCharactersCount: number;
+  addedCharacterNames: string[];
   addedScenesCount: number;
   updatedForeshadowCount: number;
+  updatedPropsCount: number;
 } {
   const { project, rawModelOutput, episode } = params;
   const incomingScenes: Array<Partial<DramaSceneAnchor> & { sceneName: string }> = [];
   const incomingForeshadows: Array<
     Partial<DramaForeshadowItem> & { action?: 'plant' | 'ferment' | 'resolve' }
   > = [];
+  const incomingChars: Array<Partial<DramaCharacterAsset> & { name: string }> = [];
+  const incomingProps: Array<Partial<DramaKeyPropItem> & { name: string }> = [];
+  const incomingArcUpdates: Array<Partial<DramaStoryArc> & { title?: string }> = [];
+
   let modelContinuitySummary = episode.continuitySummary || '';
+  let parsedLogicAudit: DramaEpisodeLogicAudit | undefined = episode.logicAudit;
+  let characterStateSnapshot = episode.characterStateSnapshot || '';
 
   if (rawModelOutput) {
     try {
       const parsed = JSON.parse(extractJsonString(rawModelOutput));
       if (parsed.continuitySummary) {
         modelContinuitySummary = String(parsed.continuitySummary).trim();
+      }
+      if (parsed.logicAndPovAudit && typeof parsed.logicAndPovAudit === 'object') {
+        parsedLogicAudit = {
+          spatialAndMotiveBridge: String(
+            parsed.logicAndPovAudit.spatialAndMotiveBridge || ''
+          ).trim(),
+          povKnowledgeBoundary: String(
+            parsed.logicAndPovAudit.povKnowledgeBoundary || ''
+          ).trim(),
+          characterStateAndPropSnapshot: String(
+            parsed.logicAndPovAudit.characterStateAndPropSnapshot || ''
+          ).trim(),
+        };
+        if (parsedLogicAudit.characterStateAndPropSnapshot) {
+          characterStateSnapshot = parsedLogicAudit.characterStateAndPropSnapshot;
+        }
+      }
+      if (Array.isArray(parsed.newCharactersIntroduced)) {
+        parsed.newCharactersIntroduced.forEach((c: any) => {
+          if (c && c.name) {
+            incomingChars.push({
+              name: String(c.name),
+              tier: c.tier,
+              roleTag: c.roleTag ? String(c.roleTag) : `第${episode.index}集新登场配角`,
+              firstAppearanceEp: episode.index,
+              ageAndArchetype: String(c.ageAndArchetype || ''),
+              appearanceZh: String(c.appearanceZh || ''),
+              visualPromptEn: String(c.visualPromptEn || ''),
+              voicePersona: String(c.voicePersona || ''),
+              signatureTrait: String(c.signatureTrait || ''),
+              epistemicNote: c.epistemicNote ? String(c.epistemicNote) : undefined,
+            });
+          }
+        });
       }
       if (Array.isArray(parsed.episodeSceneAnchors)) {
         parsed.episodeSceneAnchors.forEach((s: any) => {
@@ -646,6 +1168,48 @@ export function applyEpisodeContinuityUpdates(params: {
                   ? String(f.payoffNote)
                   : undefined,
             });
+            // 若伏笔本身是实体关键道具，也自动同步进 keyPropManifest
+            if (f.category === '关键道具') {
+              incomingProps.push({
+                name: String(f.name),
+                currentHolder: String(f.ownerOrRelation || '核心角色'),
+                debutEpisode: episode.index,
+                milestoneEpisodes: String(f.expectedPayoffEpisode || `第${episode.index}集线索`),
+                visualSpec: String(f.visualAnchorNote || ''),
+                narrativeFunction: String(f.payoffNote || '关键剧情触发道具'),
+                status: act === 'resolve' ? '已引爆回收' : '持有中',
+              });
+            }
+          }
+        });
+      }
+      if (Array.isArray(parsed.keyPropUpdates)) {
+        parsed.keyPropUpdates.forEach((kp: any) => {
+          if (kp && kp.name) {
+            incomingProps.push({
+              name: String(kp.name),
+              currentHolder: kp.currentHolder ? String(kp.currentHolder) : undefined,
+              debutEpisode: episode.index,
+              milestoneEpisodes: kp.milestoneEpisodes ? String(kp.milestoneEpisodes) : undefined,
+              visualSpec: kp.visualSpec ? String(kp.visualSpec) : undefined,
+              narrativeFunction: kp.narrativeFunction ? String(kp.narrativeFunction) : undefined,
+              status: kp.status,
+            });
+          }
+        });
+      }
+      if (Array.isArray(parsed.storyArcUpdates)) {
+        parsed.storyArcUpdates.forEach((arc: any) => {
+          if (arc && arc.title) {
+            incomingArcUpdates.push({
+              title: String(arc.title),
+              arcType: arc.arcType,
+              progressPct: arc.progressPct !== undefined ? Number(arc.progressPct) : undefined,
+              currentStage: arc.currentStage ? String(arc.currentStage) : undefined,
+              coreConflictAndGoal: arc.coreConflictAndGoal
+                ? String(arc.coreConflictAndGoal)
+                : undefined,
+            });
           }
         });
       }
@@ -654,7 +1218,7 @@ export function applyEpisodeContinuityUpdates(params: {
     }
   }
 
-  // Fallback header scan guarantees scene anchors are always populated even if model omitted episodeSceneAnchors
+  // Fallback header scan guarantees scene anchors are always populated
   const headerFallbackScenes = extractSceneAnchorsFromScriptFallback(
     episode.rawScriptText,
     episode.index,
@@ -662,6 +1226,22 @@ export function applyEpisodeContinuityUpdates(params: {
     project.aspectRatio
   );
   incomingScenes.push(...headerFallbackScenes);
+
+  // Fallback character scan guarantees newly appearing named supporting characters are also captured
+  const scriptFallbackChars = extractSupportingCharactersFromScriptFallback(
+    episode.rawScriptText,
+    [...(project.characterAssets || []), ...(incomingChars as DramaCharacterAsset[])],
+    episode.index,
+    project.visualStyle,
+    project.aspectRatio
+  );
+  incomingChars.push(...scriptFallbackChars);
+
+  const {
+    merged: nextCharacterAssets,
+    addedCount: addedCharactersCount,
+    addedNames: addedCharacterNames,
+  } = mergeCharacterAssets(project.characterAssets || [], incomingChars, episode.index);
 
   const { merged: nextSceneAnchors, addedCount: addedScenesCount } = mergeUniqueSceneAnchors(
     project.sceneAnchors || [],
@@ -675,6 +1255,14 @@ export function applyEpisodeContinuityUpdates(params: {
       episode.index
     );
 
+  const { merged: nextKeyPropManifest, updatedCount: updatedPropsCount } = mergeKeyPropManifest(
+    project.keyPropManifest || [],
+    incomingProps,
+    episode.index
+  );
+
+  const nextStoryArcs = mergeStoryArcs(project.storyArcs || [], incomingArcUpdates);
+
   const finalContinuitySummary =
     modelContinuitySummary ||
     `核心进展：${episode.coreConflictSummary || '推进主线冲突'}；集末定格：${
@@ -685,27 +1273,49 @@ export function applyEpisodeContinuityUpdates(params: {
     episode: {
       ...episode,
       continuitySummary: finalContinuitySummary,
+      characterStateSnapshot: characterStateSnapshot || undefined,
+      logicAudit: parsedLogicAudit,
     },
+    characterAssets: nextCharacterAssets,
     sceneAnchors: nextSceneAnchors,
     foreshadowingLedger: nextForeshadowLedger,
+    keyPropManifest: nextKeyPropManifest,
+    storyArcs: nextStoryArcs,
+    addedCharactersCount,
+    addedCharacterNames,
     addedScenesCount,
     updatedForeshadowCount,
+    updatedPropsCount,
   };
 }
 
 /**
- * 供 UI 看板与 Prompt 引擎共用的「4层金字塔跨集长篇记忆诊断器」
+ * 供 UI「逻辑溯源窗口」与 AI Prompt 引擎共用的跨集记忆诊断与前 5 集溯源器
  */
+export interface PriorFiveEpisodeNode {
+  episodeIndex: number;
+  title: string;
+  source: 'written_episode' | 'planned_beat';
+  coreNodeSummary: string;
+  characterAndPropState: string;
+  endingHook: string;
+  povBoundaryNote?: string;
+}
+
 export interface ContinuityMemoryDiagnostics {
   targetEpisodeIndex: number;
   hasNarrativeBible: boolean;
   totalPriorWrittenCount: number;
   compressedEarlyRange: string | null;
   detailedRecentEpisodes: DramaEpisode[];
+  priorFiveNodes: PriorFiveEpisodeNode[];
   prevEpisodeTailLines: string;
+  prevLogicAudit?: DramaEpisodeLogicAudit;
   activeForeshadows: DramaForeshadowItem[];
   dueNowForeshadows: DramaForeshadowItem[];
   resolvedForeshadowCount: number;
+  activeKeyProps: DramaKeyPropItem[];
+  activeStoryArcs: DramaStoryArc[];
   upcomingPlanWindow: DramaEpisodePlanItem[];
 }
 
@@ -717,12 +1327,48 @@ export function getContinuityMemoryDiagnostics(
     .filter((e) => e.index < targetEpisodeIndex)
     .sort((a, b) => a.index - b.index);
 
-  const detailedRecentEpisodes = priorEps.slice(-3);
-  const earlyEps = priorEps.slice(0, Math.max(0, priorEps.length - 3));
+  // 强制回顾前 5 集完整关键节点（长文本记忆维护协议核心窗口 = 5 集）
+  const detailedRecentEpisodes = priorEps.slice(-5);
+  const earlyEps = priorEps.slice(0, Math.max(0, priorEps.length - 5));
   const compressedEarlyRange =
     earlyEps.length > 0
       ? `第 ${earlyEps[0].index} ~ ${earlyEps[earlyEps.length - 1].index} 集（共 ${earlyEps.length} 集全量浓缩编年史）`
       : null;
+
+  // 构建 [max(1, N-5) .. N-1] 的逐集溯源节点（若某集尚未写正文则由分集细纲无缝顶上）
+  const priorFiveNodes: PriorFiveEpisodeNode[] = [];
+  const winStart = Math.max(1, targetEpisodeIndex - 5);
+  for (let idx = winStart; idx < targetEpisodeIndex; idx++) {
+    const written = priorEps.find((e) => e.index === idx);
+    if (written) {
+      priorFiveNodes.push({
+        episodeIndex: idx,
+        title: written.title.replace(/^第\d+集[：:\s]*/, ''),
+        source: 'written_episode',
+        coreNodeSummary: written.coreConflictSummary || '推进主线冲突',
+        characterAndPropState:
+          written.characterStateSnapshot ||
+          written.continuitySummary ||
+          '承接上集人物关系与道具状态',
+        endingHook: written.endingCliffhanger || '见集末定格',
+        povBoundaryNote: written.logicAudit?.povKnowledgeBoundary,
+      });
+    } else {
+      const plan = (project.episodePlan || []).find((p) => p.episodeIndex === idx);
+      if (plan) {
+        priorFiveNodes.push({
+          episodeIndex: idx,
+          title: plan.title,
+          source: 'planned_beat',
+          coreNodeSummary: plan.beatSummary,
+          characterAndPropState: plan.foreshadowingOrProps
+            ? `细纲设定道具/线索：${plan.foreshadowingOrProps}`
+            : '按细纲脉络推进',
+          endingHook: plan.hookType,
+        });
+      }
+    }
+  }
 
   const immediatePrev = priorEps[priorEps.length - 1];
   const prevEpisodeTailLines = immediatePrev?.rawScriptText
@@ -741,7 +1387,6 @@ export function getContinuityMemoryDiagnostics(
   const epNumStr = String(targetEpisodeIndex);
   const dueNowForeshadows = activeForeshadows.filter((f) => {
     if (!f.expectedPayoffEpisode) return false;
-    // Match exact episode mention or range containing targetEpisodeIndex
     const rangeMatch = f.expectedPayoffEpisode.match(/(\d+)\s*[-~至]\s*(\d+)/);
     if (rangeMatch) {
       const s = Number(rangeMatch[1]);
@@ -751,6 +1396,11 @@ export function getContinuityMemoryDiagnostics(
     const nums: string[] = f.expectedPayoffEpisode.match(/\d+/g) || [];
     return nums.includes(epNumStr);
   });
+
+  const activeKeyProps = (project.keyPropManifest || []).filter(
+    (p) => p.status !== '已引爆回收'
+  );
+  const activeStoryArcs = project.storyArcs || [];
 
   const upcomingPlanWindow = [...(project.episodePlan || [])]
     .filter((p) => p.episodeIndex > targetEpisodeIndex && p.episodeIndex <= targetEpisodeIndex + 3)
@@ -762,16 +1412,21 @@ export function getContinuityMemoryDiagnostics(
     totalPriorWrittenCount: priorEps.length,
     compressedEarlyRange,
     detailedRecentEpisodes,
+    priorFiveNodes,
     prevEpisodeTailLines,
+    prevLogicAudit: immediatePrev?.logicAudit,
     activeForeshadows,
     dueNowForeshadows,
     resolvedForeshadowCount,
+    activeKeyProps,
+    activeStoryArcs,
     upcomingPlanWindow,
   };
 }
 
 /**
- * 构建「4层金字塔长篇连载记忆与伏笔防丢注入块」（支撑 60~120+ 集不断片、不吃书、不漏收伏笔）
+ * 构建「长文本记忆维护协议 + 逻辑溯源窗口」上下文注入块：
+ * 强制回顾前 5 集关键剧情节点、角色状态与知情权边界、当前持有道具、多线叙事进度以及未闭合遗留伏笔
  */
 export function buildLongSeriesContinuityPromptBlock(
   project: DramaProject,
@@ -781,7 +1436,7 @@ export function buildLongSeriesContinuityPromptBlock(
   const bible = project.narrativeBible;
   const sections: string[] = [];
 
-  // Layer 1: Global Spine (Narrative Architecture Bible)
+  // Layer 1: Global Spine + Multi-line Story Arcs Progress
   const bibleLines: string[] = [];
   if (bible?.worldSettingAndRules?.trim()) {
     bibleLines.push(`- 底层设定与规则铁律（严禁吃书违背）：${bible.worldSettingAndRules.trim()}`);
@@ -798,134 +1453,175 @@ export function buildLongSeriesContinuityPromptBlock(
   if (bible?.frameworkStructure?.trim()) {
     bibleLines.push(`- 当前所处商业框架位置（第 ${episodeIndex}/${project.totalPlannedEpisodes} 集）：${bible.frameworkStructure.trim()}`);
   }
-  if (bible?.pacingStrategy?.trim()) {
-    bibleLines.push(`- 剧情节奏与卡点波浪法则：${bible.pacingStrategy.trim()}`);
-  }
-  if (bible?.characterArcsAndRelations?.trim()) {
-    bibleLines.push(`- 角色成长弧光与关系阶段：${bible.characterArcsAndRelations.trim()}`);
+  if (diag.activeStoryArcs.length > 0) {
+    bibleLines.push(`- 多线叙事实时进度表：`);
+    diag.activeStoryArcs.forEach((arc) => {
+      bibleLines.push(
+        `  · [${arc.arcType} | 进度 ${arc.progressPct}% | 区间:${arc.spanEpisodes}] 《${arc.title}》—— 当前阶段：${arc.currentStage}（目标：${arc.coreConflictAndGoal}）`
+      );
+    });
   }
   if (bibleLines.length > 0) {
-    sections.push(`【第一层记忆 · 全剧叙事架构圣经（防跑偏锚点）】\n${bibleLines.join('\n')}`);
+    sections.push(`【第一层溯源 · 全剧叙事圣经与多线进度锚点】\n${bibleLines.join('\n')}`);
   } else if (project.synopsis?.trim()) {
-    sections.push(`【第一层记忆 · 全剧商业总大纲（第 ${episodeIndex}/${project.totalPlannedEpisodes} 集）】\n${project.synopsis.trim()}`);
+    sections.push(`【第一层溯源 · 全剧商业总大纲（第 ${episodeIndex}/${project.totalPlannedEpisodes} 集）】\n${project.synopsis.trim()}`);
   }
 
-  // Layer 2: Full-Series Rolling Chronicle (Ep 1 .. N-4) + Recent 3 Detailed + Ep N-1 Verbatim Tail
+  // Layer 2: Mandatory Preceding 5-Episode Deep Review + Rolling Early Chronicle + Verbatim Tail
   if (episodeIndex === 1) {
     sections.push(
-      `【第二层记忆 · 首集开篇生死线】\n本集为全剧开篇第 1 集！第 1-1 场前两行动作与首句台词必须直接兑现黄金前3秒钩子：${project.golden3SecHook}`
+      `【第二层溯源 · 首集开篇生死线】\n本集为全剧开篇第 1 集！第 1-1 场前两行动作与首句台词必须直接兑现黄金前3秒钩子：${project.golden3SecHook}`
     );
-  } else if (diag.totalPriorWrittenCount > 0) {
+  } else {
     const priorEps = [...(project.episodes || [])]
       .filter((e) => e.index < episodeIndex)
       .sort((a, b) => a.index - b.index);
-    const earlyEps = priorEps.slice(0, Math.max(0, priorEps.length - 3));
+    const earlyEps = priorEps.slice(0, Math.max(0, priorEps.length - 5));
     const memoryLines: string[] = [];
 
     if (earlyEps.length > 0) {
-      memoryLines.push(`▶ 远期前情全量滚动编年史（第 1 ~ ${earlyEps[earlyEps.length - 1].index} 集，零遗漏压缩账本）：`);
+      memoryLines.push(
+        `▶ 远期前情全量滚动编年史（第 1 ~ ${earlyEps[earlyEps.length - 1].index} 集，零遗漏压缩账本）：`
+      );
       earlyEps.forEach((ep) => {
-        const line = ep.continuitySummary || `${ep.coreConflictSummary}（集末：${ep.endingCliffhanger}）`;
+        const line =
+          ep.continuitySummary || `${ep.coreConflictSummary}（集末：${ep.endingCliffhanger}）`;
         memoryLines.push(`  · 第${ep.index}集《${ep.title.replace(/^第\d+集[：:\s]*/, '')}》：${line}`);
       });
     }
 
-    if (diag.detailedRecentEpisodes.length > 0) {
-      memoryLines.push(`▶ 近期紧邻集数深度剧情记忆：`);
-      diag.detailedRecentEpisodes.forEach((ep) => {
+    if (diag.priorFiveNodes.length > 0) {
+      memoryLines.push(
+        `▶ 【强制长文本记忆维护 · 前 ${diag.priorFiveNodes.length} 集关键剧情节点、角色状态与知情边界逐集回顾】：`
+      );
+      diag.priorFiveNodes.forEach((node) => {
         memoryLines.push(
-          `  · 第${ep.index}集《${ep.title}》：核心剧情=${ep.coreConflictSummary} ｜ 状态变化=${
-            ep.continuitySummary || '承上启下'
-          } ｜ 集末悬念=${ep.endingCliffhanger}`
+          `  · 第${node.episodeIndex}集《${node.title}》（${
+            node.source === 'written_episode' ? '已成稿正文' : '细纲节点'
+          }）：关键剧情=${node.coreNodeSummary} ｜ 角色/道具状态=${
+            node.characterAndPropState
+          } ｜ 集末定格=${node.endingHook}${
+            node.povBoundaryNote ? ` ｜ 知情权边界=${node.povBoundaryNote}` : ''
+          }`
         );
       });
     }
 
     if (diag.prevEpisodeTailLines) {
-      const prevIdx = diag.detailedRecentEpisodes[diag.detailedRecentEpisodes.length - 1]?.index || episodeIndex - 1;
+      const prevIdx =
+        diag.detailedRecentEpisodes[diag.detailedRecentEpisodes.length - 1]?.index ||
+        episodeIndex - 1;
       memoryLines.push(
-        `▶ 上一集（第 ${prevIdx} 集）剧本末尾原词切片（本集第 ${episodeIndex}-1 场第一帧动作与台词必须严丝合缝咬合以下画面，严禁断档或重复演一遍！）：\n"""\n${diag.prevEpisodeTailLines}\n"""`
+        `▶ 上一集（第 ${prevIdx} 集）剧本末尾原词切片（本集第 ${episodeIndex}-1 场第一帧动作与空间位置必须严丝合缝承接以下画面，若要切换地点必须写出合理的转场触发动机，严禁莫名瞬移或重演！）：\n"""\n${diag.prevEpisodeTailLines}\n"""`
       );
     }
 
-    sections.push(`【第二层记忆 · 跨集连载无缝衔接账本（已记忆前序 ${diag.totalPriorWrittenCount} 集）】\n${memoryLines.join('\n')}`);
-  } else {
-    // 若用户跳集创作（尚未写前序正文，但已有分集细纲），自动用前序细纲补齐衔接上下文
-    const priorPlans = [...(project.episodePlan || [])]
-      .filter((p) => p.episodeIndex < episodeIndex)
-      .sort((a, b) => a.episodeIndex - b.episodeIndex);
-    if (priorPlans.length > 0) {
-      const planDigest = priorPlans
-        .map(
-          (p) =>
-            `  · 第${p.episodeIndex}集《${p.title}》：${p.beatSummary}${
-              p.foreshadowingOrProps ? `（伏笔/道具：${p.foreshadowingOrProps}）` : ''
-            }`
-        )
-        .join('\n');
-      sections.push(`【第二层记忆 · 前序分集细纲脉络回顾】\n${planDigest}`);
+    if (memoryLines.length > 0) {
+      sections.push(
+        `【第二层溯源 · 前 5 集深度记忆回顾与无缝衔接账本】\n${memoryLines.join('\n')}`
+      );
     }
   }
 
-  // Layer 3: Active Foreshadowing & Key Prop Ledger
+  // Layer 3: Character Epistemic Knowledge Boundaries + Held Key Props + Unresolved Foreshadowing Ledger
+  const epistemicCast = (project.characterAssets || []).filter(
+    (c) => c.epistemicNote || c.signatureTrait
+  );
   const plannedBeat = project.episodePlan.find((p) => p.episodeIndex === episodeIndex);
-  const recentPlanClues = project.episodePlan
-    .filter((p) => p.episodeIndex < episodeIndex && p.foreshadowingOrProps)
-    .slice(-5)
-    .map((p) => `第${p.episodeIndex}集细纲线索：${p.foreshadowingOrProps}`);
+  const ledgerLines: string[] = [];
 
-  if (diag.activeForeshadows.length > 0 || plannedBeat?.foreshadowingOrProps || recentPlanClues.length > 0) {
-    const ledgerLines: string[] = [];
-    if (diag.dueNowForeshadows.length > 0) {
+  if (epistemicCast.length > 0) {
+    ledgerLines.push(`- 角色当前知情权边界与随身特征（严禁角色说出超越其知情边界的台词！）：`);
+    epistemicCast.forEach((c) => {
       ledgerLines.push(
-        `⚠️ 【本集（第${episodeIndex}集）重点到期/待引爆伏笔与关键道具】：` +
-          diag.dueNowForeshadows
-            .map(
-              (f) =>
-                `「${f.name}」（${f.category}，第${f.plantedEpisode}集埋设，关联：${f.ownerOrRelation}${
-                  f.payoffNote ? `，预设回收方式：${f.payoffNote}` : ''
-                }）`
-            )
-            .join('；')
+        `  · 【${c.name}】（${c.roleTag}）：${
+          c.epistemicNote ? `知情权边界=${c.epistemicNote}` : '仅知晓自身亲历场次信息'
+        }${c.signatureTrait ? ` ｜ 标志物=${c.signatureTrait}` : ''}`
       );
-    }
-    if (diag.activeForeshadows.length > 0) {
-      ledgerLines.push(
-        `- 全局活跃待回收伏笔/关键道具池（共 ${diag.activeForeshadows.length} 项，哪怕隔了几十集也严禁遗忘或前后矛盾）：`
-      );
-      diag.activeForeshadows.forEach((f) => {
-        ledgerLines.push(
-          `  · [${f.status === 'fermenting' ? '发酵中' : '待回收'}|${f.category}] 「${f.name}」（第${
-            f.plantedEpisode
-          }集埋，关联:${f.ownerOrRelation}${
-            f.expectedPayoffEpisode ? `，计划回收:${f.expectedPayoffEpisode}` : ''
-          }${f.visualAnchorNote ? `，外观特征:${f.visualAnchorNote}` : ''}）`
-        );
-      });
-    }
-    if (plannedBeat?.foreshadowingOrProps) {
-      ledgerLines.push(`- 本集细纲指定伏笔/关键道具动作：${plannedBeat.foreshadowingOrProps}`);
-    } else if (recentPlanClues.length > 0) {
-      ledgerLines.push(`- 近期细纲伏笔备忘：${recentPlanClues.join('；')}`);
-    }
-    sections.push(`【第三层记忆 · 角色伏笔与关键道具追踪台账】\n${ledgerLines.join('\n')}`);
+    });
   }
 
-  // Layer 4: Forward 3-Episode Lookahead Guardrail (Anti-Rushing & Setup)
-  if (diag.upcomingPlanWindow.length > 0) {
-    const lookaheadLines = diag.upcomingPlanWindow
-      .map(
-        (p) =>
-          `  · 第${p.episodeIndex}集预定节拍《${p.title}》（${p.hookType}）：${p.beatSummary}${
-            p.foreshadowingOrProps ? ` [预定道具/伏笔：${p.foreshadowingOrProps}]` : ''
-          }`
-      )
-      .join('\n');
-    sections.push(
-      `【第四层护栏 · 后 3 集细纲前瞻（严禁抢跑剧透后续高潮，但须在本集末尾自然铺垫通往第 ${
-        episodeIndex + 1
-      } 集的悬念钩子）】\n${lookaheadLines}`
+  if (diag.activeKeyProps.length > 0) {
+    ledgerLines.push(
+      `- 关键道具实时追踪表（共 ${diag.activeKeyProps.length} 件，严格遵守当前持有人与物权状态）：`
     );
+    diag.activeKeyProps.forEach((kp) => {
+      ledgerLines.push(
+        `  · [${kp.status}] 「${kp.name}」—— 当前持有人：${kp.currentHolder}（第${kp.debutEpisode}集登场，节点：${kp.milestoneEpisodes}，作用：${kp.narrativeFunction}）`
+      );
+    });
+  }
+
+  if (diag.dueNowForeshadows.length > 0) {
+    ledgerLines.push(
+      `⚠️ 【本集（第${episodeIndex}集）重点到期/待引爆遗留伏笔】：` +
+        diag.dueNowForeshadows
+          .map(
+            (f) =>
+              `「${f.name}」（${f.category}，第${f.plantedEpisode}集埋设，关联：${f.ownerOrRelation}${
+                f.payoffNote ? `，预设回收方式：${f.payoffNote}` : ''
+              }）`
+          )
+          .join('；')
+    );
+  }
+
+  if (diag.activeForeshadows.length > 0) {
+    ledgerLines.push(
+      `- 遗留未闭合角色伏笔清单（共 ${diag.activeForeshadows.length} 项，严禁遗忘或前后吃书）：`
+    );
+    diag.activeForeshadows.forEach((f) => {
+      ledgerLines.push(
+        `  · [${f.status === 'fermenting' ? '发酵中' : '待回收'}|${f.category}] 「${f.name}」（第${
+          f.plantedEpisode
+        }集埋，关联:${f.ownerOrRelation}${
+          f.expectedPayoffEpisode ? `，计划回收:${f.expectedPayoffEpisode}` : ''
+        }）`
+      );
+    });
+  }
+
+  if (plannedBeat?.foreshadowingOrProps) {
+    ledgerLines.push(`- 本集细纲指定伏笔/关键道具动作：${plannedBeat.foreshadowingOrProps}`);
+  }
+
+  if (project.customProvenanceNote?.trim()) {
+    ledgerLines.push(
+      `- 📌 创作者逻辑溯源特别锁定备忘（最高优先级遵守）：${project.customProvenanceNote.trim()}`
+    );
+  }
+
+  if (ledgerLines.length > 0) {
+    sections.push(
+      `【第三层溯源 · 角色知情边界、持有关键道具与遗留伏笔账本】\n${ledgerLines.join('\n')}`
+    );
+  }
+
+  // Layer 4: Rhythm Target + Forward 3-Episode Lookahead Guardrail
+  const rhythmList = deriveEffectivePlotRhythm(project);
+  const currentRhythm = rhythmList.find((r) => r.anchorEpisode === episodeIndex);
+  const lookaheadParts: string[] = [];
+  if (currentRhythm) {
+    lookaheadParts.push(
+      `- 本集剧情节奏热力定位：【${currentRhythm.rhythmTier} · 紧张度 ${currentRhythm.tensionScore}/100】—— ${currentRhythm.beatGoal}`
+    );
+  }
+  if (diag.upcomingPlanWindow.length > 0) {
+    lookaheadParts.push(
+      `- 后 3 集细纲前瞻（严禁抢跑剧透后续高潮，但须在本集末尾自然铺垫通往第 ${
+        episodeIndex + 1
+      } 集的悬念钩子）：`
+    );
+    diag.upcomingPlanWindow.forEach((p) => {
+      lookaheadParts.push(
+        `  · 第${p.episodeIndex}集《${p.title}》（${p.hookType}）：${p.beatSummary}${
+          p.foreshadowingOrProps ? ` [预定道具/伏笔：${p.foreshadowingOrProps}]` : ''
+        }`
+      );
+    });
+  }
+  if (lookaheadParts.length > 0) {
+    sections.push(`【第四层护栏 · 本集节奏热力与后 3 集防抢跑前瞻】\n${lookaheadParts.join('\n')}`);
   }
 
   return sections.join('\n\n');
@@ -1037,6 +1733,43 @@ ${existingChars}
     "pacingStrategy": "剧情节奏与商业卡点波浪法则（包含单集 ${durSpec.durationSec} 秒内的起承转合微节奏 + 每3集一小爽点、每8-10集一大反转的中观波浪节奏设计，100-180字）",
     "characterArcsAndRelations": "核心主角的人物成长弧光（前中后期心态蜕变）与核心人物关系拉扯演变网（120-200字）"
   },
+  "storyArcs": [
+    {
+      "title": "故事线名称（如：顶层百亿安全屋抗寒生存与清算主线）",
+      "arcType": "主线",
+      "spanEpisodes": "第1-${project.totalPlannedEpisodes}集",
+      "progressPct": 15,
+      "currentStage": "开局危机降临与首轮立威",
+      "coreConflictAndGoal": "核心对立冲突与终局闭环目标"
+    }
+  ],
+  "plotRhythm": [
+    {
+      "anchorEpisode": 1,
+      "episodeRange": "第1-3集",
+      "rhythmTier": "爽点小高潮",
+      "tensionScore": 86,
+      "beatGoal": "黄金前3秒立危机钩子，第3集完成首次打脸爽点闭环"
+    },
+    {
+      "anchorEpisode": ${project.paywallEpisodeIndex},
+      "episodeRange": "第${Math.max(1, project.paywallEpisodeIndex - 1)}-${project.paywallEpisodeIndex + 1}集",
+      "rhythmTier": "付费大卡点",
+      "tensionScore": 96,
+      "beatGoal": "核心身份/底牌悬念推至最高潮，卡在揭晓前1秒强断章转化付费"
+    }
+  ],
+  "keyPropManifest": [
+    {
+      "name": "关键实体道具名称（如：钛合金安全屋总控密钥卡）",
+      "currentHolder": "当前初始持有人姓名",
+      "debutEpisode": 1,
+      "milestoneEpisodes": "第1集亮出 → 第${project.paywallEpisodeIndex}集争夺引爆",
+      "visualSpec": "供AI生图锁死一致性的固定道具外观描述",
+      "narrativeFunction": "该道具在剧情推进与反转中的核心因果作用",
+      "status": "持有中"
+    }
+  ],
   "foreshadowingLedger": [
     {
       "name": "关键道具或核心伏笔名称（如：刻有缩写S.W的破碎银色耳返 / 三年前顶替署名保密协议）",
@@ -1050,7 +1783,11 @@ ${existingChars}
   ]
 }
 \`\`\`
-要求：\`foreshadowingLedger\` 提取 4~7 个贯穿前中后期的核心【关键道具 / 身世人物伏笔 / 核心剧情暗线 / 规则契约死穴】（\`category\` 必须从这四项中选择）。`;
+要求：
+1. \`storyArcs\` 梳理 3~4 条结构化故事线（覆盖 \`"主线"\`、\`"情感副线"\`、\`"暗线/反派线"\`、\`"群像支线"\`）；
+2. \`plotRhythm\` 规划 5~8 个覆盖前中后期的关键剧情节奏热力锚点（\`rhythmTier\` 必须从 \`"蓄力铺垫"\` / \`"拉扯升级"\` / \`"爽点小高潮"\` / \`"付费大卡点"\` / \`"终局大爆发"\` 中选择）；
+3. \`keyPropManifest\` 提取 3~5 件核心实体关键道具并明确初始持有人与流转节点；
+4. \`foreshadowingLedger\` 提取 4~7 个贯穿前中后期的核心【关键道具 / 身世人物伏笔 / 核心剧情暗线 / 规则契约死穴】（\`category\` 必须从这四项中选择）。`;
 
   return [
     { role: 'system', content: system },
@@ -1060,14 +1797,20 @@ ${existingChars}
 
 export function parseDramaNarrativeBibleJson(raw: string): {
   narrativeBible: DramaNarrativeBible;
+  storyArcs: DramaStoryArc[];
+  plotRhythm: DramaPlotRhythmPoint[];
+  keyPropManifest: DramaKeyPropItem[];
   foreshadowingLedger: DramaForeshadowItem[];
 } {
   const cleaned = extractJsonString(raw);
   const parsed = JSON.parse(cleaned);
   const narrativeBible = normalizeNarrativeBible(parsed.narrativeBible || parsed);
+  const storyArcs = normalizeStoryArcs(parsed.storyArcs);
+  const plotRhythm = normalizePlotRhythm(parsed.plotRhythm);
+  const keyPropManifest = normalizeKeyPropManifest(parsed.keyPropManifest);
   const rawLedger = Array.isArray(parsed.foreshadowingLedger) ? parsed.foreshadowingLedger : [];
   const { merged: foreshadowingLedger } = mergeForeshadowingLedger([], rawLedger, 1);
-  return { narrativeBible, foreshadowingLedger };
+  return { narrativeBible, storyArcs, plotRhythm, keyPropManifest, foreshadowingLedger };
 }
 
 /**
@@ -1215,12 +1958,44 @@ ${project.synopsis}${bibleHint}
   "characterAssets": [
     {
       "name": "角色姓名",
-      "roleTag": "核心男主 / 核心女主 / 头号反派 / 关键配角",
+      "tier": "protagonist",
+      "roleTag": "核心男主 / 核心女主 / 头号反派 / 重要配角",
       "ageAndArchetype": "年龄与人设标签（如：25岁 · 重生杀伐果断狠人）",
       "appearanceZh": "中文固定立绘特征（发型发色、五官气质、标志性常驻穿搭、代表配饰，供后期拆解分镜时自动锁定外观）",
       "visualPromptEn": "English AI image generation consistency prompt tags (hair, eyes, outfit, style: ${project.visualStyle}, ${project.aspectRatio.split(' ')[0]})",
       "voicePersona": "配音音色、语速与情绪基调建议",
-      "signatureTrait": "标志性镜头微动作或随身关键信物/视觉道具"
+      "signatureTrait": "标志性镜头微动作或随身关键信物/视觉道具",
+      "epistemicNote": "开局知情权边界（明确该角色开篇知道什么、不知道什么幕后真相，防止后续台词出现上帝视角穿帮）"
+    }
+  ],
+  "storyArcs": [
+    {
+      "title": "故事线名称",
+      "arcType": "主线",
+      "spanEpisodes": "第1-${project.totalPlannedEpisodes}集",
+      "progressPct": 15,
+      "currentStage": "开篇阶段",
+      "coreConflictAndGoal": "核心矛盾与终极目标"
+    }
+  ],
+  "plotRhythm": [
+    {
+      "anchorEpisode": 1,
+      "episodeRange": "第1-3集",
+      "rhythmTier": "爽点小高潮",
+      "tensionScore": 85,
+      "beatGoal": "前3秒生死钩子与首轮反击立威"
+    }
+  ],
+  "keyPropManifest": [
+    {
+      "name": "关键实体道具名称",
+      "currentHolder": "初始持有人",
+      "debutEpisode": 1,
+      "milestoneEpisodes": "第1集亮相 → 第${project.paywallEpisodeIndex}集关键验证",
+      "visualSpec": "固定视觉外观锚点",
+      "narrativeFunction": "剧情推进与反转功能",
+      "status": "持有中"
     }
   ],
   "sceneAnchors": [
@@ -1255,10 +2030,11 @@ ${project.synopsis}${bibleHint}
 }
 \`\`\`
 要求：
-1. \`characterAssets\` 提取 3~5 位核心出场角色（若已有预设主角姓名与人设，请继承并深化完善）；
-2. \`sceneAnchors\` 根据前 ${targetInitialCount} 集细纲出现的场景自动提取 3~6 个锚点：**完全相同状态的同一场景绝不重复填写；若同一核心场景在细纲中出现不同关键状态（如昼夜剧变、损毁前后、舞台亮灯与停电），必须保持 \`sceneName\` 一致并用 \`stateVariant\` 区分填入**；
-3. \`foreshadowingLedger\` 提取 4~6 项核心关键道具/人物伏笔/规则死穴；
-4. \`episodePlan\` 完整规划第 1 集至第 ${targetInitialCount} 集，若第 ${project.paywallEpisodeIndex} 集在本区间内，其 \`hookType\` 必须标记为 \`"核心付费卡点"\`。`;
+1. \`characterAssets\` 提取 4~6 位核心出场人物（同时覆盖核心主角 \`"protagonist"\`、重要配角 \`"major_support"\` 与关键反派 \`"recurring_antagonist"\`，并填写 \`epistemicNote\` 知情权边界）；
+2. \`storyArcs\` 提取 3~4 条主线/副线/暗线；\`plotRhythm\` 提取 4~6 个关键节奏热力点；\`keyPropManifest\` 提取 3~5 件核心实体道具；
+3. \`sceneAnchors\` 根据前 ${targetInitialCount} 集细纲出现的场景自动提取 3~6 个锚点：**完全相同状态的同一场景绝不重复填写；若同一核心场景在细纲中出现不同关键状态（如昼夜剧变、损毁前后、舞台亮灯与停电），必须保持 \`sceneName\` 一致并用 \`stateVariant\` 区分填入**；
+4. \`foreshadowingLedger\` 提取 4~6 项核心关键道具/人物伏笔/规则死穴；
+5. \`episodePlan\` 完整规划第 1 集至第 ${targetInitialCount} 集，若第 ${project.paywallEpisodeIndex} 集在本区间内，其 \`hookType\` 必须标记为 \`"核心付费卡点"\`。`;
 
   return [
     { role: 'system', content: system },
@@ -1270,6 +2046,9 @@ const VALID_HOOK_TYPES = ['免费强留存', '小高潮爽点', '核心付费卡
 
 export function parseDramaAssetsJson(raw: string): {
   narrativeBible?: DramaNarrativeBible;
+  storyArcs: DramaStoryArc[];
+  plotRhythm: DramaPlotRhythmPoint[];
+  keyPropManifest: DramaKeyPropItem[];
   foreshadowingLedger: DramaForeshadowItem[];
   characterAssets: DramaCharacterAsset[];
   sceneAnchors: DramaSceneAnchor[];
@@ -1282,6 +2061,10 @@ export function parseDramaAssetsJson(raw: string): {
     ? normalizeNarrativeBible(parsed.narrativeBible)
     : undefined;
 
+  const storyArcs = normalizeStoryArcs(parsed.storyArcs);
+  const plotRhythm = normalizePlotRhythm(parsed.plotRhythm);
+  const keyPropManifest = normalizeKeyPropManifest(parsed.keyPropManifest);
+
   const { merged: foreshadowingLedger } = mergeForeshadowingLedger(
     [],
     Array.isArray(parsed.foreshadowingLedger) ? parsed.foreshadowingLedger : [],
@@ -1289,16 +2072,27 @@ export function parseDramaAssetsJson(raw: string): {
   );
 
   const characterAssets: DramaCharacterAsset[] = Array.isArray(parsed.characterAssets)
-    ? parsed.characterAssets.map((c: any) => ({
-        id: generateUUID(),
-        name: String(c.name || '未命名角色'),
-        roleTag: String(c.roleTag || '主要角色'),
-        ageAndArchetype: String(c.ageAndArchetype || ''),
-        appearanceZh: String(c.appearanceZh || ''),
-        visualPromptEn: String(c.visualPromptEn || ''),
-        voicePersona: String(c.voicePersona || ''),
-        signatureTrait: String(c.signatureTrait || ''),
-      }))
+    ? parsed.characterAssets.map((c: any, idx: number) => {
+        const validTier: DramaCharacterTier =
+          c.tier === 'protagonist' ||
+          c.tier === 'major_support' ||
+          c.tier === 'recurring_antagonist'
+            ? c.tier
+            : inferCharacterTier(c.roleTag, idx);
+        return {
+          id: generateUUID(),
+          name: String(c.name || '未命名角色'),
+          tier: validTier,
+          roleTag: String(c.roleTag || '主要角色'),
+          firstAppearanceEp: Math.max(1, Number(c.firstAppearanceEp) || 1),
+          ageAndArchetype: String(c.ageAndArchetype || ''),
+          appearanceZh: String(c.appearanceZh || ''),
+          visualPromptEn: String(c.visualPromptEn || ''),
+          voicePersona: String(c.voicePersona || ''),
+          signatureTrait: String(c.signatureTrait || ''),
+          epistemicNote: c.epistemicNote ? String(c.epistemicNote).trim() : undefined,
+        };
+      })
     : [];
 
   const rawScenes = Array.isArray(parsed.sceneAnchors)
@@ -1328,7 +2122,16 @@ export function parseDramaAssetsJson(raw: string): {
       }))
     : [];
 
-  return { narrativeBible, foreshadowingLedger, characterAssets, sceneAnchors, episodePlan };
+  return {
+    narrativeBible,
+    storyArcs,
+    plotRhythm,
+    keyPropManifest,
+    foreshadowingLedger,
+    characterAssets,
+    sceneAnchors,
+    episodePlan,
+  };
 }
 
 /**
@@ -1577,9 +2380,15 @@ export function buildLiteraryScriptMessages(params: {
       ? project.characterAssets
           .map(
             (c) =>
-              `- ${c.name}（${c.roleTag}，${c.ageAndArchetype}，说话风格：${c.voicePersona}${
-                c.signatureTrait ? `，标志性道具/习惯：${c.signatureTrait}` : ''
-              }）`
+              `- [${
+                c.tier === 'protagonist'
+                  ? '核心主角'
+                  : c.tier === 'recurring_antagonist'
+                  ? '关键反派'
+                  : '重要配角'
+              }] ${c.name}（${c.roleTag}，${c.ageAndArchetype}，口吻：${c.voicePersona}${
+                c.signatureTrait ? `，标志道具/习惯：${c.signatureTrait}` : ''
+              }${c.epistemicNote ? `，当前知情边界：${c.epistemicNote}` : ''}）`
           )
           .join('\n')
       : '（根据大纲设定主要角色名与鲜明口吻）';
@@ -1592,12 +2401,15 @@ export function buildLiteraryScriptMessages(params: {
       : '（当前场景锚点库为空）';
 
   const continuityBlock = buildLongSeriesContinuityPromptBlock(project, episodeIndex);
+  const activeSkillsBlock = buildActiveDramaSkillsPromptBlock(project);
   const formatRule = buildFormatRulePrompt(scriptFormat, episodeIndex);
 
   const system = `${COMMERCIAL_DRAMA_CONSTITUTION}
 
-你现在是资深商业短剧/AI漫剧专职主编剧（负责交付给甲方的标准单集文学剧本，同时具备全剧 ${project.totalPlannedEpisodes} 集长线统筹记忆能力）。
-你写的剧本永远节奏极快、场次清晰、一句一动、台词句句带钩子，并且与前序集数剧情、人物状态、关键道具伏笔严丝合缝咬合！
+${LONG_TEXT_MEMORY_MAINTENANCE_PROTOCOL}${activeSkillsBlock}
+
+你现在是资深商业短剧/AI漫剧专职主编剧（负责交付给甲方的标准单集文学剧本，同时严格执行长文本记忆维护与角色知情权隔离协议）。
+你写的剧本节奏干脆、转场动机清晰、一句一动、台词句句带钩子，并且与前 5 集剧情节点、角色当前位置状态、持有关键道具及遗留伏笔严丝合缝咬合！
 
 【当前项目信息与单集时长-字数硬性挂钩指标】
 - 剧名：《${project.title}》 | 赛道：${track.name}（${project.channel}）
@@ -1605,9 +2417,9 @@ export function buildLiteraryScriptMessages(params: {
 - 📏 剧本正文目标总字数区间：**${durSpec.minWords} ~ ${durSpec.maxWords} 字**（硬性指标！请按此体量扎实铺开 ${durSpec.sceneRange}、约 ${durSpec.beatRange}）
 - 赛道节奏要求：${track.pacingStructure}
 - 赛道禁忌：${track.avoidTaboos}
-- 角色关系与口吻表（仅供把握人物性格与标志道具，严禁在剧本动作行里大段抄写外貌设定！）：
+- 已建档角色关系、口吻与知情边界表（仅供把握人物性格、知情范围与标志道具，严禁在剧本动作行里大段抄写外貌设定！若本集新出场有名字的重要配角或反派，请在 \`newCharactersIntroduced\` 中提取归档）：
 ${castSummary}
-- 已归档核心场景视觉锚点（写场头地点名时尽量复用统一名称；若本集出现了全新核心场景，或同一场景进入了截然不同的新状态，请在 JSON \`episodeSceneAnchors\` 中输出以便系统自动归档）：
+- 已归档核心场景视觉锚点（写场头地点名时尽量复用统一名称；若本集出现了全新核心场景，或同一场景进入了截然不同的新状态，请在 JSON \`episodeSceneAnchors\` 中输出）：
 ${existingSceneIndex}
 
 ${formatRule}`;
@@ -1624,7 +2436,7 @@ ${sourceNovelChapter.chapterText.slice(0, 5500)}
 改编铁律：彻底砍掉原小说的心理描写、修辞渲染和慢节奏铺垫，提炼为适配 ${durSpec.durationSec} 秒时长（${durSpec.minWords}~${durSpec.maxWords} 字，${durSpec.sceneRange}）的漫剧标准剧本！`
     : '';
 
-  const user = `请结合下方【4层跨集连载记忆与伏笔追踪账本】，创作《${project.title}》第 ${episodeIndex} 集【甲方标准文学剧本】。
+  const user = `请严格执行【长文本记忆维护协议】并结合下方【逻辑溯源上下文（前 5 集节点 + 角色状态/知情权 + 关键道具 + 遗留伏笔）】，创作《${project.title}》第 ${episodeIndex} 集【甲方标准文学剧本】。
 ⏱️【体量硬约束】：本项目单集设定时长为 **${durSpec.durationSec} 秒**，\`scriptText\` 剧本正文总字数必须控制在 **${durSpec.minWords} ~ ${durSpec.maxWords} 字** 之间，包含 **${durSpec.sceneRange}**，约 **${durSpec.beatRange}**。
 
 ${continuityBlock}
@@ -1633,23 +2445,50 @@ ${paywallNotice}
 ${directorInstruction.trim() ? `\n【本集具体导演/编剧指令】：${directorInstruction.trim()}` : ''}
 ${adaptationNotice}
 
-请严格按以下 JSON 结构输出（用 \`\`\`json 包裹），其中 \`scriptText\` 必须是严格遵守上述排版规范且字数匹配 ${durSpec.minWords}~${durSpec.maxWords} 字的纯净剧本正文：
+请严格按以下 JSON 结构输出（用 \`\`\`json 包裹）。注意：**必须先填写 \`logicAndPovAudit\` 完成转场因果链与角色防上帝视角自检**，再输出纯净 \`scriptText\`：
 \`\`\`json
 {
   "title": "第${episodeIndex}集：简短抓人的集标题",
   "targetDurationSec": ${durSpec.durationSec},
+  "logicAndPovAudit": {
+    "spatialAndMotiveBridge": "自检本集各场次之间的因果动机与时空衔接（写明：第1场如何承接上一集末尾位置 → 每次切换场景的明确触发因与行动目的，杜绝莫名瞬移）",
+    "povKnowledgeBoundary": "自检本集角色知情权隔离（写明：若有平行暗线/幕后黑手，在场角色目前知道什么、不知道什么、凭何现场物证/线索作出判断，确保0上帝视角台词）",
+    "characterStateAndPropSnapshot": "本集结束时主要出场角色所处位置、身心关系状态及关键道具当前持有人快照（供下5集记忆维护使用）"
+  },
   "coreConflictSummary": "一句话概括本集冲突与爽点结果（30-50字）",
-  "continuitySummary": "供后续几十集连载记忆使用的高密度状态账本（50-90字，写明：关键剧情实质结果 + 人物关系/筹码变化 + 关键道具归属或伏笔状态变更）",
+  "continuitySummary": "供后续连载记忆使用的高密度状态账本（50-90字：关键剧情实质结果 + 人物关系/筹码变化 + 关键道具归属或伏笔状态变更）",
   "opening3SecHook": "一句话概括开场前3秒动作/冲突钩子",
   "endingCliffhanger": "一句话概括集末最后一秒留存悬念",
   "scriptText": "此处填入严格按所选行业格式排版的完整单集剧本纯文本（使用 \\n 换行，总字数 ${durSpec.minWords}~${durSpec.maxWords} 字，只含场头、出场人物、△极简动作/【音效】与精炼台词，严禁夹杂生图Tag或运镜解析）",
+  "newCharactersIntroduced": [
+    {
+      "name": "本集首次登场且有名字的重要配角或阶段反派名（若本集均为已建档角色或仅路人龙套，此数组留空 []！）",
+      "tier": "major_support",
+      "roleTag": "人物定位（如：豪门内线管家 / 顶流竞争对手 / 地下情报贩）",
+      "ageAndArchetype": "年龄与反差人设",
+      "appearanceZh": "适配「${project.visualStyle}」的中文固定立绘外观词（发型、五官、常驻服饰）",
+      "visualPromptEn": "Consistent English character prompt tags, ${project.visualStyle}, ${project.aspectRatio.split(' ')[0]}",
+      "voicePersona": "TTS配音音色与口吻建议",
+      "signatureTrait": "标志性道具或动作记忆点",
+      "epistemicNote": "该角色当前的知情边界与立场底牌"
+    }
+  ],
   "episodeSceneAnchors": [
     {
-      "sceneName": "本集出现的全新场景名，或状态发生剧变的已有场景基础名（若本集场景及状态均已在库中存在，此数组可留空 []！）",
+      "sceneName": "本集出现的全新场景名，或状态发生剧变的已有场景基础名（若均已在库中且状态未变则留空 []）",
       "stateVariant": "场景状态（如：常规态 / 暴雨停电应急红光态 / 爆炸废墟态）",
       "lightingAndMood": "本状态下的光影冷暖色调与情绪氛围",
       "visualPromptZh": "适配「${project.visualStyle}」的中文固定场景空镜描述",
       "visualPromptEn": "English environment prompt tags, ${project.visualStyle}, ${project.aspectRatio.split(' ')[0]}"
+    }
+  ],
+  "keyPropUpdates": [
+    {
+      "name": "本集新登场或持有人/状态发生变更的关键实体道具名（无变化则留空 []）",
+      "currentHolder": "本集结束时的最新持有人",
+      "status": "持有中",
+      "visualSpec": "若为新道具，填写固定外观描述",
+      "narrativeFunction": "本集中的关键证据/反制作用"
     }
   ],
   "foreshadowingUpdates": [
@@ -1661,6 +2500,13 @@ ${adaptationNotice}
       "expectedPayoffEpisode": "若为新埋设，填写预计回收集数区间",
       "visualAnchorNote": "若为新实体道具，填写固定外观描述",
       "payoffNote": "本集埋设细节或回收结果说明"
+    }
+  ],
+  "storyArcUpdates": [
+    {
+      "title": "本集有实质推进的故事线标题（无明显阶段变化可留空 []）",
+      "progressPct": 30,
+      "currentStage": "最新推进阶段简述"
     }
   ],
   "nextEpisodeHooks": [
@@ -1688,6 +2534,16 @@ export function parseLiteraryScriptEpisode(
   const cleaned = extractJsonString(raw);
   const parsed = JSON.parse(cleaned);
   const cleanScript = cleanMessyClientScriptLocal(String(parsed.scriptText || ''));
+  const logicAudit: DramaEpisodeLogicAudit | undefined =
+    parsed.logicAndPovAudit && typeof parsed.logicAndPovAudit === 'object'
+      ? {
+          spatialAndMotiveBridge: String(parsed.logicAndPovAudit.spatialAndMotiveBridge || '').trim(),
+          povKnowledgeBoundary: String(parsed.logicAndPovAudit.povKnowledgeBoundary || '').trim(),
+          characterStateAndPropSnapshot: String(
+            parsed.logicAndPovAudit.characterStateAndPropSnapshot || ''
+          ).trim(),
+        }
+      : undefined;
 
   return {
     id: generateUUID(),
@@ -1697,6 +2553,8 @@ export function parseLiteraryScriptEpisode(
     targetDurationSec: Number(parsed.targetDurationSec) || defaultDurationSec,
     coreConflictSummary: String(parsed.coreConflictSummary || ''),
     continuitySummary: parsed.continuitySummary ? String(parsed.continuitySummary).trim() : undefined,
+    characterStateSnapshot: logicAudit?.characterStateAndPropSnapshot || undefined,
+    logicAudit,
     opening3SecHook: String(parsed.opening3SecHook || ''),
     endingCliffhanger: String(parsed.endingCliffhanger || ''),
     scriptFormat,
@@ -1917,8 +2775,11 @@ export function buildDramaEpisodeMessages(params: {
       : '（根据剧情自动匹配高反差光影场景）';
 
   const continuityBlock = buildLongSeriesContinuityPromptBlock(project, episodeIndex);
+  const activeSkillsBlock = buildActiveDramaSkillsPromptBlock(project);
 
   const system = `${COMMERCIAL_DRAMA_CONSTITUTION}
+
+${LONG_TEXT_MEMORY_MAINTENANCE_PROTOCOL}${activeSkillsBlock}
 
 【当前漫剧项目工业规格与时长-字数强挂钩要求】
 - 剧名：《${project.title}》
@@ -1949,7 +2810,7 @@ ${sourceNovelChapter.chapterText.slice(0, 5500)}
 改编要求：剔除原小说冗长心理描写，先提炼为 ${durSpec.minWords}~${durSpec.maxWords} 字的极简标准文学剧本 \`scriptText\`，再同步拆解为 ${effectiveShotCount} 个漫剧视听分镜 \`shots\`！`
     : '';
 
-  const user = `请结合下方【4层跨集连载记忆与伏笔追踪账本】，创作《${project.title}》第 ${episodeIndex} 集的【甲方标准文学剧本 (scriptText，目标字数 ${durSpec.minWords}~${durSpec.maxWords} 字，适配单集 ${durSpec.durationSec} 秒)】并同步拆解【后期 AI 分镜执行单 (shots，约 ${effectiveShotCount} 镜)】。
+  const user = `请严格执行【长文本记忆维护协议】并结合下方【逻辑溯源上下文（前 5 集节点 + 角色状态/知情权 + 关键道具 + 遗留伏笔）】，创作《${project.title}》第 ${episodeIndex} 集的【甲方标准文学剧本 (scriptText，目标字数 ${durSpec.minWords}~${durSpec.maxWords} 字，适配单集 ${durSpec.durationSec} 秒)】并同步拆解【后期 AI 分镜执行单 (shots，约 ${effectiveShotCount} 镜)】。
 
 ${continuityBlock}
 ${
@@ -1961,16 +2822,34 @@ ${paywallNotice}
 ${directorInstruction.trim() ? `\n【本集导演具体执导指令】：${directorInstruction.trim()}` : ''}
 ${adaptationNotice}
 
-请严格输出以下 JSON 结构（用 \`\`\`json 包裹）：
+请严格输出以下 JSON 结构（用 \`\`\`json 包裹，先填写 \`logicAndPovAudit\` 完成因果转场与角色知情权自检）：
 \`\`\`json
 {
   "title": "第${episodeIndex}集：极具冲击力的单集标题",
   "targetDurationSec": ${durSpec.durationSec},
+  "logicAndPovAudit": {
+    "spatialAndMotiveBridge": "自检本集各场次之间的因果动机与时空衔接（杜绝莫名瞬移与无动机行为）",
+    "povKnowledgeBoundary": "自检本集角色知情权隔离（区分观众平行视角与角色个人知情范围，确保无未卜先知台词）",
+    "characterStateAndPropSnapshot": "本集结束时主要角色位置状态与关键道具持有人快照"
+  },
   "coreConflictSummary": "一句话概括本集核心爽点闭环与推进成果",
-  "continuitySummary": "供后续几十集连载记忆的高密度状态账本（50-90字：核心剧情结果 + 关系/筹码变化 + 关键道具或伏笔变更）",
+  "continuitySummary": "供后续连载记忆的高密度状态账本（50-90字：核心剧情结果 + 关系/筹码变化 + 关键道具或伏笔变更）",
   "opening3SecHook": "本集前3秒抓人眼球的核心视觉动作/冲突钩子",
   "endingCliffhanger": "本集最后一秒留存断章悬念钩子",
   "scriptText": "严格遵循所选甲方剧本格式的纯净文学剧本（总字数 ${durSpec.minWords}~${durSpec.maxWords} 字，含场头、出场人物、△极简动作/【音效】、角色精炼台词，绝不啰嗦！）",
+  "newCharactersIntroduced": [
+    {
+      "name": "本集首次登场且有名字的重要配角或阶段反派名（无则留空 []）",
+      "tier": "major_support",
+      "roleTag": "人物定位",
+      "ageAndArchetype": "年龄与反差人设",
+      "appearanceZh": "适配「${project.visualStyle}」的中文固定立绘外观词",
+      "visualPromptEn": "Consistent English character prompt tags, ${project.visualStyle}",
+      "voicePersona": "TTS配音指导",
+      "signatureTrait": "标志性道具或动作",
+      "epistemicNote": "该角色知情边界"
+    }
+  ],
   "episodeSceneAnchors": [
     {
       "sceneName": "本集新出现的场景名，或状态发生剧变的已有场景基础名（若均已存在且状态未变可留空 []）",
@@ -1978,6 +2857,15 @@ ${adaptationNotice}
       "lightingAndMood": "光影冷暖色调与情绪氛围",
       "visualPromptZh": "适配「${project.visualStyle}」的中文固定场景描述",
       "visualPromptEn": "English environment prompt tags"
+    }
+  ],
+  "keyPropUpdates": [
+    {
+      "name": "本集新登场或流转变更的关键实体道具名（无则留空 []）",
+      "currentHolder": "最新持有人",
+      "status": "持有中",
+      "visualSpec": "固定外观描述",
+      "narrativeFunction": "本集叙事作用"
     }
   ],
   "foreshadowingUpdates": [
@@ -2128,6 +3016,17 @@ export function parseGeneratedDramaEpisode(
     rawScriptFromModel ||
     formatShotsToStandardTriangleScript(episodeIndex, title, shots, scriptFormat);
 
+  const logicAudit: DramaEpisodeLogicAudit | undefined =
+    parsed.logicAndPovAudit && typeof parsed.logicAndPovAudit === 'object'
+      ? {
+          spatialAndMotiveBridge: String(parsed.logicAndPovAudit.spatialAndMotiveBridge || '').trim(),
+          povKnowledgeBoundary: String(parsed.logicAndPovAudit.povKnowledgeBoundary || '').trim(),
+          characterStateAndPropSnapshot: String(
+            parsed.logicAndPovAudit.characterStateAndPropSnapshot || ''
+          ).trim(),
+        }
+      : undefined;
+
   return {
     id: generateUUID(),
     index: episodeIndex,
@@ -2136,6 +3035,8 @@ export function parseGeneratedDramaEpisode(
     targetDurationSec: computedDuration,
     coreConflictSummary: String(parsed.coreConflictSummary || ''),
     continuitySummary: parsed.continuitySummary ? String(parsed.continuitySummary).trim() : undefined,
+    characterStateSnapshot: logicAudit?.characterStateAndPropSnapshot || undefined,
+    logicAudit,
     opening3SecHook,
     endingCliffhanger,
     scriptFormat,
@@ -2233,10 +3134,33 @@ export function exportDramaProjectToMarkdown(project: DramaProject): string {
         .join('\n\n')
     : '';
 
+  const arcsMd = (project.storyArcs || [])
+    .map(
+      (a) =>
+        `- **[${a.arcType} · 进度 ${a.progressPct}%] 《${a.title}》**（${a.spanEpisodes}）：当前阶段「${a.currentStage}」—— ${a.coreConflictAndGoal}`
+    )
+    .join('\n');
+
+  const rhythmMd = (project.plotRhythm || [])
+    .map(
+      (r) =>
+        `- **${r.episodeRange}（第${r.anchorEpisode}集锚点 · ${r.rhythmTier} · 紧张度 ${r.tensionScore}/100）**：${r.beatGoal}`
+    )
+    .join('\n');
+
+  const propsMd = (project.keyPropManifest || [])
+    .map(
+      (p) =>
+        `- **[${p.status}] ${p.name}**（当前持有：${p.currentHolder} | 首秀：第${p.debutEpisode}集 | 关键集：${p.milestoneEpisodes}）\n  - 外观锚点：${p.visualSpec}\n  - 叙事功能：${p.narrativeFunction}`
+    )
+    .join('\n');
+
   const charMd = project.characterAssets
     .map(
       (c) =>
-        `### ${c.name}（${c.roleTag}）\n- **人设定位**：${c.ageAndArchetype}\n- **中文固定立绘词**：${c.appearanceZh}\n- **英文一致性 Tag**：\`${c.visualPromptEn}\`\n- **配音音色指导**：${c.voicePersona}\n- **记忆点微动作/道具**：${c.signatureTrait}`
+        `### ${c.name}（${c.roleTag}${c.firstAppearanceEp ? ` · 第${c.firstAppearanceEp}集登场` : ''}）\n- **人设定位**：${c.ageAndArchetype}\n- **中文固定立绘词**：${c.appearanceZh}\n- **英文一致性 Tag**：\`${c.visualPromptEn}\`\n- **配音音色指导**：${c.voicePersona}\n- **记忆点微动作/道具**：${c.signatureTrait}${
+          c.epistemicNote ? `\n- **知情权边界**：${c.epistemicNote}` : ''
+        }`
     )
     .join('\n\n');
 
@@ -2271,7 +3195,7 @@ export function exportDramaProjectToMarkdown(project: DramaProject): string {
     .map((ep) => `## ${ep.title}\n\n${ep.rawScriptText}`)
     .join('\n\n---\n\n');
 
-  return `# 《${project.title}》AI 漫剧工业化制作圣经\n\n- **热门赛道**：${project.trackName}（${project.channel}）\n- **视觉规格**：${project.visualStyle} · ${project.aspectRatio}\n- **单集时长与字数指标**：单集 ${durSpec.durationSec} 秒（目标剧本约 ${durSpec.minWords}~${durSpec.maxWords} 字）\n- **规划集数**：${project.totalPlannedEpisodes} 集（核心付费卡点：第 ${project.paywallEpisodeIndex} 集）\n- **核心卖点 (Logline)**：${project.logline}\n- **开篇黄金前3秒**：${project.golden3SecHook}\n\n## 一、全剧商业大纲与叙事架构圣经\n\n${project.synopsis}\n\n${bibleMd ? `${bibleMd}\n\n` : ''}## 二、角色视觉一致性立绘档案\n\n${charMd || '暂未建档'}\n\n## 三、核心场景视觉锚点（含同场景异态）\n\n${sceneMd || '暂未归档场景'}\n\n## 四、角色伏笔与关键道具追踪台账\n\n${ledgerMd || '暂未登记伏笔台账'}\n\n## 五、分集节拍与伏笔规划目录（已规划 ${project.episodePlan?.length || 0} 集）\n\n${planMd || '暂未生成分集细纲'}\n\n## 六、分集甲方标准剧本\n\n${epMd || '暂无已生成分集'}`;
+  return `# 《${project.title}》AI 漫剧工业化制作圣经\n\n- **热门赛道**：${project.trackName}（${project.channel}）\n- **视觉规格**：${project.visualStyle} · ${project.aspectRatio}\n- **单集时长与字数指标**：单集 ${durSpec.durationSec} 秒（目标剧本约 ${durSpec.minWords}~${durSpec.maxWords} 字）\n- **规划集数**：${project.totalPlannedEpisodes} 集（核心付费卡点：第 ${project.paywallEpisodeIndex} 集）\n- **核心卖点 (Logline)**：${project.logline}\n- **开篇黄金前3秒**：${project.golden3SecHook}\n\n## 一、全剧商业大纲与叙事架构圣经\n\n${project.synopsis}\n\n${bibleMd ? `${bibleMd}\n\n` : ''}${arcsMd ? `### 多线叙事进度表\n${arcsMd}\n\n` : ''}${rhythmMd ? `### 剧情节奏波浪锚点\n${rhythmMd}\n\n` : ''}## 二、角色视觉一致性立绘档案（主角 + 重要配角）\n\n${charMd || '暂未建档'}\n\n## 三、核心场景视觉锚点（含同场景异态）\n\n${sceneMd || '暂未归档场景'}\n\n## 四、关键道具追踪表与角色伏笔清单\n\n${propsMd ? `### 关键实体道具追踪表\n${propsMd}\n\n` : ''}${ledgerMd || '暂未登记伏笔台账'}\n\n## 五、分集节拍与伏笔规划目录（已规划 ${project.episodePlan?.length || 0} 集）\n\n${planMd || '暂未生成分集细纲'}\n\n## 六、分集甲方标准剧本\n\n${epMd || '暂无已生成分集'}`;
 }
 
 /**

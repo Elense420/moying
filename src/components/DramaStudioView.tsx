@@ -32,6 +32,8 @@ import {
   GitBranch,
   RefreshCw,
   Link2,
+  Package,
+  ShieldAlert,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -42,6 +44,7 @@ import {
   DramaAudienceChannel,
   HOT_DRAMA_TRACKS,
   DramaCharacterAsset,
+  DramaCharacterTier,
   DramaSceneAnchor,
   DramaEpisodePlanItem,
   DramaEpisode,
@@ -52,6 +55,12 @@ import {
   DramaForeshadowItem,
   DramaForeshadowCategory,
   DramaForeshadowStatus,
+  DramaStoryArc,
+  DramaStoryArcType,
+  DramaPlotRhythmPoint,
+  DramaRhythmTier,
+  DramaKeyPropItem,
+  DramaKeyPropStatus,
   ApiConfig,
   UiSettings,
   Book,
@@ -64,6 +73,11 @@ import {
   mergeUniqueSceneAnchors,
   extractSceneAnchorsFromScriptFallback,
   mergeForeshadowingLedger,
+  inferCharacterTier,
+  mergeCharacterAssets,
+  extractSupportingCharactersFromScriptFallback,
+  mergeStoryArcs,
+  mergeKeyPropManifest,
   applyEpisodeContinuityUpdates,
   getContinuityMemoryDiagnostics,
   buildDramaNarrativeBibleMessages,
@@ -101,6 +115,25 @@ import {
 import { useContextMenu } from './ContextMenu';
 import { DramaIdeaConsultant } from './DramaIdeaConsultant';
 import { DramaCandidateVaultModal } from './DramaCandidateVaultView';
+import {
+  DramaLogicProvenanceWindow,
+  DramaStructuredKanban,
+} from './DramaStructuredKanban';
+
+function getArcProgressWidthClass(pct: number): string {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  if (v === 0) return 'w-0';
+  if (v <= 10) return 'w-[10%]';
+  if (v <= 20) return 'w-[20%]';
+  if (v <= 30) return 'w-[30%]';
+  if (v <= 40) return 'w-[40%]';
+  if (v <= 50) return 'w-[50%]';
+  if (v <= 60) return 'w-[60%]';
+  if (v <= 70) return 'w-[70%]';
+  if (v <= 80) return 'w-[80%]';
+  if (v <= 90) return 'w-[90%]';
+  return 'w-full';
+}
 
 const VISUAL_STYLES: DramaVisualStyle[] = [
   '2.5D精致厚涂精绘',
@@ -239,6 +272,7 @@ interface DramaSetupViewProps {
   onAutoArchiveCandidates?: (candidates: DramaCandidatePlan[], selectedTitle: string) => void;
   onPromoteCandidate?: (candidate: DramaCandidatePlan) => void;
   onDeleteCandidate?: (id: string) => void;
+  onOpenBackupRestore?: (mode: 'backup' | 'restore') => void;
 }
 
 export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
@@ -251,6 +285,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
   onAutoArchiveCandidates,
   onPromoteCandidate,
   onDeleteCandidate,
+  onOpenBackupRestore,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
   const defaultTrack = HOT_DRAMA_TRACKS[0];
@@ -273,14 +308,18 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
   const [narrativeBible, setNarrativeBible] = useState<DramaNarrativeBible>({
     ...EMPTY_NARRATIVE_BIBLE,
   });
+  const [storyArcs, setStoryArcs] = useState<DramaStoryArc[]>([]);
+  const [plotRhythm, setPlotRhythm] = useState<DramaPlotRhythmPoint[]>([]);
+  const [keyPropManifest, setKeyPropManifest] = useState<DramaKeyPropItem[]>([]);
   const [foreshadowingLedger, setForeshadowingLedger] = useState<DramaForeshadowItem[]>([]);
   const [characterAssets, setCharacterAssets] = useState<DramaCharacterAsset[]>([]);
+  const [charTierFilter, setCharTierFilter] = useState<'all' | DramaCharacterTier>('all');
   const [sceneAnchors, setSceneAnchors] = useState<DramaSceneAnchor[]>([]);
   const [episodePlan, setEpisodePlan] = useState<DramaEpisodePlanItem[]>([]);
   const [continuityAuditLog, setContinuityAuditLog] = useState<string>('');
 
   const [activeBibleTab, setActiveBibleTab] = useState<
-    'plotlines' | 'structure' | 'characters' | 'foreshadow'
+    'plotlines' | 'structure' | 'characters' | 'keyprops' | 'foreshadow'
   >('plotlines');
   const [isGeneratingBible, setIsGeneratingBible] = useState(false);
   const [bibleStreamText, setBibleStreamText] = useState('');
@@ -334,8 +373,18 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setGolden3SecHook(currentProject.golden3SecHook || '');
       setSynopsis(currentProject.synopsis || '');
       setNarrativeBible(normalizeNarrativeBible(currentProject.narrativeBible));
+      setStoryArcs(currentProject.storyArcs || []);
+      setPlotRhythm(
+        [...(currentProject.plotRhythm || [])].sort((a, b) => a.anchorEpisode - b.anchorEpisode)
+      );
+      setKeyPropManifest(currentProject.keyPropManifest || []);
       setForeshadowingLedger(currentProject.foreshadowingLedger || []);
-      setCharacterAssets(currentProject.characterAssets || []);
+      setCharacterAssets(
+        (currentProject.characterAssets || []).map((c, idx) => ({
+          ...c,
+          tier: c.tier || inferCharacterTier(c.roleTag, idx),
+        }))
+      );
       setSceneAnchors(currentProject.sceneAnchors || []);
       setEpisodePlan(
         [...(currentProject.episodePlan || [])].sort((a, b) => a.episodeIndex - b.episodeIndex)
@@ -358,6 +407,9 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       setGolden3SecHook('');
       setSynopsis('');
       setNarrativeBible({ ...EMPTY_NARRATIVE_BIBLE });
+      setStoryArcs([]);
+      setPlotRhythm([]);
+      setKeyPropManifest([]);
       setForeshadowingLedger([]);
       setCharacterAssets([]);
       setSceneAnchors([]);
@@ -401,7 +453,12 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       golden3SecHook,
       synopsis,
       narrativeBible,
+      storyArcs,
+      plotRhythm: [...plotRhythm].sort((a, b) => a.anchorEpisode - b.anchorEpisode),
+      keyPropManifest,
       foreshadowingLedger,
+      dramaSkills: currentProject?.dramaSkills,
+      customProvenanceNote: currentProject?.customProvenanceNote,
       characterAssets,
       sceneAnchors,
       episodePlan: [...episodePlan].sort((a, b) => a.episodeIndex - b.episodeIndex),
@@ -476,6 +533,28 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
         parsed.foreshadowingLedger,
         1
       );
+      const { merged: mergedChars } = mergeCharacterAssets(
+        characterAssets,
+        parsed.characterAssets,
+        1
+      );
+      const mergedArcs =
+        parsed.storyArcs.length > 0 ? mergeStoryArcs(storyArcs, parsed.storyArcs) : storyArcs;
+      const mergedRhythm =
+        parsed.plotRhythm.length > 0
+          ? [
+              ...plotRhythm.filter(
+                (pt) => !parsed.plotRhythm.some((np) => np.anchorEpisode === pt.anchorEpisode)
+              ),
+              ...parsed.plotRhythm,
+            ].sort((a, b) => a.anchorEpisode - b.anchorEpisode)
+          : plotRhythm;
+      const { merged: mergedKeyProps } = mergeKeyPropManifest(
+        keyPropManifest,
+        parsed.keyPropManifest,
+        1
+      );
+
       const mergedBible: DramaNarrativeBible = parsed.narrativeBible
         ? {
             worldSettingAndRules:
@@ -494,16 +573,22 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
         : narrativeBible;
 
       setNarrativeBible(mergedBible);
+      setStoryArcs(mergedArcs);
+      setPlotRhythm(mergedRhythm);
+      setKeyPropManifest(mergedKeyProps);
       setForeshadowingLedger(mergedLedger);
-      setCharacterAssets(parsed.characterAssets);
+      setCharacterAssets(mergedChars);
       setSceneAnchors(mergedScenes);
       setEpisodePlan(sortedPlan);
 
       const updatedProj: DramaProject = {
         ...snapshot,
         narrativeBible: mergedBible,
+        storyArcs: mergedArcs,
+        plotRhythm: mergedRhythm,
+        keyPropManifest: mergedKeyProps,
         foreshadowingLedger: mergedLedger,
-        characterAssets: parsed.characterAssets,
+        characterAssets: mergedChars,
         sceneAnchors: mergedScenes,
         episodePlan: sortedPlan,
         lastModifiedAt: Date.now(),
@@ -511,7 +596,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       await onSaveProject(updatedProj);
       setStatusMsg({
         type: 'success',
-        text: `已成功构建叙事架构圣经，锁定 ${parsed.characterAssets.length} 位角色立绘、${mergedScenes.length} 处核心场景锚点（含同场景异态去重）、${mergedLedger.length} 项伏笔关键道具与前 ${sortedPlan.length} 集细纲！`,
+        text: `已成功构建叙事圣经，锁定 ${mergedChars.length} 位主角/重要配角立绘、${mergedArcs.length} 条故事线、${mergedKeyProps.length} 件关键道具、${mergedScenes.length} 处场景锚点与前 ${sortedPlan.length} 集细纲！`,
       });
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: `提取视觉资产失败：${err.message}` });
@@ -522,7 +607,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
   };
 
   /**
-   * 独立生成或补全《全剧叙事架构圣经 + 角色伏笔关键道具追踪台账》
+   * 独立生成或补全《全剧叙事架构圣经 + 故事线 + 节奏点 + 关键道具追踪表 + 角色伏笔台账》
    */
   const handleAiGenerateNarrativeBible = async () => {
     if (!title.trim() || !synopsis.trim()) {
@@ -546,7 +631,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
     setBibleStreamText('');
     setStatusMsg({
       type: 'info',
-      text: `AI 总编剧正在推演《${title}》（共 ${totalPlannedEpisodes} 集）的故事线、主支线、四幕框架结构、波浪节奏与伏笔道具台账...`,
+      text: `AI 总编剧正在推演《${title}》（共 ${totalPlannedEpisodes} 集）的故事线、主支线、节奏热力点、关键道具追踪表与伏笔台账...`,
     });
 
     try {
@@ -572,20 +657,42 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
         parsed.foreshadowingLedger,
         1
       );
+      const mergedArcs =
+        parsed.storyArcs.length > 0 ? mergeStoryArcs(storyArcs, parsed.storyArcs) : storyArcs;
+      const mergedRhythm =
+        parsed.plotRhythm.length > 0
+          ? [
+              ...plotRhythm.filter(
+                (pt) => !parsed.plotRhythm.some((np) => np.anchorEpisode === pt.anchorEpisode)
+              ),
+              ...parsed.plotRhythm,
+            ].sort((a, b) => a.anchorEpisode - b.anchorEpisode)
+          : plotRhythm;
+      const { merged: mergedKeyProps } = mergeKeyPropManifest(
+        keyPropManifest,
+        parsed.keyPropManifest,
+        1
+      );
 
       setNarrativeBible(parsed.narrativeBible);
+      setStoryArcs(mergedArcs);
+      setPlotRhythm(mergedRhythm);
+      setKeyPropManifest(mergedKeyProps);
       setForeshadowingLedger(mergedLedger);
 
       const updatedProj = buildSnapshotProject({
         narrativeBible: parsed.narrativeBible,
+        storyArcs: mergedArcs,
+        plotRhythm: mergedRhythm,
+        keyPropManifest: mergedKeyProps,
         foreshadowingLedger: mergedLedger,
       });
       await onSaveProject(updatedProj);
       setStatusMsg({
         type: 'success',
-        text: `已补全 7 大叙事架构维度（故事线/主线/支线/框架结构/剧情节奏/底层规则/人物弧光）并归档 ${mergedLedger.length} 项伏笔关键道具！`,
+        text: `已补全叙事圣经、${mergedArcs.length} 条结构化故事线、${mergedRhythm.length} 个剧情节奏点、${mergedKeyProps.length} 件关键道具与 ${mergedLedger.length} 项角色伏笔！`,
       });
-      triggerQuickToast('全剧叙事架构圣经与伏笔台账已生成');
+      triggerQuickToast('叙事圣经、故事线、节奏点与道具伏笔表已生成');
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: `生成叙事圣经失败：${err.message}` });
     } finally {
@@ -835,30 +942,166 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
     setTimeout(() => setCopiedKey(null), 1600);
   };
 
-  const addBlankCharacter = () => {
+  const addBlankCharacter = (defaultTier: DramaCharacterTier = 'major_support') => {
     setCharacterAssets((prev) => [
       ...prev,
       {
         id: generateUUID(),
-        name: '新角色',
-        roleTag: '核心配角',
+        name: defaultTier === 'protagonist' ? '新核心主角' : defaultTier === 'recurring_antagonist' ? '新阶段反派' : '新重要配角',
+        tier: defaultTier,
+        roleTag: defaultTier === 'protagonist' ? '核心主角' : defaultTier === 'recurring_antagonist' ? '阶段关键反派' : '重要配角',
+        firstAppearanceEp: 1,
         ageAndArchetype: '22岁 · 鲜明反差人设',
         appearanceZh: '',
         visualPromptEn: '',
         voicePersona: '',
         signatureTrait: '',
+        epistemicNote: '',
       },
     ]);
   };
 
-  const updateCharField = (id: string, field: keyof DramaCharacterAsset, value: string) => {
+  const updateCharField = <K extends keyof DramaCharacterAsset>(
+    id: string,
+    field: K,
+    value: DramaCharacterAsset[K]
+  ) => {
     setCharacterAssets((prev) =>
       prev.map((c) => (c.id === id ? { ...c, [field]: value } : c))
     );
   };
 
+  const handleScanSupportingCharactersFromScripts = async () => {
+    const existingEps = currentProject?.episodes || [];
+    if (existingEps.length === 0) {
+      setStatusMsg({
+        type: 'info',
+        text: '当前尚未生成单集剧本正文；随着后续每集剧本创作推进，系统会自动识别并整理新出场的重要配角！',
+      });
+      return;
+    }
+
+    let working = [...characterAssets];
+    const newlyFoundNames: string[] = [];
+    const sortedEps = [...existingEps].sort((a, b) => a.index - b.index);
+    for (const ep of sortedEps) {
+      const discovered = extractSupportingCharactersFromScriptFallback(
+        ep.rawScriptText || '',
+        working,
+        ep.index,
+        visualStyle,
+        aspectRatio
+      );
+      if (discovered.length > 0) {
+        const mergedRes = mergeCharacterAssets(working, discovered, ep.index);
+        working = mergedRes.merged;
+        newlyFoundNames.push(...mergedRes.addedNames);
+      }
+    }
+
+    if (newlyFoundNames.length > 0) {
+      setCharacterAssets(working);
+      const updatedProj = buildSnapshotProject({ characterAssets: working });
+      await onSaveProject(updatedProj);
+      setStatusMsg({
+        type: 'success',
+        text: `已从全部已成稿剧本中自动识别并建档 ${newlyFoundNames.length} 位新出场重要配角：【${newlyFoundNames.join('、')}】！`,
+      });
+      triggerQuickToast(`已自动识别归档 ${newlyFoundNames.length} 位重要配角`);
+    } else {
+      setStatusMsg({
+        type: 'info',
+        text: '扫描完成：所有在已出剧本中有具名对白的重要人物均已在角色档案中，无遗漏配角。',
+      });
+      triggerQuickToast('所有具名重要角色均已归档');
+    }
+  };
+
   const updateBibleField = (field: keyof DramaNarrativeBible, value: string) => {
     setNarrativeBible((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const addBlankStoryArc = () => {
+    setStoryArcs((prev) => [
+      ...prev,
+      {
+        id: generateUUID(),
+        title: '新叙事故事线',
+        arcType: prev.length === 0 ? '主线' : '情感副线',
+        spanEpisodes: `第1-${totalPlannedEpisodes}集`,
+        progressPct: 15,
+        currentStage: '开局铺设阶段',
+        coreConflictAndGoal: '',
+      },
+    ]);
+  };
+
+  const updateStoryArcField = <K extends keyof DramaStoryArc>(
+    id: string,
+    field: K,
+    value: DramaStoryArc[K]
+  ) => {
+    setStoryArcs((prev) =>
+      prev.map((arc) => (arc.id === id ? { ...arc, [field]: value } : arc))
+    );
+  };
+
+  const addBlankPlotRhythmPoint = () => {
+    const nextAnchor =
+      plotRhythm.length > 0
+        ? Math.min(totalPlannedEpisodes, Math.max(...plotRhythm.map((p) => p.anchorEpisode)) + 5)
+        : 1;
+    setPlotRhythm((prev) =>
+      [
+        ...prev,
+        {
+          id: generateUUID(),
+          anchorEpisode: nextAnchor,
+          episodeRange: `第${nextAnchor}集`,
+          rhythmTier: nextAnchor === paywallEpisodeIndex ? '付费大卡点' : '爽点小高潮',
+          tensionScore: nextAnchor === paywallEpisodeIndex ? 96 : 82,
+          beatGoal: '',
+        },
+      ].sort((a, b) => a.anchorEpisode - b.anchorEpisode)
+    );
+  };
+
+  const updatePlotRhythmField = <K extends keyof DramaPlotRhythmPoint>(
+    id: string,
+    field: K,
+    value: DramaPlotRhythmPoint[K]
+  ) => {
+    setPlotRhythm((prev) =>
+      prev
+        .map((pt) => (pt.id === id ? { ...pt, [field]: value } : pt))
+        .sort((a, b) => a.anchorEpisode - b.anchorEpisode)
+    );
+  };
+
+  const addBlankKeyPropItem = () => {
+    setKeyPropManifest((prev) => [
+      ...prev,
+      {
+        id: generateUUID(),
+        name: '新关键实体道具',
+        currentHolder: characterAssets[0]?.name || '主角',
+        debutEpisode: 1,
+        milestoneEpisodes: `第1集亮相 → 第${paywallEpisodeIndex}集验证`,
+        visualSpec: '',
+        narrativeFunction: '',
+        status: '持有中',
+      },
+    ]);
+  };
+
+  const updateKeyPropField = <K extends keyof DramaKeyPropItem>(
+    id: string,
+    field: K,
+    value: DramaKeyPropItem[K]
+  ) => {
+    setKeyPropManifest((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
   };
 
   const addBlankForeshadowItem = () => {
@@ -866,8 +1109,8 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
       ...prev,
       {
         id: generateUUID(),
-        name: '新伏笔/关键道具',
-        category: '关键道具',
+        name: '新伏笔/暗线悬念',
+        category: '身世/人物伏笔',
         ownerOrRelation: '',
         plantedEpisode: 1,
         expectedPayoffEpisode: `第${paywallEpisodeIndex}集`,
@@ -902,7 +1145,17 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
           </h1>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onOpenBackupRestore && (
+            <MotionButton
+              type="button"
+              onClick={() => onOpenBackupRestore('backup')}
+              className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs sm:text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            >
+              <Download className="w-4 h-4 text-[var(--accent)]" />
+              <span>备份/恢复</span>
+            </MotionButton>
+          )}
           {onPromoteCandidate && onDeleteCandidate && (
             <MotionButton
               type="button"
@@ -1311,13 +1564,14 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
           </div>
         )}
 
-        {/* Segmented Tabs for Narrative Architecture, Characters, and Foreshadowing Ledger */}
+        {/* Segmented Tabs for StoryArcs, PlotRhythm, Protagonists/Supporting Cast, KeyPropManifest, and Foreshadowing Ledger */}
         <div className="flex flex-wrap items-center gap-1 p-1 studio-muted rounded-xl">
           {[
-            { id: 'plotlines', label: '① 故事线 · 主线 · 支线' },
-            { id: 'structure', label: '② 框架结构 · 剧情节奏 · 铁律弧光' },
-            { id: 'characters', label: `③ 角色固定立绘词 (${characterAssets.length})` },
-            { id: 'foreshadow', label: `④ 角色伏笔与关键道具 (${foreshadowingLedger.length})` },
+            { id: 'plotlines', label: `① 故事线与主支线表 (${storyArcs.length})` },
+            { id: 'structure', label: `② 框架与剧情节奏点 (${plotRhythm.length})` },
+            { id: 'characters', label: `③ 主角与重要配角档案 (${characterAssets.length})` },
+            { id: 'keyprops', label: `④ 关键道具追踪表 (${keyPropManifest.length})` },
+            { id: 'foreshadow', label: `⑤ 角色伏笔清单 (${foreshadowingLedger.length})` },
           ].map((tab) => {
             const active = activeBibleTab === tab.id;
             return (
@@ -1342,276 +1596,782 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
           })}
         </div>
 
-        {/* Tab 1: Storyline, Main Plotline, Sub-Plotlines */}
+        {/* Tab 1: Storyline Overview + Structured StoryArcs (主线 / 情感副线 / 暗线 / 群像支线) */}
         {activeBibleTab === 'plotlines' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-            <div className="space-y-1.5">
-              <label className="block font-semibold text-[var(--text-primary)]">
-                核心故事线与时间轴脉络 (Storyline)
-              </label>
-              <p className="text-[11px] text-[var(--text-muted)]">
-                按时间因果链梳理从开局危机到终局清算的完整事件演进线
-              </p>
-              <textarea
-                rows={6}
-                value={narrativeBible.storylineOverview}
-                onChange={(e) => updateBibleField('storylineOverview', e.target.value)}
-                placeholder="例：倒计时72小时筹备 → 首轮灾难降临 → 前任/仇家上门求收留反遭打脸 → 核心同盟建立 → 幕后财阀黑手浮现 → 终局反杀清算..."
-                className="studio-input w-full p-3 text-xs leading-relaxed"
-              />
+          <div className="space-y-5 text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-[var(--text-primary)]">
+                  核心故事线与时间轴脉络 (Storyline)
+                </label>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  按时间因果链梳理从开局危机到终局清算的完整事件演进线
+                </p>
+                <textarea
+                  rows={5}
+                  value={narrativeBible.storylineOverview}
+                  onChange={(e) => updateBibleField('storylineOverview', e.target.value)}
+                  placeholder="例：倒计时72小时筹备 → 首轮灾难降临 → 前任/仇家上门求收留反遭打脸 → 核心同盟建立 → 幕后财阀黑手浮现 → 终局反杀清算..."
+                  className="studio-input w-full p-3 text-xs leading-relaxed"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-[var(--text-primary)]">
+                  贯穿核心主线 (Main Plotline)
+                </label>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  全剧不可动摇的核心对立矛盾、主角阶段目标与终极爽点闭环
+                </p>
+                <textarea
+                  rows={5}
+                  value={narrativeBible.mainPlotline}
+                  onChange={(e) => updateBibleField('mainPlotline', e.target.value)}
+                  placeholder="填写主角贯穿全剧的核心目标、核心阻碍以及最终如何完成身份/命运的彻底逆转..."
+                  className="studio-input w-full p-3 text-xs leading-relaxed"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-[var(--text-primary)]">
+                  高张力情感暗线与副线支线 (Sub-Plotlines)
+                </label>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  双向马甲/救赎情感副线、群像配角成长线、反派内部利益瓦解暗线
+                </p>
+                <textarea
+                  rows={5}
+                  value={narrativeBible.subPlotlines}
+                  onChange={(e) => updateBibleField('subPlotlines', e.target.value)}
+                  placeholder="为主线提供中后期续航弹药的 2~3 条支线设计，避免中段剧情单调重复..."
+                  className="studio-input w-full p-3 text-xs leading-relaxed"
+                />
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="block font-semibold text-[var(--text-primary)]">
-                贯穿核心主线 (Main Plotline)
-              </label>
-              <p className="text-[11px] text-[var(--text-muted)]">
-                全剧不可动摇的核心对立矛盾、主角阶段目标与终极爽点闭环
-              </p>
-              <textarea
-                rows={6}
-                value={narrativeBible.mainPlotline}
-                onChange={(e) => updateBibleField('mainPlotline', e.target.value)}
-                placeholder="填写主角贯穿全剧的核心目标、核心阻碍以及最终如何完成身份/命运的彻底逆转..."
-                className="studio-input w-full p-3 text-xs leading-relaxed"
-              />
-            </div>
+            {/* Structured StoryArcs Editor (storyArcs) */}
+            <div className="pt-4 border-t border-[var(--border-subtle)] space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                    <GitBranch className="w-3.5 h-3.5 text-[var(--accent)]" />
+                    <span>多线叙事结构化追踪表 (storyArcs · 同步至剧本创作实时看板)</span>
+                  </h3>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    分条管理主线、情感副线、暗线/反派线与群像支线的集数跨度与推进进度，每集生成后自动推进更新
+                  </p>
+                </div>
+                <MotionButton
+                  type="button"
+                  onClick={addBlankStoryArc}
+                  className="min-h-[34px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>新增故事线</span>
+                </MotionButton>
+              </div>
 
-            <div className="space-y-1.5">
-              <label className="block font-semibold text-[var(--text-primary)]">
-                高张力情感暗线与副线支线 (Sub-Plotlines)
-              </label>
-              <p className="text-[11px] text-[var(--text-muted)]">
-                双向马甲/救赎情感副线、群像配角成长线、反派内部利益瓦解暗线
-              </p>
-              <textarea
-                rows={6}
-                value={narrativeBible.subPlotlines}
-                onChange={(e) => updateBibleField('subPlotlines', e.target.value)}
-                placeholder="为主线提供中后期续航弹药的 2~3 条支线设计，避免中段剧情单调重复..."
-                className="studio-input w-full p-3 text-xs leading-relaxed"
-              />
+              {storyArcs.length === 0 ? (
+                <p className="text-xs text-[var(--text-muted)] py-5 text-center studio-muted">
+                  暂无结构化故事线卡片。可点击上方「AI 推演补全叙事圣经与伏笔台账」自动拆解，或点击「新增故事线」手动创建。
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {storyArcs.map((arc) => (
+                    <div
+                      key={arc.id}
+                      className="p-3.5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/55 space-y-2.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-[180px]">
+                          <select
+                            value={arc.arcType}
+                            onChange={(e) =>
+                              updateStoryArcField(arc.id, 'arcType', e.target.value as DramaStoryArcType)
+                            }
+                            className="studio-input px-2 py-1 text-xs font-semibold text-[var(--accent)]"
+                          >
+                            <option value="主线">主线</option>
+                            <option value="情感副线">情感副线</option>
+                            <option value="暗线/反派线">暗线/反派线</option>
+                            <option value="群像支线">群像支线</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={arc.title}
+                            onChange={(e) => updateStoryArcField(arc.id, 'title', e.target.value)}
+                            placeholder="故事线标题"
+                            className="studio-input px-2.5 py-1 font-bold text-xs flex-1"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setStoryArcs((prev) => prev.filter((a) => a.id !== arc.id))}
+                          className="min-h-[28px] min-w-[28px] flex items-center justify-center text-[var(--text-muted)] hover:text-rose-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="block mb-1 text-[11px] text-[var(--text-muted)]">集数跨度</label>
+                          <input
+                            type="text"
+                            value={arc.spanEpisodes}
+                            onChange={(e) => updateStoryArcField(arc.id, 'spanEpisodes', e.target.value)}
+                            placeholder="如：第1-60集"
+                            className="studio-input w-full px-2 py-1 text-xs tabular-nums"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-[11px] text-[var(--text-muted)]">当前阶段</label>
+                          <input
+                            type="text"
+                            value={arc.currentStage}
+                            onChange={(e) => updateStoryArcField(arc.id, 'currentStage', e.target.value)}
+                            placeholder="如：暗中布局期"
+                            className="studio-input w-full px-2 py-1 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-[11px] text-[var(--text-muted)]">
+                            推进度 ({arc.progressPct}%)
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step={5}
+                            value={arc.progressPct}
+                            onChange={(e) =>
+                              updateStoryArcField(
+                                arc.id,
+                                'progressPct',
+                                Math.max(0, Math.min(100, Number(e.target.value) || 0))
+                              )
+                            }
+                            className="studio-input w-full px-2 py-1 text-xs tabular-nums"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="h-1.5 w-full rounded-full bg-[var(--bg-muted)] overflow-hidden">
+                        <div
+                          className={`h-full rounded-full bg-[var(--accent)] transition-all ${getArcProgressWidthClass(
+                            arc.progressPct
+                          )}`}
+                        />
+                      </div>
+
+                      <textarea
+                        rows={2}
+                        value={arc.coreConflictAndGoal}
+                        onChange={(e) =>
+                          updateStoryArcField(arc.id, 'coreConflictAndGoal', e.target.value)
+                        }
+                        placeholder="核心冲突抓手与本线终极闭环目标..."
+                        className="studio-input w-full p-2 text-xs leading-relaxed"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* Tab 2: 4-Act Framework Structure, Wave Pacing, World Rules, Character Arcs */}
+        {/* Tab 2: 4-Act Framework Structure + Structured PlotRhythm (plotRhythm) */}
         {activeBibleTab === 'structure' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="space-y-1.5">
-              <label className="block font-semibold text-[var(--text-primary)]">
-                四幕商业框架结构（绑定总集数 {totalPlannedEpisodes} 集与第 {paywallEpisodeIndex} 集付费点）
-              </label>
-              <textarea
-                rows={4}
-                value={narrativeBible.frameworkStructure}
-                onChange={(e) => updateBibleField('frameworkStructure', e.target.value)}
-                placeholder={`第一幕（1-${Math.max(2, paywallEpisodeIndex - 1)}集）引流强留存 → 第二幕（${paywallEpisodeIndex}-${paywallEpisodeIndex + 12}集）首轮付费破局与身份揭秘 → 第三幕升级博弈 → 第四幕终局真相引爆...`}
-                className="studio-input w-full p-3 text-xs leading-relaxed"
-              />
+          <div className="space-y-5 text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-[var(--text-primary)]">
+                  四幕商业框架结构（绑定总集数 {totalPlannedEpisodes} 集与第 {paywallEpisodeIndex} 集付费点）
+                </label>
+                <textarea
+                  rows={4}
+                  value={narrativeBible.frameworkStructure}
+                  onChange={(e) => updateBibleField('frameworkStructure', e.target.value)}
+                  placeholder={`第一幕（1-${Math.max(2, paywallEpisodeIndex - 1)}集）引流强留存 → 第二幕（${paywallEpisodeIndex}-${paywallEpisodeIndex + 12}集）首轮付费破局与身份揭秘 → 第三幕升级博弈 → 第四幕终局真相引爆...`}
+                  className="studio-input w-full p-3 text-xs leading-relaxed"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-[var(--text-primary)]">
+                  剧情节奏与波浪卡点法则（单集 {setupDurSpec.durationSec}s 微节奏 + 跨集波浪）
+                </label>
+                <textarea
+                  rows={4}
+                  value={narrativeBible.pacingStrategy}
+                  onChange={(e) => updateBibleField('pacingStrategy', e.target.value)}
+                  placeholder="单集前3秒抛冲突、中段两次反转拉扯、集末断章悬念；跨集每3集一小爽点兑现、每8-10集一次大地图或大身份升级..."
+                  className="studio-input w-full p-3 text-xs leading-relaxed"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-[var(--text-primary)]">
+                  世界观底层设定与硬规则铁律（防中后期吃书 / 战力崩坏护栏）
+                </label>
+                <textarea
+                  rows={4}
+                  value={narrativeBible.worldSettingAndRules}
+                  onChange={(e) => updateBibleField('worldSettingAndRules', e.target.value)}
+                  placeholder="锁定系统/金手指使用代价、豪门契约核心条款、规则怪谈底层真相等硬约束，AI 写到第 50+ 集时也会严格遵守..."
+                  className="studio-input w-full p-3 text-xs leading-relaxed"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-[var(--text-primary)]">
+                  角色成长弧光与阶段性人物关系拉扯网
+                </label>
+                <textarea
+                  rows={4}
+                  value={narrativeBible.characterArcsAndRelations}
+                  onChange={(e) => updateBibleField('characterArcsAndRelations', e.target.value)}
+                  placeholder="梳理男女主及核心反派在前、中、后期的心态转变与信任/对立关系递进节点..."
+                  className="studio-input w-full p-3 text-xs leading-relaxed"
+                />
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="block font-semibold text-[var(--text-primary)]">
-                剧情节奏与波浪卡点法则（单集 {setupDurSpec.durationSec}s 微节奏 + 跨集波浪）
-              </label>
-              <textarea
-                rows={4}
-                value={narrativeBible.pacingStrategy}
-                onChange={(e) => updateBibleField('pacingStrategy', e.target.value)}
-                placeholder="单集前3秒抛冲突、中段两次反转拉扯、集末断章悬念；跨集每3集一小爽点兑现、每8-10集一次大地图或大身份升级..."
-                className="studio-input w-full p-3 text-xs leading-relaxed"
-              />
-            </div>
+            {/* Structured Plot Rhythm Milestones Editor (plotRhythm) */}
+            <div className="pt-4 border-t border-[var(--border-subtle)] space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                    <Flame className="w-3.5 h-3.5 text-[var(--accent)]" />
+                    <span>结构化剧情节奏点规划表 (plotRhythm · 驱动剧本台节奏热力图)</span>
+                  </h3>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    锚定关键集数的情绪张力分值（15~100）与爽点/卡点等级，与分集细纲共同构成剧本台实时节奏热力图
+                  </p>
+                </div>
+                <MotionButton
+                  type="button"
+                  onClick={addBlankPlotRhythmPoint}
+                  className="min-h-[34px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>新增节奏锚点</span>
+                </MotionButton>
+              </div>
 
-            <div className="space-y-1.5">
-              <label className="block font-semibold text-[var(--text-primary)]">
-                世界观底层设定与硬规则铁律（防中后期吃书 / 战力崩坏护栏）
-              </label>
-              <textarea
-                rows={4}
-                value={narrativeBible.worldSettingAndRules}
-                onChange={(e) => updateBibleField('worldSettingAndRules', e.target.value)}
-                placeholder="锁定系统/金手指使用代价、豪门契约核心条款、规则怪谈底层真相等硬约束，AI 写到第 50+ 集时也会严格遵守..."
-                className="studio-input w-full p-3 text-xs leading-relaxed"
-              />
-            </div>
+              {plotRhythm.length === 0 ? (
+                <p className="text-xs text-[var(--text-muted)] py-5 text-center studio-muted">
+                  暂无独立剧情节奏点。可点击上方「AI 推演补全叙事圣经与伏笔台账」自动规划，或点击「新增节奏锚点」手动设定关键高潮与付费卡点。
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {plotRhythm.map((pt) => (
+                    <div
+                      key={pt.id}
+                      className="p-3.5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/55 space-y-2"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 flex-1">
+                          <span className="text-[11px] text-[var(--text-muted)] shrink-0">锚点第</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={300}
+                            value={pt.anchorEpisode}
+                            onChange={(e) =>
+                              updatePlotRhythmField(
+                                pt.id,
+                                'anchorEpisode',
+                                Math.max(1, Number(e.target.value) || 1)
+                              )
+                            }
+                            className="studio-input w-14 px-2 py-1 text-center font-bold text-xs tabular-nums"
+                          />
+                          <span className="text-[11px] text-[var(--text-muted)] shrink-0">集</span>
+                          <input
+                            type="text"
+                            value={pt.episodeRange}
+                            onChange={(e) =>
+                              updatePlotRhythmField(pt.id, 'episodeRange', e.target.value)
+                            }
+                            placeholder="波段区间（如：第9-11集）"
+                            className="studio-input px-2 py-1 text-xs flex-1"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPlotRhythm((prev) => prev.filter((item) => item.id !== pt.id))
+                          }
+                          className="min-h-[28px] min-w-[28px] flex items-center justify-center text-[var(--text-muted)] hover:text-rose-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
 
-            <div className="space-y-1.5">
-              <label className="block font-semibold text-[var(--text-primary)]">
-                角色成长弧光与阶段性人物关系拉扯网
-              </label>
-              <textarea
-                rows={4}
-                value={narrativeBible.characterArcsAndRelations}
-                onChange={(e) => updateBibleField('characterArcsAndRelations', e.target.value)}
-                placeholder="梳理男女主及核心反派在前、中、后期的心态转变与信任/对立关系递进节点..."
-                className="studio-input w-full p-3 text-xs leading-relaxed"
-              />
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block mb-1 text-[11px] text-[var(--text-muted)]">节奏等级</label>
+                          <select
+                            value={pt.rhythmTier}
+                            onChange={(e) =>
+                              updatePlotRhythmField(
+                                pt.id,
+                                'rhythmTier',
+                                e.target.value as DramaRhythmTier
+                              )
+                            }
+                            className="studio-input w-full px-2 py-1 text-xs font-semibold"
+                          >
+                            <option value="蓄力铺垫">蓄力铺垫</option>
+                            <option value="拉扯升级">拉扯升级</option>
+                            <option value="爽点小高潮">爽点小高潮</option>
+                            <option value="付费大卡点">🔥 付费大卡点</option>
+                            <option value="终局大爆发">💥 终局大爆发</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-[11px] text-[var(--text-muted)]">
+                            情绪张力热力值 ({pt.tensionScore}/100)
+                          </label>
+                          <input
+                            type="number"
+                            min={15}
+                            max={100}
+                            value={pt.tensionScore}
+                            onChange={(e) =>
+                              updatePlotRhythmField(
+                                pt.id,
+                                'tensionScore',
+                                Math.max(15, Math.min(100, Number(e.target.value) || 75))
+                              )
+                            }
+                            className="studio-input w-full px-2 py-1 text-xs tabular-nums"
+                          />
+                        </div>
+                      </div>
+
+                      <input
+                        type="text"
+                        value={pt.beatGoal}
+                        onChange={(e) => updatePlotRhythmField(pt.id, 'beatGoal', e.target.value)}
+                        placeholder="本节奏节点必须达成的核心爽点、反转或悬念断章目标..."
+                        className="studio-input w-full px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* Tab 3: Character Visual Consistency Lock Cards */}
+        {/* Tab 3: Protagonists, Major Supporting Characters & Antagonists Archive (with auto-recognition & epistemic bounds) */}
         {activeBibleTab === 'characters' && (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-[var(--text-muted)]">
-                上游写 △ 文学剧本时只保留人物姓名与性格口吻（绝不啰嗦复读外貌）；下游拆解 AI 分镜单时才会自动织入这些固定立绘词。支持右键卡片快捷复制。
-              </p>
-              <MotionButton
-                type="button"
-                onClick={addBlankCharacter}
-                className="min-h-[36px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1 hover:bg-[var(--bg-muted)] cursor-pointer shrink-0"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>手动添加角色</span>
-              </MotionButton>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-1 p-1 studio-muted rounded-xl">
+                {[
+                  { id: 'all', label: `全部人物 (${characterAssets.length})` },
+                  {
+                    id: 'protagonist',
+                    label: `核心主角 (${
+                      characterAssets.filter((c, i) => (c.tier || inferCharacterTier(c.roleTag, i)) === 'protagonist').length
+                    })`,
+                  },
+                  {
+                    id: 'major_support',
+                    label: `重要配角 (${
+                      characterAssets.filter((c, i) => (c.tier || inferCharacterTier(c.roleTag, i)) === 'major_support').length
+                    })`,
+                  },
+                  {
+                    id: 'recurring_antagonist',
+                    label: `关键反派 (${
+                      characterAssets.filter((c, i) => (c.tier || inferCharacterTier(c.roleTag, i)) === 'recurring_antagonist').length
+                    })`,
+                  },
+                ].map((flt) => {
+                  const active = charTierFilter === flt.id;
+                  return (
+                    <button
+                      key={flt.id}
+                      type="button"
+                      onClick={() => setCharTierFilter(flt.id as typeof charTierFilter)}
+                      className={`px-3 py-1 rounded-lg text-xs font-medium cursor-pointer transition-colors tabular-nums ${
+                        active
+                          ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] font-semibold shadow-2xs'
+                          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      {flt.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <MotionButton
+                  type="button"
+                  onClick={handleScanSupportingCharactersFromScripts}
+                  title="扫描已生成的所有单集剧本，自动把新出场的重要配角整理入库"
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:border-[var(--accent)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
+                >
+                  <UserCheck className="w-3.5 h-3.5 text-[var(--accent)]" />
+                  <span>从已出剧本识别新配角</span>
+                </MotionButton>
+                <MotionButton
+                  type="button"
+                  onClick={() =>
+                    addBlankCharacter(charTierFilter === 'all' ? 'major_support' : charTierFilter)
+                  }
+                  className="min-h-[36px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1 hover:bg-[var(--bg-muted)] cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>手动新增人物</span>
+                </MotionButton>
+              </div>
             </div>
+
+            <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+              随着每集剧本不断生成，系统会自动识别新出场的<strong>重要配角与阶段反派</strong>并归入此库（自动过滤路人/黑衣人等跑龙套）；同时可为每位角色设定<strong>「知情权边界」</strong>，防止主角未卜先知喊出未曾谋面的幕后主使名字。
+            </p>
 
             {characterAssets.length === 0 ? (
               <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">
-                暂未锁定角色立绘资产。填写上方大纲后点击「AI 一键提取角色固定立绘词 + 分集卡点目录」，系统将自动生成中英双语生图固定词。
+                暂未锁定角色与配角资产。填写上方大纲后点击「AI 一键提取角色固定立绘词 + 分集卡点目录」，或在创作单集剧本时自动捕获新增重要配角。
               </p>
             ) : (
               <StaggerList className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {characterAssets.map((char) => (
-                  <StaggerItem
-                    key={char.id}
-                    onContextMenu={(e) =>
-                      openContextMenu(
-                        e,
-                        [
-                          {
-                            id: 'copy-zh',
-                            label: '复制中文立绘固定词',
-                            icon: <Copy className="w-3.5 h-3.5" />,
-                            onSelect: () =>
-                              copyText(`zh-${char.id}`, char.appearanceZh, `已复制「${char.name}」中文立绘词`),
-                          },
-                          {
-                            id: 'copy-en',
-                            label: '复制英文 MJ/Runway Tag',
-                            icon: <Copy className="w-3.5 h-3.5" />,
-                            onSelect: () =>
-                              copyText(`en-${char.id}`, char.visualPromptEn, `已复制「${char.name}」英文 Tag`),
-                          },
-                          {
-                            id: 'copy-voice',
-                            label: '复制 TTS 配音音色指导',
-                            icon: <FileText className="w-3.5 h-3.5" />,
-                            onSelect: () =>
-                              copyText(`vo-${char.id}`, char.voicePersona, `已复制「${char.name}」配音指导`),
-                          },
-                          {
-                            id: 'del-char',
-                            label: '删除该角色立绘卡',
-                            icon: <Trash2 className="w-3.5 h-3.5" />,
-                            danger: true,
-                            dividerBefore: true,
-                            onSelect: () =>
-                              setCharacterAssets((prev) => prev.filter((item) => item.id !== char.id)),
-                          },
-                        ],
-                        `角色资产 · ${char.name}`
-                      )
-                    }
-                    className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/50 space-y-3 text-xs"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 flex-1">
-                        <input
-                          type="text"
-                          value={char.name}
-                          onChange={(e) => updateCharField(char.id, 'name', e.target.value)}
-                          className="studio-input px-2.5 py-1.5 font-bold text-sm w-28"
-                        />
-                        <input
-                          type="text"
-                          value={char.roleTag}
-                          onChange={(e) => updateCharField(char.id, 'roleTag', e.target.value)}
-                          className="studio-input px-2.5 py-1.5 text-xs flex-1"
-                        />
-                      </div>
-                      <MotionButton
-                        type="button"
-                        onClick={() => setCharacterAssets((prev) => prev.filter((item) => item.id !== char.id))}
-                        className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-rose-600 cursor-pointer"
+                {characterAssets
+                  .filter((char, idx) => {
+                    if (charTierFilter === 'all') return true;
+                    const resolvedTier = char.tier || inferCharacterTier(char.roleTag, idx);
+                    return resolvedTier === charTierFilter;
+                  })
+                  .map((char, idx) => {
+                    const resolvedTier = char.tier || inferCharacterTier(char.roleTag, idx);
+                    return (
+                      <StaggerItem
+                        key={char.id}
+                        onContextMenu={(e) =>
+                          openContextMenu(
+                            e,
+                            [
+                              {
+                                id: 'copy-zh',
+                                label: '复制中文立绘固定词',
+                                icon: <Copy className="w-3.5 h-3.5" />,
+                                onSelect: () =>
+                                  copyText(`zh-${char.id}`, char.appearanceZh, `已复制「${char.name}」中文立绘词`),
+                              },
+                              {
+                                id: 'copy-en',
+                                label: '复制英文 MJ/Runway Tag',
+                                icon: <Copy className="w-3.5 h-3.5" />,
+                                onSelect: () =>
+                                  copyText(`en-${char.id}`, char.visualPromptEn, `已复制「${char.name}」英文 Tag`),
+                              },
+                              {
+                                id: 'copy-voice',
+                                label: '复制 TTS 配音音色指导',
+                                icon: <FileText className="w-3.5 h-3.5" />,
+                                onSelect: () =>
+                                  copyText(`vo-${char.id}`, char.voicePersona, `已复制「${char.name}」配音指导`),
+                              },
+                              {
+                                id: 'del-char',
+                                label: '删除该角色立绘卡',
+                                icon: <Trash2 className="w-3.5 h-3.5" />,
+                                danger: true,
+                                dividerBefore: true,
+                                onSelect: () =>
+                                  setCharacterAssets((prev) => prev.filter((item) => item.id !== char.id)),
+                              },
+                            ],
+                            `角色资产 · ${char.name}`
+                          )
+                        }
+                        className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/50 space-y-3 text-xs"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </MotionButton>
-                    </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5 flex-1">
+                            <input
+                              type="text"
+                              value={char.name}
+                              onChange={(e) => updateCharField(char.id, 'name', e.target.value)}
+                              className="studio-input px-2.5 py-1.5 font-bold text-sm w-26"
+                            />
+                            <select
+                              value={resolvedTier}
+                              onChange={(e) =>
+                                updateCharField(char.id, 'tier', e.target.value as DramaCharacterTier)
+                              }
+                              className="studio-input px-2 py-1.5 text-[11px] font-semibold text-[var(--accent)]"
+                            >
+                              <option value="protagonist">核心主角</option>
+                              <option value="major_support">重要配角</option>
+                              <option value="recurring_antagonist">关键反派</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={char.roleTag}
+                              onChange={(e) => updateCharField(char.id, 'roleTag', e.target.value)}
+                              placeholder="角色标签"
+                              className="studio-input px-2.5 py-1.5 text-xs flex-1 min-w-[90px]"
+                            />
+                          </div>
+                          <MotionButton
+                            type="button"
+                            onClick={() => setCharacterAssets((prev) => prev.filter((item) => item.id !== char.id))}
+                            className="min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-rose-600 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </MotionButton>
+                        </div>
 
-                    <div>
-                      <label className="block mb-1 text-[var(--text-muted)]">人设与年龄定位</label>
-                      <input
-                        type="text"
-                        value={char.ageAndArchetype}
-                        onChange={(e) => updateCharField(char.id, 'ageAndArchetype', e.target.value)}
-                        className="studio-input w-full px-3 py-1.5 text-xs"
-                      />
-                    </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                          <div className="sm:col-span-3">
+                            <label className="block mb-1 text-[var(--text-muted)]">人设与年龄定位</label>
+                            <input
+                              type="text"
+                              value={char.ageAndArchetype}
+                              onChange={(e) => updateCharField(char.id, 'ageAndArchetype', e.target.value)}
+                              className="studio-input w-full px-3 py-1.5 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block mb-1 text-[var(--text-muted)]">首登集数</label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={300}
+                              value={char.firstAppearanceEp || 1}
+                              onChange={(e) =>
+                                updateCharField(
+                                  char.id,
+                                  'firstAppearanceEp',
+                                  Math.max(1, Number(e.target.value) || 1)
+                                )
+                              }
+                              className="studio-input w-full px-2.5 py-1.5 text-xs tabular-nums"
+                            />
+                          </div>
+                        </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-[var(--text-muted)]">中文立绘固定词（即梦 / 可灵垫图与描述）</label>
-                        <button
-                          type="button"
-                          onClick={() => copyText(`zh-${char.id}`, char.appearanceZh)}
-                          className="text-[11px] text-[var(--accent)] flex items-center gap-1 cursor-pointer"
-                        >
-                          {copiedKey === `zh-${char.id}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                          <span>复制</span>
-                        </button>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={char.appearanceZh}
-                        onChange={(e) => updateCharField(char.id, 'appearanceZh', e.target.value)}
-                        className="studio-input w-full p-2.5 text-xs leading-relaxed"
-                      />
-                    </div>
+                        <div>
+                          <label className="block mb-1 text-[var(--text-muted)] flex items-center gap-1">
+                            <ShieldAlert className="w-3 h-3 text-[var(--accent)]" />
+                            <span>角色知情权边界（防上帝视角穿帮：明确知道什么 / 尚不知晓谁是幕后黑手）</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={char.epistemicNote || ''}
+                            onChange={(e) => updateCharField(char.id, 'epistemicNote', e.target.value)}
+                            placeholder="例：第1-8集从未见过幕后主使B，遇袭后只能凭现场遗留物追查，严禁脱口喊出B名字..."
+                            className="studio-input w-full px-3 py-1.5 text-xs"
+                          />
+                        </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-[var(--text-muted)]">英文一致性生图 Tag（Midjourney / Runway）</label>
-                        <button
-                          type="button"
-                          onClick={() => copyText(`en-${char.id}`, char.visualPromptEn)}
-                          className="text-[11px] text-[var(--accent)] flex items-center gap-1 cursor-pointer"
-                        >
-                          {copiedKey === `en-${char.id}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                          <span>复制 Tag</span>
-                        </button>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={char.visualPromptEn}
-                        onChange={(e) => updateCharField(char.id, 'visualPromptEn', e.target.value)}
-                        className="studio-input w-full p-2.5 font-mono text-[11px] leading-relaxed"
-                      />
-                    </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[var(--text-muted)]">中文立绘固定词（即梦 / 可灵垫图与描述）</label>
+                            <button
+                              type="button"
+                              onClick={() => copyText(`zh-${char.id}`, char.appearanceZh)}
+                              className="text-[11px] text-[var(--accent)] flex items-center gap-1 cursor-pointer"
+                            >
+                              {copiedKey === `zh-${char.id}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                              <span>复制</span>
+                            </button>
+                          </div>
+                          <textarea
+                            rows={2}
+                            value={char.appearanceZh}
+                            onChange={(e) => updateCharField(char.id, 'appearanceZh', e.target.value)}
+                            className="studio-input w-full p-2.5 text-xs leading-relaxed"
+                          />
+                        </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <div>
-                        <label className="block mb-1 text-[var(--text-muted)]">TTS 配音音色指导</label>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[var(--text-muted)]">英文一致性生图 Tag（Midjourney / Runway）</label>
+                            <button
+                              type="button"
+                              onClick={() => copyText(`en-${char.id}`, char.visualPromptEn)}
+                              className="text-[11px] text-[var(--accent)] flex items-center gap-1 cursor-pointer"
+                            >
+                              {copiedKey === `en-${char.id}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                              <span>复制 Tag</span>
+                            </button>
+                          </div>
+                          <textarea
+                            rows={2}
+                            value={char.visualPromptEn}
+                            onChange={(e) => updateCharField(char.id, 'visualPromptEn', e.target.value)}
+                            className="studio-input w-full p-2.5 font-mono text-[11px] leading-relaxed"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="block mb-1 text-[var(--text-muted)]">TTS 配音音色指导</label>
+                            <input
+                              type="text"
+                              value={char.voicePersona}
+                              onChange={(e) => updateCharField(char.id, 'voicePersona', e.target.value)}
+                              className="studio-input w-full px-2.5 py-1.5 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block mb-1 text-[var(--text-muted)]">标志性道具 / 镜头动作</label>
+                            <input
+                              type="text"
+                              value={char.signatureTrait}
+                              onChange={(e) => updateCharField(char.id, 'signatureTrait', e.target.value)}
+                              className="studio-input w-full px-2.5 py-1.5 text-xs"
+                            />
+                          </div>
+                        </div>
+                      </StaggerItem>
+                    );
+                  })}
+              </StaggerList>
+            )}
+          </div>
+        )}
+
+        {/* Tab 4: Dedicated Key Prop Tracking Manifest (keyPropManifest) */}
+        {activeBibleTab === 'keyprops' && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-[var(--text-muted)]">
+                实时追踪每件核心实体道具的<strong>当前持有人、登场集数、物权转移状态与固定生图外观</strong>，每集生成时强制注入长文本记忆协议，绝不出现“道具在A手里却被B凭空掏出”的穿帮！
+              </p>
+              <MotionButton
+                type="button"
+                onClick={addBlankKeyPropItem}
+                className="min-h-[36px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1 hover:bg-[var(--bg-muted)] cursor-pointer shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>新增关键道具</span>
+              </MotionButton>
+            </div>
+
+            {keyPropManifest.length === 0 ? (
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">
+                暂无关键道具追踪项。点击右上角「AI 推演补全叙事圣经与伏笔台账」自动提取，或在单集剧本创作时自动捕获新道具。
+              </p>
+            ) : (
+              <StaggerList className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {keyPropManifest.map((prop) => (
+                  <StaggerItem
+                    key={prop.id}
+                    className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/55 space-y-2.5 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-1 min-w-[180px]">
+                        <Package className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
                         <input
                           type="text"
-                          value={char.voicePersona}
-                          onChange={(e) => updateCharField(char.id, 'voicePersona', e.target.value)}
-                          className="studio-input w-full px-2.5 py-1.5 text-xs"
+                          value={prop.name}
+                          onChange={(e) => updateKeyPropField(prop.id, 'name', e.target.value)}
+                          placeholder="关键道具名称"
+                          className="studio-input px-2.5 py-1.5 font-bold text-xs flex-1"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={prop.status}
+                          onChange={(e) =>
+                            updateKeyPropField(
+                              prop.id,
+                              'status',
+                              e.target.value as DramaKeyPropStatus
+                            )
+                          }
+                          className="studio-input px-2 py-1 text-[11px] font-semibold text-[var(--accent)]"
+                        >
+                          <option value="持有中">持有中</option>
+                          <option value="已移交">已移交</option>
+                          <option value="遗失/争夺中">遗失/争夺中</option>
+                          <option value="已损毁">已损毁</option>
+                          <option value="已引爆回收">✓ 已引爆回收</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setKeyPropManifest((prev) => prev.filter((p) => p.id !== prop.id))
+                          }
+                          className="min-h-[28px] min-w-[28px] flex items-center justify-center text-[var(--text-muted)] hover:text-rose-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block mb-1 text-[11px] text-[var(--text-muted)]">当前持有人</label>
+                        <input
+                          type="text"
+                          value={prop.currentHolder}
+                          onChange={(e) =>
+                            updateKeyPropField(prop.id, 'currentHolder', e.target.value)
+                          }
+                          placeholder="如：苏晚"
+                          className="studio-input w-full px-2 py-1 text-xs font-medium"
                         />
                       </div>
                       <div>
-                        <label className="block mb-1 text-[var(--text-muted)]">标志性道具 / 镜头动作</label>
+                        <label className="block mb-1 text-[11px] text-[var(--text-muted)]">登场集数</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={300}
+                          value={prop.debutEpisode}
+                          onChange={(e) =>
+                            updateKeyPropField(
+                              prop.id,
+                              'debutEpisode',
+                              Math.max(1, Number(e.target.value) || 1)
+                            )
+                          }
+                          className="studio-input w-full px-2 py-1 text-xs tabular-nums"
+                        />
+                      </div>
+                      <div>
+                        <label className="block mb-1 text-[11px] text-[var(--text-muted)]">流转关键节点</label>
                         <input
                           type="text"
-                          value={char.signatureTrait}
-                          onChange={(e) => updateCharField(char.id, 'signatureTrait', e.target.value)}
-                          className="studio-input w-full px-2.5 py-1.5 text-xs"
+                          value={prop.milestoneEpisodes}
+                          onChange={(e) =>
+                            updateKeyPropField(prop.id, 'milestoneEpisodes', e.target.value)
+                          }
+                          placeholder="第1集→第10集"
+                          className="studio-input w-full px-2 py-1 text-xs"
                         />
                       </div>
                     </div>
+
+                    <input
+                      type="text"
+                      value={prop.visualSpec}
+                      onChange={(e) => updateKeyPropField(prop.id, 'visualSpec', e.target.value)}
+                      placeholder="道具固定视觉外观锚点（供分镜 AI 生图保持前后外观一致）..."
+                      className="studio-input w-full px-2.5 py-1.5 text-xs"
+                    />
+
+                    <textarea
+                      rows={2}
+                      value={prop.narrativeFunction}
+                      onChange={(e) =>
+                        updateKeyPropField(prop.id, 'narrativeFunction', e.target.value)
+                      }
+                      placeholder="该道具在剧情因果推进、身份验证或反转打脸中的核心作用..."
+                      className="studio-input w-full p-2 text-xs leading-relaxed"
+                    />
                   </StaggerItem>
                 ))}
               </StaggerList>
@@ -1619,12 +2379,12 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
           </div>
         )}
 
-        {/* Tab 4: Structured Character Foreshadowing & Key Props Tracking Ledger */}
+        {/* Tab 5: Structured Character Foreshadowing Ledger */}
         {activeBibleTab === 'foreshadow' && (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-[var(--text-muted)]">
-                每一项「未回收/发酵中」的角色伏笔与关键道具都会在后续每一集剧本生成时自动注入 AI 第三层长篇记忆，直到正式回收兑现，彻底杜绝写长后漏收伏笔！
+                每一项「未回收/发酵中」的角色伏笔都会在后续每一集剧本生成时自动注入「逻辑溯源窗口」与长文本记忆，直到正式回收兑现，彻底杜绝写长后漏收伏笔！
               </p>
               <MotionButton
                 type="button"
@@ -1632,13 +2392,13 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
                 className="min-h-[36px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] text-xs font-medium flex items-center gap-1 hover:bg-[var(--bg-muted)] cursor-pointer shrink-0"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>新增伏笔 / 关键道具</span>
+                <span>新增角色伏笔</span>
               </MotionButton>
             </div>
 
             {foreshadowingLedger.length === 0 ? (
               <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">
-                暂无伏笔与关键道具台账。可点击右上角「AI 推演补全叙事圣经与伏笔台账」自动规划，或在生成单集剧本时由系统自动捕获新埋伏笔。
+                暂无角色伏笔台账。可点击右上角「AI 推演补全叙事圣经与伏笔台账」自动规划，或在生成单集剧本时由系统自动捕获新埋伏笔。
               </p>
             ) : (
               <StaggerList className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1774,7 +2534,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
                         onChange={(e) =>
                           updateForeshadowField(item.id, 'visualAnchorNote', e.target.value)
                         }
-                        placeholder="道具固定视觉特征（供生图锁死外观，如：裂纹银色定制耳返，内侧刻缩写 S.W）..."
+                        placeholder="视觉线索/表现形式锚点（如：裂纹银色定制耳返，内侧刻缩写 S.W）..."
                         className="studio-input w-full px-2.5 py-1.5 text-xs"
                       />
 
@@ -2608,8 +3368,11 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
       const updatedProject: DramaProject = {
         ...currentProject,
         preferredScriptFormat: scriptFormat,
+        characterAssets: continuitySync.characterAssets,
         sceneAnchors: continuitySync.sceneAnchors,
         foreshadowingLedger: continuitySync.foreshadowingLedger,
+        keyPropManifest: continuitySync.keyPropManifest,
+        storyArcs: continuitySync.storyArcs,
         episodes: [...otherEps, continuitySync.episode].sort((a, b) => a.index - b.index),
         lastModifiedAt: Date.now(),
       };
@@ -2618,11 +3381,16 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
       setStreamProgress(100);
       setDirectorInput('');
       const syncNotes: string[] = [];
-      if (continuitySync.addedScenesCount > 0) {
-        syncNotes.push(`自动归档 ${continuitySync.addedScenesCount} 处新场景/异态锚点`);
+      if (continuitySync.addedCharactersCount > 0) {
+        syncNotes.push(`自动建档新配角：${continuitySync.addedCharacterNames.join('、')}`);
       }
-      if (continuitySync.updatedForeshadowCount > 0) {
-        syncNotes.push(`同步 ${continuitySync.updatedForeshadowCount} 项伏笔道具状态`);
+      if (continuitySync.addedScenesCount > 0) {
+        syncNotes.push(`归档 ${continuitySync.addedScenesCount} 处场景锚点`);
+      }
+      if (continuitySync.updatedForeshadowCount > 0 || continuitySync.updatedPropsCount > 0) {
+        syncNotes.push(
+          `同步 ${continuitySync.updatedForeshadowCount + continuitySync.updatedPropsCount} 项伏笔/道具`
+        );
       }
       triggerQuickToast(
         `第 ${epNumberToWrite} 集标准剧本已生成${syncNotes.length ? `（${syncNotes.join('，')}）` : ''}！`
@@ -2795,8 +3563,11 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
       const updatedProject: DramaProject = {
         ...currentProject,
         preferredScriptFormat: scriptFormat,
+        characterAssets: continuitySync.characterAssets,
         sceneAnchors: continuitySync.sceneAnchors,
         foreshadowingLedger: continuitySync.foreshadowingLedger,
+        keyPropManifest: continuitySync.keyPropManifest,
+        storyArcs: continuitySync.storyArcs,
         episodes: [...otherEps, continuitySync.episode].sort((a, b) => a.index - b.index),
         lastModifiedAt: Date.now(),
       };
@@ -2804,11 +3575,16 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
       await onSaveProject(updatedProject);
       setStreamProgress(100);
       setDirectorInput('');
+      const fullSyncNotes: string[] = [];
+      if (continuitySync.addedCharactersCount > 0) {
+        fullSyncNotes.push(`自动识别配角：${continuitySync.addedCharacterNames.join('、')}`);
+      }
+      if (continuitySync.addedScenesCount > 0) {
+        fullSyncNotes.push(`归档 ${continuitySync.addedScenesCount} 处场景`);
+      }
       triggerQuickToast(
         `第 ${epNumberToShoot} 集剧本与分镜已同步生成${
-          continuitySync.addedScenesCount > 0
-            ? `（自动归档 ${continuitySync.addedScenesCount} 处场景锚点）`
-            : ''
+          fullSyncNotes.length > 0 ? `（${fullSyncNotes.join('，')}）` : ''
         }！`
       );
     } catch (err: any) {
@@ -2819,7 +3595,7 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
   };
 
   /**
-   * 保存手动编辑后的文学剧本（同时自动扫描新增场头或异态场景，去重填入核心场景视觉锚点库）
+   * 保存手动编辑后的文学剧本（同时自动扫描新增重要配角、新增场头或异态场景，去重填入资产库）
    */
   const handleSaveEditedRawScript = async () => {
     if (!activeEpisode) return;
@@ -2836,6 +3612,7 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
     });
     const updatedProject: DramaProject = {
       ...currentProject,
+      characterAssets: continuitySync.characterAssets,
       sceneAnchors: continuitySync.sceneAnchors,
       episodes: currentProject.episodes.map((e) =>
         e.id === activeEpisode.id ? continuitySync.episode : e
@@ -2845,15 +3622,20 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
     await onSaveProject(updatedProject);
     setDraftScriptText(cleaned);
     setIsEditingRawScript(false);
+    const editNotes: string[] = [];
+    if (continuitySync.addedCharactersCount > 0) {
+      editNotes.push(`自动识别新配角 ${continuitySync.addedCharacterNames.join('、')}`);
+    }
+    if (continuitySync.addedScenesCount > 0) {
+      editNotes.push(`归档 ${continuitySync.addedScenesCount} 处新场景锚点`);
+    }
     triggerQuickToast(
-      continuitySync.addedScenesCount > 0
-        ? `剧本微调已保存，并自动归档 ${continuitySync.addedScenesCount} 处新场景锚点`
-        : '标准剧本微调已保存'
+      editNotes.length > 0 ? `剧本微调已保存（${editNotes.join('，')}）` : '标准剧本微调已保存'
     );
   };
 
   /**
-   * 甲方乱稿上传/粘贴一键规范化洗稿入库（同步提取场景锚点去重入库）
+   * 甲方乱稿上传/粘贴一键规范化洗稿入库（同步提取新配角与场景锚点去重入库）
    */
   const handleAiWashClientScript = async () => {
     if (!messyClientInput.trim()) return;
@@ -2908,8 +3690,11 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
       const otherEps = (currentProject.episodes || []).filter((e) => e.index !== epIdx);
       await onSaveProject({
         ...currentProject,
+        characterAssets: continuitySync.characterAssets,
         sceneAnchors: continuitySync.sceneAnchors,
         foreshadowingLedger: continuitySync.foreshadowingLedger,
+        keyPropManifest: continuitySync.keyPropManifest,
+        storyArcs: continuitySync.storyArcs,
         episodes: [...otherEps, continuitySync.episode].sort((a, b) => a.index - b.index),
         lastModifiedAt: Date.now(),
       });
@@ -2917,11 +3702,16 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
       setIsWashModalOpen(false);
       setMessyClientInput('');
       setViewMode('script');
+      const washNotes: string[] = [];
+      if (continuitySync.addedCharactersCount > 0) {
+        washNotes.push(`识别配角 ${continuitySync.addedCharacterNames.join('、')}`);
+      }
+      if (continuitySync.addedScenesCount > 0) {
+        washNotes.push(`归档 ${continuitySync.addedScenesCount} 处场景锚点`);
+      }
       triggerQuickToast(
         `甲方来稿已清洗为规范第 ${epIdx} 集剧本${
-          continuitySync.addedScenesCount > 0
-            ? `（自动归档 ${continuitySync.addedScenesCount} 处场景锚点）`
-            : ''
+          washNotes.length > 0 ? `（${washNotes.join('，')}）` : ''
         }！`
       );
     } catch (err: any) {
@@ -3077,27 +3867,57 @@ ${charContext}
   const upcomingEpisodeIndex = activeEpisode ? nextEpisodeNumber : targetEpisodeIndex;
   const memoryDiagnostics = getContinuityMemoryDiagnostics(currentProject, upcomingEpisodeIndex);
 
-  const handleToggleForeshadowStatus = async (
-    foreshadowId: string,
-    nextStatus: DramaForeshadowStatus
+  /**
+   * 点击「结构化看板」或「逻辑溯源窗口」任意卡片时，同时插入当前集执导输入框 + 当前集结构化分集大纲 (episodePlan)
+   */
+  const handleInsertDirectiveToCurrentOutline = async (
+    directiveText: string,
+    toastLabel: string
   ) => {
-    const updatedLedger = (currentProject.foreshadowingLedger || []).map((f) =>
-      f.id === foreshadowId
-        ? {
-            ...f,
-            status: nextStatus,
-            resolvedEpisode: nextStatus === 'resolved' ? upcomingEpisodeIndex : undefined,
-          }
-        : f
-    );
+    const cleanDirective = directiveText.trim();
+    if (!cleanDirective) return;
+
+    setDirectorInput((prev) => {
+      if (prev.includes(cleanDirective)) return prev;
+      return prev.trim() ? `${prev.trim()}\n${cleanDirective}` : cleanDirective;
+    });
+
+    const targetEp = upcomingEpisodeIndex;
+    const existingPlans = [...(currentProject.episodePlan || [])];
+    const planIdx = existingPlans.findIndex((p) => p.episodeIndex === targetEp);
+    let updatedPlans: DramaEpisodePlanItem[];
+
+    if (planIdx >= 0) {
+      const currentPlan = existingPlans[planIdx];
+      const existingNote = currentPlan.foreshadowingOrProps || '';
+      const nextNote = existingNote.includes(cleanDirective)
+        ? existingNote
+        : existingNote
+        ? `${existingNote}；${cleanDirective}`
+        : cleanDirective;
+      updatedPlans = existingPlans.map((p, idx) =>
+        idx === planIdx ? { ...p, foreshadowingOrProps: nextNote } : p
+      );
+    } else {
+      updatedPlans = [
+        ...existingPlans,
+        {
+          episodeIndex: targetEp,
+          title: `第${targetEp}集筹备节点`,
+          beatSummary: cleanDirective,
+          foreshadowingOrProps: cleanDirective,
+          hookType:
+            targetEp === currentProject.paywallEpisodeIndex ? '核心付费卡点' : '免费强留存',
+        },
+      ].sort((a, b) => a.episodeIndex - b.episodeIndex);
+    }
+
     await onSaveProject({
       ...currentProject,
-      foreshadowingLedger: updatedLedger,
+      episodePlan: updatedPlans,
       lastModifiedAt: Date.now(),
     });
-    triggerQuickToast(
-      nextStatus === 'resolved' ? '已将该伏笔/关键道具标记为已回收' : '已恢复为待回收活跃伏笔'
-    );
+    triggerQuickToast(`${toastLabel}（已同步写入第 ${targetEp} 集大纲与执笔台）`);
   };
 
   const handleQuickChangeProjectDuration = async (newDurationSec: number) => {
@@ -3242,49 +4062,66 @@ ${charContext}
           </div>
         </div>
 
-        {/* Locked Character Visual Reference */}
+        {/* Locked Protagonists & Auto-Recognized Supporting Cast Reference */}
         {currentProject.characterAssets.length > 0 && (
           <div className="studio-card p-4 space-y-2.5 text-xs">
-            <h3 className="font-bold text-[var(--text-primary)]">角色立绘固定词速查</h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="font-bold text-[var(--text-primary)] tabular-nums">
+                主角与重要配角速查 ({currentProject.characterAssets.length})
+              </h3>
+              <span className="text-[10px] text-[var(--text-muted)]">新配角自动入库</span>
+            </div>
             <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-              {currentProject.characterAssets.map((c) => (
-                <div
-                  key={c.id}
-                  onContextMenu={(e) =>
-                    openContextMenu(
-                      e,
-                      [
-                        {
-                          id: 'c-zh',
-                          label: '复制中文立绘词',
-                          icon: <Copy className="w-3.5 h-3.5" />,
-                          onSelect: () => handleCopy(`side-${c.id}`, c.appearanceZh, `已复制「${c.name}」中文外观`),
-                        },
-                        {
-                          id: 'c-en',
-                          label: '复制英文生图 Tag',
-                          icon: <Copy className="w-3.5 h-3.5" />,
-                          onSelect: () => handleCopy(`side-en-${c.id}`, c.visualPromptEn, `已复制「${c.name}」英文 Tag`),
-                        },
-                      ],
-                      c.name
-                    )
-                  }
-                  className="p-2.5 studio-muted space-y-1 cursor-context-menu"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-[var(--text-primary)]">{c.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(`side-${c.id}`, c.appearanceZh)}
-                      className="text-[11px] text-[var(--accent)] cursor-pointer"
-                    >
-                      {copiedId === `side-${c.id}` ? '已复制' : '复制外观'}
-                    </button>
+              {currentProject.characterAssets.map((c, idx) => {
+                const tier = c.tier || inferCharacterTier(c.roleTag, idx);
+                return (
+                  <div
+                    key={c.id}
+                    onContextMenu={(e) =>
+                      openContextMenu(
+                        e,
+                        [
+                          {
+                            id: 'c-zh',
+                            label: '复制中文立绘词',
+                            icon: <Copy className="w-3.5 h-3.5" />,
+                            onSelect: () => handleCopy(`side-${c.id}`, c.appearanceZh, `已复制「${c.name}」中文外观`),
+                          },
+                          {
+                            id: 'c-en',
+                            label: '复制英文生图 Tag',
+                            icon: <Copy className="w-3.5 h-3.5" />,
+                            onSelect: () => handleCopy(`side-en-${c.id}`, c.visualPromptEn, `已复制「${c.name}」英文 Tag`),
+                          },
+                        ],
+                        c.name
+                      )
+                    }
+                    className="p-2.5 studio-muted space-y-1 cursor-context-menu"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="font-semibold text-[var(--text-primary)] truncate">
+                          {c.name}
+                        </span>
+                        <span className="text-[10px] text-[var(--text-muted)] shrink-0">
+                          {tier === 'protagonist' ? '主角' : tier === 'recurring_antagonist' ? '反派' : '配角'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`side-${c.id}`, c.appearanceZh)}
+                        className="text-[11px] text-[var(--accent)] shrink-0 cursor-pointer"
+                      >
+                        {copiedId === `side-${c.id}` ? '已复制' : '复制外观'}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-[var(--text-secondary)] line-clamp-2">
+                      {c.appearanceZh || c.ageAndArchetype}
+                    </p>
                   </div>
-                  <p className="text-[11px] text-[var(--text-secondary)] line-clamp-2">{c.appearanceZh}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -3559,6 +4396,33 @@ ${charContext}
                   <p className="text-[var(--text-secondary)] leading-relaxed">{activeEpisode.endingCliffhanger}</p>
                 </div>
               </div>
+
+              {activeEpisode.logicAudit &&
+                (activeEpisode.logicAudit.spatialAndMotiveBridge ||
+                  activeEpisode.logicAudit.povKnowledgeBoundary) && (
+                  <div className="p-3.5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[11px] leading-relaxed">
+                    {activeEpisode.logicAudit.spatialAndMotiveBridge && (
+                      <div>
+                        <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                          🔗 本集时空/动机因果转场桥接：
+                        </span>
+                        <p className="text-[var(--text-secondary)]">
+                          {activeEpisode.logicAudit.spatialAndMotiveBridge}
+                        </p>
+                      </div>
+                    )}
+                    {activeEpisode.logicAudit.povKnowledgeBoundary && (
+                      <div>
+                        <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                          🛡️ 角色知情权防上帝视角自检：
+                        </span>
+                        <p className="text-[var(--text-secondary)]">
+                          {activeEpisode.logicAudit.povKnowledgeBoundary}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
             </section>
 
             {/* STAGE 1 (Default): Clean Industry Standard Literary Script (△ Triangle / Minimalist Manju / Bilingual) */}
@@ -4027,162 +4891,23 @@ ${charContext}
             </div>
           </div>
 
-          {/* 4-Layer Long-Series Continuity & Foreshadowing Memory Hub */}
-          <div className="p-3.5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/60 space-y-3 text-xs">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setIsMemoryHubOpen((v) => !v)}
-                className="flex items-center gap-1.5 font-bold text-[var(--text-primary)] cursor-pointer text-left"
-              >
-                <Link2 className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
-                <span>
-                  4 层金字塔跨集长篇记忆与伏笔防丢中枢（支撑 60~120+ 集零断片衔接）
-                </span>
-                {isMemoryHubOpen ? (
-                  <ChevronUp className="w-3.5 h-3.5 text-[var(--text-muted)]" />
-                ) : (
-                  <ChevronDown className="w-3.5 h-3.5 text-[var(--text-muted)]" />
-                )}
-              </button>
+          {/* 1. 逻辑溯源窗口（前5集节点回顾 + 遗留伏笔/持有道具注入 + 防上帝视角/因果转场编剧 SKILL 护栏） */}
+          <DramaLogicProvenanceWindow
+            project={currentProject}
+            upcomingEpisodeIndex={upcomingEpisodeIndex}
+            diagnostics={memoryDiagnostics}
+            onSaveProject={onSaveProject}
+            onInsertDirectiveToOutline={handleInsertDirectiveToCurrentOutline}
+          />
 
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--text-muted)] tabular-nums">
-                <span>
-                  {memoryDiagnostics.hasNarrativeBible ? '✓ 叙事圣经已挂载' : '○ 大纲骨架挂载'}
-                </span>
-                <span aria-hidden="true">·</span>
-                <span>前情全集记忆 {memoryDiagnostics.totalPriorWrittenCount} 集</span>
-                <span aria-hidden="true">·</span>
-                <span>待回收伏笔/道具 {memoryDiagnostics.activeForeshadows.length} 项</span>
-                {memoryDiagnostics.resolvedForeshadowCount > 0 && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span>已回收 {memoryDiagnostics.resolvedForeshadowCount} 项</span>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {isMemoryHubOpen && (
-              <div className="space-y-3 pt-1 border-t border-[var(--border-subtle)]">
-                {/* Continuity Coverage Summary */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[11px]">
-                  <div className="p-2.5 rounded-xl studio-muted space-y-1">
-                    <div className="font-semibold text-[var(--text-primary)]">
-                      📚 当前第 {upcomingEpisodeIndex} 集注入的前序记忆深度：
-                    </div>
-                    <p className="text-[var(--text-secondary)] leading-relaxed">
-                      {upcomingEpisodeIndex === 1
-                        ? '首集开篇模式：直接挂载全剧叙事圣经 + 第 1 集黄金前 3 秒钩子 + 后 3 集细纲护栏。'
-                        : memoryDiagnostics.totalPriorWrittenCount === 0
-                        ? '跳集筹备模式：自动挂载全剧叙事圣经 + 前序全部已规划分集细纲脉络 + 后 3 集细纲护栏。'
-                        : `${
-                            memoryDiagnostics.compressedEarlyRange
-                              ? `远期 ${memoryDiagnostics.compressedEarlyRange} + `
-                              : ''
-                          }近期紧邻 ${memoryDiagnostics.detailedRecentEpisodes.length} 集完整冲突状态 + 上一集末尾 10 行原词画面强咬合。`}
-                    </p>
-                  </div>
-
-                  {memoryDiagnostics.prevEpisodeTailLines ? (
-                    <div className="p-2.5 rounded-xl studio-muted space-y-1">
-                      <div className="font-semibold text-[var(--text-primary)]">
-                        🎬 上一集末尾画面原词咬合锚点（防断片/防重演）：
-                      </div>
-                      <p className="font-mono text-[10px] text-[var(--text-muted)] line-clamp-3 whitespace-pre-line leading-relaxed">
-                        {memoryDiagnostics.prevEpisodeTailLines}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="p-2.5 rounded-xl studio-muted space-y-1">
-                      <div className="font-semibold text-[var(--text-primary)]">
-                        🧭 后 3 集细纲前瞻防抢跑护栏：
-                      </div>
-                      <p className="text-[var(--text-secondary)] leading-relaxed">
-                        {memoryDiagnostics.upcomingPlanWindow.length > 0
-                          ? memoryDiagnostics.upcomingPlanWindow
-                              .map((p) => `第${p.episodeIndex}集《${p.title}》`)
-                              .join(' → ')
-                          : '可在「立项与立绘」继续生成后续分集细纲，为长篇连载提供前瞻路标。'}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Due-Now & Active Foreshadowing / Key Prop Quick Action List */}
-                {memoryDiagnostics.activeForeshadows.length > 0 && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="font-semibold text-[var(--text-primary)]">
-                        🗝️ 全局待回收伏笔与关键道具池（AI 每集自动追踪，点击可指定在第 {upcomingEpisodeIndex} 集推进或回收）：
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
-                      {memoryDiagnostics.activeForeshadows.map((f) => {
-                        const isDueNow = memoryDiagnostics.dueNowForeshadows.some(
-                          (d) => d.id === f.id
-                        );
-                        return (
-                          <div
-                            key={f.id}
-                            className={`p-2.5 rounded-xl border flex items-start justify-between gap-2 text-[11px] ${
-                              isDueNow
-                                ? 'border-amber-500/50 bg-amber-500/5'
-                                : 'border-[var(--border-subtle)] bg-[var(--bg-surface)]'
-                            }`}
-                          >
-                            <div className="min-w-0 space-y-0.5">
-                              <div className="font-semibold text-[var(--text-primary)] truncate">
-                                {isDueNow ? '⚠️ 本集预定节点 · ' : ''}
-                                {f.name}
-                                <span className="font-normal text-[var(--text-muted)]">
-                                  {' '}
-                                  · {f.category}（第{f.plantedEpisode}集埋
-                                  {f.expectedPayoffEpisode ? ` → 预计${f.expectedPayoffEpisode}` : ''}）
-                                </span>
-                              </div>
-                              {f.payoffNote && (
-                                <p className="text-[var(--text-secondary)] line-clamp-1">
-                                  {f.payoffNote}
-                                </p>
-                              )}
-                            </div>
-
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                disabled={isGenerating}
-                                onClick={() => {
-                                  const directive = `【本集重点回收/推进伏笔道具】：「${f.name}」（关联：${
-                                    f.ownerOrRelation || '核心角色'
-                                  }${f.payoffNote ? `，回收设计：${f.payoffNote}` : ''}）`;
-                                  setDirectorInput((prev) =>
-                                    prev.trim() ? `${prev.trim()}\n${directive}` : directive
-                                  );
-                                  triggerQuickToast(`已将「${f.name}」加入第 ${upcomingEpisodeIndex} 集执导指令`);
-                                }}
-                                className="px-2 py-1 rounded-lg studio-muted hover:bg-[var(--accent-soft)] text-[var(--accent)] font-medium whitespace-nowrap cursor-pointer"
-                              >
-                                + 本集回收
-                              </button>
-                              <button
-                                type="button"
-                                title="手动标记为已回收"
-                                onClick={() => handleToggleForeshadowStatus(f.id, 'resolved')}
-                                className="px-1.5 py-1 rounded-lg border border-[var(--border-subtle)] hover:border-emerald-500/50 text-[var(--text-muted)] hover:text-emerald-600 cursor-pointer"
-                              >
-                                ✓
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          {/* 2. 实时结构化看板（角色伏笔清单 · 关键道具库 · 多线叙事进度表 · 剧情节奏热力图 · 重要配角库，支持点击直接插入当前大纲） */}
+          <DramaStructuredKanban
+            project={currentProject}
+            targetEpisodeIndex={upcomingEpisodeIndex}
+            onSaveProject={onSaveProject}
+            onInsertToCurrentOutline={handleInsertDirectiveToCurrentOutline}
+            onJumpToSetup={onGoToDramaSetup}
+          />
 
           {/* Clickable Next Episode Viral Hooks */}
           {activeEpisode?.nextEpisodeHooks && activeEpisode.nextEpisodeHooks.length > 0 && (

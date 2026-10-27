@@ -13,6 +13,8 @@ import {
   Flame,
   CheckCircle2,
   ArrowLeft,
+  Download,
+  Upload,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import {
@@ -20,6 +22,7 @@ import {
   DramaProject,
   HOT_DRAMA_TRACKS,
 } from '../types';
+import { inferCharacterTier } from '../services/dramaPromptEngine';
 import { generateUUID } from '../utils/uuid';
 import {
   ModalPortal,
@@ -38,19 +41,37 @@ export function convertCandidateToDramaProject(candidate: DramaCandidatePlan): D
   const matchedTrack =
     HOT_DRAMA_TRACKS.find((t) => t.id === candidate.trackId) || HOT_DRAMA_TRACKS[0];
 
-  const seededCharacters = (candidate.seedCharacters || []).map((c) => ({
+  const seededCharacters = (candidate.seedCharacters || []).map((c, idx) => ({
     id: generateUUID(),
     name: c.name,
+    tier: c.tier || inferCharacterTier(c.roleTag, idx),
     roleTag: c.roleTag,
+    firstAppearanceEp: c.firstAppearanceEp || 1,
     ageAndArchetype: c.ageAndArchetype,
     appearanceZh: c.appearanceZh,
     visualPromptEn: c.visualPromptEn,
     voicePersona: c.voicePersona,
     signatureTrait: c.signatureTrait,
+    epistemicNote: c.epistemicNote,
   }));
 
   const seededForeshadows = (candidate.foreshadowingLedger || []).map((f) => ({
     ...f,
+    id: generateUUID(),
+  }));
+
+  const seededStoryArcs = (candidate.storyArcs || []).map((arc) => ({
+    ...arc,
+    id: generateUUID(),
+  }));
+
+  const seededPlotRhythm = (candidate.plotRhythm || []).map((pt) => ({
+    ...pt,
+    id: generateUUID(),
+  }));
+
+  const seededKeyProps = (candidate.keyPropManifest || []).map((kp) => ({
+    ...kp,
     id: generateUUID(),
   }));
 
@@ -73,6 +94,9 @@ export function convertCandidateToDramaProject(candidate: DramaCandidatePlan): D
     golden3SecHook: candidate.golden3SecHook,
     synopsis: candidate.synopsis,
     narrativeBible: candidate.narrativeBible ? { ...candidate.narrativeBible } : undefined,
+    storyArcs: seededStoryArcs,
+    plotRhythm: seededPlotRhythm,
+    keyPropManifest: seededKeyProps,
     foreshadowingLedger: seededForeshadows,
     characterAssets: seededCharacters,
     sceneAnchors: [],
@@ -427,6 +451,7 @@ interface DramaCandidateVaultSectionProps {
   onPromoteCandidate: (candidate: DramaCandidatePlan) => void;
   onDeleteCandidate: (id: string) => void;
   onGoToConsultant?: () => void;
+  onOpenBackupRestore?: (mode: 'backup' | 'restore') => void;
 }
 
 export const DramaCandidateVaultSection: React.FC<DramaCandidateVaultSectionProps> = ({
@@ -434,6 +459,7 @@ export const DramaCandidateVaultSection: React.FC<DramaCandidateVaultSectionProp
   onPromoteCandidate,
   onDeleteCandidate,
   onGoToConsultant,
+  onOpenBackupRestore,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
   const [searchQuery, setSearchQuery] = useState('');
@@ -502,15 +528,38 @@ export const DramaCandidateVaultSection: React.FC<DramaCandidateVaultSectionProp
           })}
         </div>
 
-        <div className="relative sm:w-72">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="搜索备选剧名、原始构想或画风..."
-            className="studio-input w-full min-h-[42px] pl-9 pr-3.5 py-2 text-xs sm:text-sm"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenBackupRestore && (
+            <>
+              <MotionButton
+                type="button"
+                onClick={() => onOpenBackupRestore('backup')}
+                className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5 text-[var(--accent)]" />
+                <span>备份导出（全选/单选）</span>
+              </MotionButton>
+              <MotionButton
+                type="button"
+                onClick={() => onOpenBackupRestore('restore')}
+                className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <Upload className="w-3.5 h-3.5 text-[var(--accent)]" />
+                <span>导入恢复</span>
+              </MotionButton>
+            </>
+          )}
+
+          <div className="relative sm:w-64 flex-1 sm:flex-initial">
+            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="搜索备选剧名、原始构想或画风..."
+              className="studio-input w-full min-h-[42px] pl-9 pr-3.5 py-2 text-xs sm:text-sm"
+            />
+          </div>
         </div>
       </div>
 

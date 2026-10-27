@@ -42,6 +42,9 @@ import {
   dbDelete,
   dbClear,
   STORE_NAMES,
+  BUILTIN_CONFIG_ID,
+  persistApiConfigs,
+  persistUiSettings,
   saveGlobalSkill,
   deleteGlobalSkill,
   resetGlobalSkills,
@@ -149,10 +152,18 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
 
   useEffect(() => {
     loadXpHistory();
+  }, []);
+
+  useEffect(() => {
     populateCachedModels('writer', uiSettings.writerApiCfgId);
     populateCachedModels('reroll', uiSettings.rerollApiCfgId);
     populateCachedModels('inspiration', uiSettings.inspirationApiCfgId);
-  }, []);
+  }, [
+    configs,
+    uiSettings.writerApiCfgId,
+    uiSettings.rerollApiCfgId,
+    uiSettings.inspirationApiCfgId,
+  ]);
 
   const loadXpHistory = async () => {
     const list = await dbGetAll<HistoryItem>(STORE_NAMES.XP_PREFERENCES_HISTORY);
@@ -176,16 +187,23 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
       setter(targetCfg.modelsCache);
     } else if (targetCfg.provider === 'built-in-gemini') {
       setter([
-        { id: 'gemini-3.6-flash', name: 'Gemini Flash (内置极速)' },
-        { id: 'gemini-3.6-pro', name: 'Gemini Pro (内置深度)' },
+        { id: 'gemini-3.6-flash', name: '[⚡默认] Gemini 3.6 Flash' },
+        { id: 'gemini-3.1-pro-preview', name: '[🧠强推] Gemini 3.1 Pro' },
+        { id: 'gemini-3.1-flash-lite', name: '[🚀极速] Gemini 3.1 Flash Lite' },
       ]);
     }
   };
 
   const updateUiSettingsPartial = async (patch: Partial<UiSettings>) => {
-    const updated = { ...uiSettings, ...patch };
-    setUiSettings(updated);
-    await dbPut(STORE_NAMES.UI_SETTINGS, { id: 'current', ...updated });
+    let nextSnapshot: UiSettings | null = null;
+    setUiSettings((prev) => {
+      const updated = { ...prev, ...patch };
+      nextSnapshot = updated;
+      return updated;
+    });
+    if (nextSnapshot) {
+      await persistUiSettings(nextSnapshot);
+    }
   };
 
   // Apply 1-Click Domestic Direct Preset
@@ -243,7 +261,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
     }
 
     setConfigs(updatedConfigs);
-    await dbPut(STORE_NAMES.CONFIGS, { id: 'all', data: updatedConfigs });
+    await persistApiConfigs(updatedConfigs);
 
     if (applyToAllTasks) {
       const primaryModel = savedCfg.modelsCache?.[0]?.id || 'deepseek-chat';
@@ -319,7 +337,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
         setter(models);
         const updated = configs.map((c) => (c.id === targetCfg.id ? { ...c, modelsCache: models } : c));
         setConfigs(updated);
-        await dbPut(STORE_NAMES.CONFIGS, { id: 'all', data: updated });
+        await persistApiConfigs(updated);
       }
     } catch (err: any) {
       setCfgStatus({ type: 'info', text: err.message });
@@ -331,7 +349,27 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
   const handleDeleteSavedConfig = async (id: string) => {
     const updated = configs.filter((c) => c.id !== id);
     setConfigs(updated);
-    await dbPut(STORE_NAMES.CONFIGS, { id: 'all', data: updated });
+    await persistApiConfigs(updated);
+
+    const fallbackCfg = updated[0];
+    const fallbackModel = fallbackCfg?.modelsCache?.[0]?.id || 'gemini-3.6-flash';
+    const patch: Partial<UiSettings> = {};
+    if (uiSettings.writerApiCfgId === id) {
+      patch.writerApiCfgId = fallbackCfg?.id || BUILTIN_CONFIG_ID;
+      patch.writerApiModel = fallbackModel;
+    }
+    if (uiSettings.rerollApiCfgId === id) {
+      patch.rerollApiCfgId = fallbackCfg?.id || BUILTIN_CONFIG_ID;
+      patch.rerollApiModel = fallbackModel;
+    }
+    if (uiSettings.inspirationApiCfgId === id) {
+      patch.inspirationApiCfgId = fallbackCfg?.id || BUILTIN_CONFIG_ID;
+      patch.inspirationApiModel = fallbackModel;
+    }
+    if (Object.keys(patch).length > 0) {
+      await updateUiSettingsPartial(patch);
+    }
+
     setConfirmDeleteCfgId(null);
   };
 
@@ -541,13 +579,19 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
           }
         }
       }
-      if (imported.uiSettings) {
-        await dbPut(STORE_NAMES.UI_SETTINGS, imported.uiSettings);
-      }
       if (imported.localStorageData && typeof imported.localStorageData === 'object') {
         Object.entries(imported.localStorageData).forEach(([k, v]) => {
           if (typeof v === 'string') localStorage.setItem(k, v);
         });
+      }
+      if (Array.isArray(imported[STORE_NAMES.CONFIGS])) {
+        const allCfgsEntry = imported[STORE_NAMES.CONFIGS].find((item: any) => item?.id === 'all');
+        if (allCfgsEntry && Array.isArray(allCfgsEntry.data)) {
+          await persistApiConfigs(allCfgsEntry.data);
+        }
+      }
+      if (imported.uiSettings) {
+        await persistUiSettings(imported.uiSettings);
       }
 
       setPendingRestoreFile(null);
@@ -771,10 +815,43 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
 
             {/* Saved Lines List */}
             <div className="pt-3 border-t border-[var(--border-subtle)] space-y-2">
-              <p className="text-xs font-semibold text-[var(--text-primary)]">已保存的线路列表 ({configs.length})</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-[var(--text-primary)]">
+                  已保存的线路列表 ({configs.length})
+                </p>
+                <span className="text-[11px] text-[var(--text-muted)]">
+                  已开启持久化记忆：您选定的 API 与模型在刷新或重启浏览器后始终自动保持生效
+                </span>
+              </div>
               <StaggerList className="divide-y divide-[var(--border-subtle)] border border-[var(--border-subtle)] rounded-xl">
                 {configs.map((c) => {
                   const isBuiltIn = c.provider === 'built-in-gemini';
+                  const isAllTasksActive =
+                    uiSettings.writerApiCfgId === c.id &&
+                    uiSettings.rerollApiCfgId === c.id &&
+                    uiSettings.inspirationApiCfgId === c.id;
+                  const isPartiallyActive =
+                    !isAllTasksActive &&
+                    (uiSettings.writerApiCfgId === c.id ||
+                      uiSettings.rerollApiCfgId === c.id ||
+                      uiSettings.inspirationApiCfgId === c.id);
+
+                  const applyLineGlobally = async () => {
+                    const keepExistingModel =
+                      uiSettings.writerApiCfgId === c.id && uiSettings.writerApiModel
+                        ? uiSettings.writerApiModel
+                        : c.modelsCache?.[0]?.id || (isBuiltIn ? 'gemini-3.6-flash' : 'deepseek-chat');
+                    await updateUiSettingsPartial({
+                      writerApiCfgId: c.id,
+                      writerApiModel: keepExistingModel,
+                      rerollApiCfgId: c.id,
+                      rerollApiModel: keepExistingModel,
+                      inspirationApiCfgId: c.id,
+                      inspirationApiModel: keepExistingModel,
+                    });
+                    triggerQuickToast(`已锁定「${c.name} (${keepExistingModel})」为全局永久默认线路`);
+                  };
+
                   return (
                     <StaggerItem
                       key={c.id}
@@ -784,18 +861,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                             id: 'set-primary-line',
                             label: '设为全环节主力线路',
                             icon: <ShieldCheck className="w-3.5 h-3.5" />,
-                            onSelect: async () => {
-                              const primaryModel = c.modelsCache?.[0]?.id || 'gemini-3.6-flash';
-                              await updateUiSettingsPartial({
-                                writerApiCfgId: c.id,
-                                writerApiModel: primaryModel,
-                                rerollApiCfgId: c.id,
-                                rerollApiModel: primaryModel,
-                                inspirationApiCfgId: c.id,
-                                inspirationApiModel: primaryModel,
-                              });
-                              triggerQuickToast(`已将「${c.name}」设为全局主力线路`);
-                            },
+                            onSelect: applyLineGlobally,
                           },
                           ...(!isBuiltIn
                             ? [
@@ -823,50 +889,76 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                             : []),
                         ])
                       }
-                      className="p-3 flex flex-wrap items-center justify-between gap-2 text-xs hover:bg-[var(--bg-muted)]/50 transition-colors"
+                      className={`p-3 flex flex-wrap items-center justify-between gap-2 text-xs transition-colors ${
+                        isAllTasksActive
+                          ? 'bg-[var(--accent-soft)]/50'
+                          : 'hover:bg-[var(--bg-muted)]/50'
+                      }`}
                     >
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex flex-wrap items-center gap-2">
                         <span className="font-semibold text-[var(--text-primary)]">{c.name}</span>
-                        <span className="text-[var(--text-muted)] font-mono ml-2">
+                        {isAllTasksActive && (
+                          <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold text-[11px]">
+                            当前全局生效 · {uiSettings.writerApiModel}
+                          </span>
+                        )}
+                        {isPartiallyActive && (
+                          <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 font-semibold text-[11px]">
+                            部分环节使用中
+                          </span>
+                        )}
+                        <span className="text-[var(--text-muted)] font-mono">
                           {isBuiltIn ? '内置预览线路' : c.baseUrl}
                         </span>
                       </div>
 
-                      {!isBuiltIn && (
-                        <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {!isAllTasksActive && (
                           <MotionButton
                             type="button"
-                            onClick={() => {
-                              setEditingCfgId(c.id);
-                              setCfgName(c.name);
-                              setCfgProvider(c.provider);
-                              setCfgBaseUrl(c.baseUrl);
-                              setCfgApiKey(c.apiKey);
-                            }}
-                            className="min-h-[34px] px-2.5 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)]"
+                            onClick={applyLineGlobally}
+                            className="min-h-[34px] px-2.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--bg-surface)] hover:bg-[var(--accent-soft)] text-[var(--text-primary)] font-medium cursor-pointer"
                           >
-                            编辑
+                            设为全局默认
                           </MotionButton>
+                        )}
 
-                          {confirmDeleteCfgId === c.id ? (
+                        {!isBuiltIn && (
+                          <>
                             <MotionButton
                               type="button"
-                              onClick={() => handleDeleteSavedConfig(c.id)}
-                              className="min-h-[34px] px-2.5 rounded-lg bg-rose-600 text-white font-semibold"
+                              onClick={() => {
+                                setEditingCfgId(c.id);
+                                setCfgName(c.name);
+                                setCfgProvider(c.provider);
+                                setCfgBaseUrl(c.baseUrl);
+                                setCfgApiKey(c.apiKey);
+                              }}
+                              className="min-h-[34px] px-2.5 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] cursor-pointer"
                             >
-                              确认删除
+                              编辑
                             </MotionButton>
-                          ) : (
-                            <MotionButton
-                              type="button"
-                              onClick={() => setConfirmDeleteCfgId(c.id)}
-                              className="min-h-[34px] px-2.5 rounded-lg text-rose-600 hover:bg-rose-500/10"
-                            >
-                              删除
-                            </MotionButton>
-                          )}
-                        </div>
-                      )}
+
+                            {confirmDeleteCfgId === c.id ? (
+                              <MotionButton
+                                type="button"
+                                onClick={() => handleDeleteSavedConfig(c.id)}
+                                className="min-h-[34px] px-2.5 rounded-lg bg-rose-600 text-white font-semibold cursor-pointer"
+                              >
+                                确认删除
+                              </MotionButton>
+                            ) : (
+                              <MotionButton
+                                type="button"
+                                onClick={() => setConfirmDeleteCfgId(c.id)}
+                                className="min-h-[34px] px-2.5 rounded-lg text-rose-600 hover:bg-rose-500/10 cursor-pointer"
+                              >
+                                删除
+                              </MotionButton>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </StaggerItem>
                   );
                 })}
@@ -876,11 +968,30 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
 
           {/* Per-Task Model Assignment (Supports BOTH Dropdown & Manual Custom Model ID!) */}
           <section className="studio-card p-5 sm:p-7 space-y-5">
-            <div className="space-y-1 border-b border-[var(--border-subtle)] pb-3">
-              <h2 className="text-base font-bold text-[var(--text-primary)]">分环节独立模型调配</h2>
-              <p className="text-xs text-[var(--text-muted)]">
-                例如：可用 DeepSeek-R1 负责「灵感与大纲推演」，用文笔细腻的 DeepSeek-V3 负责「章节正文扩写」。支持下拉选择或直接手填模型 ID（如火山方舟接入点 <code className="font-mono">ep-xxxx</code>）。
-              </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-3">
+              <div className="space-y-1">
+                <h2 className="text-base font-bold text-[var(--text-primary)]">分环节独立模型调配（自动永久保存）</h2>
+                <p className="text-xs text-[var(--text-muted)]">
+                  任何下拉切换或手动输入的模型 ID（如 <code className="font-mono">deepseek-chat</code> 或火山方舟接入点 <code className="font-mono">ep-xxxx</code>）都会立即写入本地持久库，刷新网页绝不重置。
+                </p>
+              </div>
+              <MotionButton
+                type="button"
+                onClick={async () => {
+                  const cfgId = uiSettings.writerApiCfgId || BUILTIN_CONFIG_ID;
+                  const modelId = uiSettings.writerApiModel || 'gemini-3.6-flash';
+                  await updateUiSettingsPartial({
+                    rerollApiCfgId: cfgId,
+                    rerollApiModel: modelId,
+                    inspirationApiCfgId: cfgId,
+                    inspirationApiModel: modelId,
+                  });
+                  triggerQuickToast(`已将全部创作环节统一同步为：${modelId}`);
+                }}
+                className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium shrink-0 self-start sm:self-auto cursor-pointer"
+              >
+                按「正文扩写」一键同步至全部环节
+              </MotionButton>
             </div>
 
             {[

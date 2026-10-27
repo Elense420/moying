@@ -23,6 +23,7 @@ import { OfflineIndicator } from './components/PWAInstallButton';
 import { DramaLibraryView, DramaRadarView } from './components/DramaLibraryAndRadarView';
 import { DramaSetupView, DramaWriterView } from './components/DramaStudioView';
 import { convertCandidateToDramaProject } from './components/DramaCandidateVaultView';
+import { DramaBackupRestoreModal } from './components/DramaBackupRestoreModal';
 import {
   PageTransition,
   SNAPPY_EASE,
@@ -58,20 +59,29 @@ import {
   dbDelete,
   STORE_NAMES,
   BUILTIN_CONFIG_ID,
-  DEFAULT_BUILTIN_CONFIG,
+  UI_SETTINGS_STORAGE_KEY,
+  readCachedConfigsSync,
+  readCachedUiSettingsSync,
+  persistApiConfigs,
+  persistUiSettings,
   getGlobalSkills,
   getDramaCandidates,
   saveDramaCandidatesBatch,
   updateDramaCandidate,
   deleteDramaCandidate,
+  restoreDramaBackupData,
 } from './services/db';
 import { generateUUID } from './utils/uuid';
 
 function StudioWorkspace() {
-  const [activeTab, setActiveTabState] = useState<string>('novels');
+  const initialCachedUi = readCachedUiSettingsSync();
+  const [activeTab, setActiveTabState] = useState<string>(
+    initialCachedUi.activeTrack === 'drama' ? 'drama-library' : 'novels'
+  );
   const [isHydratingDb, setIsHydratingDb] = useState<boolean>(true);
   const [isSwitchingView, setIsSwitchingView] = useState<boolean>(false);
   const routeTimerRef = useRef<number | null>(null);
+  const hasHydratedDbRef = useRef<boolean>(false);
 
   const globalActivity = useGlobalActivity();
   const { openContextMenu, triggerQuickToast } = useContextMenu();
@@ -90,23 +100,14 @@ function StudioWorkspace() {
   const [currentDramaEpisodeIndex, setCurrentDramaEpisodeIndex] = useState<number>(1);
   const [presetDramaBeat, setPresetDramaBeat] = useState<string>('');
   const [pendingDeleteDrama, setPendingDeleteDrama] = useState<DramaProject | null>(null);
+  const [dramaBackupModal, setDramaBackupModal] = useState<{
+    isOpen: boolean;
+    mode: 'backup' | 'restore';
+  }>({ isOpen: false, mode: 'backup' });
 
-  // Shared Engine & Appearance Settings
-  const [configs, setConfigs] = useState<ApiConfig[]>([DEFAULT_BUILTIN_CONFIG]);
-  const [uiSettings, setUiSettings] = useState<UiSettings>({
-    theme: 'ink',
-    mode: 'light',
-    chapterFontSize: '1.08rem',
-    chapterFontFamily: 'serif',
-    studioBrandName: '墨映工坊',
-    activeTrack: 'novel',
-    writerApiCfgId: BUILTIN_CONFIG_ID,
-    writerApiModel: 'gemini-3.6-flash',
-    rerollApiCfgId: BUILTIN_CONFIG_ID,
-    rerollApiModel: 'gemini-3.6-flash',
-    inspirationApiCfgId: BUILTIN_CONFIG_ID,
-    inspirationApiModel: 'gemini-3.6-flash',
-  });
+  // Shared Engine & Appearance Settings (hydrated synchronously from localStorage mirror first)
+  const [configs, setConfigs] = useState<ApiConfig[]>(() => readCachedConfigsSync());
+  const [uiSettings, setUiSettings] = useState<UiSettings>(() => readCachedUiSettingsSync());
 
   // Modals (Novel Track)
   const [bookDetailTarget, setBookDetailTarget] = useState<Book | null>(null);
@@ -194,20 +195,65 @@ function StudioWorkspace() {
       setDramaCandidates(loadedCandidates);
       setGlobalSkills(loadedSkills);
 
-      if (configsWrapper && Array.isArray(configsWrapper.data)) {
-        setConfigs(configsWrapper.data);
-      }
-
-      if (loadedUi) {
-        const normalizedUi: UiSettings = {
-          ...loadedUi,
-          studioBrandName: loadedUi.studioBrandName || '墨映工坊',
-          activeTrack: loadedUi.activeTrack || 'novel',
-        };
-        setUiSettings((prev) => ({ ...prev, ...normalizedUi }));
-        if (normalizedUi.activeTrack === 'drama') {
-          setActiveTabState('drama-library');
+      let resolvedConfigs = readCachedConfigsSync();
+      if (configsWrapper && Array.isArray(configsWrapper.data) && configsWrapper.data.length > 0) {
+        resolvedConfigs = [...configsWrapper.data];
+        if (!resolvedConfigs.some((c) => c.id === BUILTIN_CONFIG_ID)) {
+          resolvedConfigs.unshift(readCachedConfigsSync()[0]);
         }
+      }
+      setConfigs(resolvedConfigs);
+      await persistApiConfigs(resolvedConfigs);
+
+      // Prefer localStorage mirror if present, otherwise use IndexedDB record; never clobber user's last saved API/model
+      const hasLocalMirror = Boolean(localStorage.getItem(UI_SETTINGS_STORAGE_KEY));
+      const baseUiSource = hasLocalMirror
+        ? { ...(loadedUi || {}), ...readCachedUiSettingsSync() }
+        : loadedUi || readCachedUiSettingsSync();
+
+      const validCfgIds = new Set(resolvedConfigs.map((c) => c.id));
+      const resolveValidCfgId = (cfgId: string | null | undefined) => {
+        if (cfgId && validCfgIds.has(cfgId)) return cfgId;
+        return resolvedConfigs[0]?.id || BUILTIN_CONFIG_ID;
+      };
+
+      const resolvedWriterCfgId = resolveValidCfgId(baseUiSource.writerApiCfgId);
+      const resolvedRerollCfgId = resolveValidCfgId(baseUiSource.rerollApiCfgId);
+      const resolvedInspCfgId = resolveValidCfgId(baseUiSource.inspirationApiCfgId);
+
+      const getFallbackModel = (cfgId: string, savedModel?: string) => {
+        if (savedModel && savedModel.trim()) {
+          // Only keep savedModel if cfgId didn't get forced to fallback from a deleted config
+          const requestedCfgWasDeleted =
+            (cfgId === resolvedWriterCfgId && baseUiSource.writerApiCfgId && !validCfgIds.has(baseUiSource.writerApiCfgId)) ||
+            (cfgId === resolvedRerollCfgId && baseUiSource.rerollApiCfgId && !validCfgIds.has(baseUiSource.rerollApiCfgId)) ||
+            (cfgId === resolvedInspCfgId && baseUiSource.inspirationApiCfgId && !validCfgIds.has(baseUiSource.inspirationApiCfgId));
+          if (!requestedCfgWasDeleted) {
+            return savedModel.trim();
+          }
+        }
+        const cfgObj = resolvedConfigs.find((c) => c.id === cfgId);
+        return cfgObj?.modelsCache?.[0]?.id || 'gemini-3.6-flash';
+      };
+
+      const normalizedUi: UiSettings = {
+        ...readCachedUiSettingsSync(),
+        ...baseUiSource,
+        studioBrandName: baseUiSource.studioBrandName || '墨映工坊',
+        activeTrack: baseUiSource.activeTrack === 'drama' ? 'drama' : 'novel',
+        writerApiCfgId: resolvedWriterCfgId,
+        writerApiModel: getFallbackModel(resolvedWriterCfgId, baseUiSource.writerApiModel),
+        rerollApiCfgId: resolvedRerollCfgId,
+        rerollApiModel: getFallbackModel(resolvedRerollCfgId, baseUiSource.rerollApiModel),
+        inspirationApiCfgId: resolvedInspCfgId,
+        inspirationApiModel: getFallbackModel(resolvedInspCfgId, baseUiSource.inspirationApiModel),
+      };
+
+      setUiSettings(normalizedUi);
+      await persistUiSettings(normalizedUi);
+
+      if (normalizedUi.activeTrack === 'drama') {
+        setActiveTabState((prev) => (prev.startsWith('drama-') ? prev : 'drama-library'));
       }
 
       if (loadedXp?.content) {
@@ -242,12 +288,14 @@ function StudioWorkspace() {
     } catch (err) {
       console.error('App init error:', err);
     } finally {
+      hasHydratedDbRef.current = true;
       endActivity();
       setIsHydratingDb(false);
     }
   };
 
-  // Sync theme, dark mode, brand title, and manuscript font scale to DOM root
+  // Sync theme, dark mode, brand title, and manuscript font scale to DOM root;
+  // IMPORTANT: Only write uiSettings to DB AFTER initial hydration finishes so mount defaults never overwrite saved API/model!
   useEffect(() => {
     const root = document.documentElement;
     if (uiSettings.mode === 'dark') {
@@ -259,7 +307,9 @@ function StudioWorkspace() {
     root.style.setProperty('--chapter-content-font-size', uiSettings.chapterFontSize || '1.08rem');
     const brand = (uiSettings.studioBrandName || '墨映工坊').trim() || '墨映工坊';
     document.title = `${brand} · 小说自由创作与AI漫剧剧本中枢`;
-    dbPut(STORE_NAMES.UI_SETTINGS, { id: 'current', ...uiSettings }).catch(() => {});
+    if (hasHydratedDbRef.current) {
+      persistUiSettings(uiSettings).catch(() => {});
+    }
   }, [uiSettings]);
 
   // Switch between Personal Novel Track and Commercial AI Comic-Drama Track
@@ -506,6 +556,31 @@ function StudioWorkspace() {
     triggerQuickToast('已从备选项目计划目录移除');
   };
 
+  const handleRestoreDramaBackup = async (params: {
+    projectsToRestore: DramaProject[];
+    candidatesToRestore: DramaCandidatePlan[];
+    conflictMode: 'overwrite' | 'clone';
+  }) => {
+    const endRestore = beginGlobalActivity('正在恢复漫剧项目与备选计划...');
+    try {
+      const result = await restoreDramaBackupData(params);
+      setDramaProjects(result.allProjects);
+      setDramaCandidates(result.allCandidates);
+      if (result.allProjects.length > 0) {
+        const refreshedCurrent = currentDramaProject
+          ? result.allProjects.find((p) => p.id === currentDramaProject.id) || result.allProjects[0]
+          : result.allProjects[0];
+        setCurrentDramaProject(refreshedCurrent);
+        localStorage.setItem('currentDramaId', refreshedCurrent.id);
+      }
+      triggerQuickToast(
+        `恢复成功：导入 ${result.restoredProjectsCount} 部漫剧项目、${result.restoredCandidatesCount} 套备选计划`
+      );
+    } finally {
+      endRestore();
+    }
+  };
+
   const handleEditDramaSetup = (project: DramaProject) => {
     setCurrentDramaProject(project);
     localStorage.setItem('currentDramaId', project.id);
@@ -749,6 +824,7 @@ function StudioWorkspace() {
                   onDeleteDrama={(proj) => setPendingDeleteDrama(proj)}
                   onPromoteCandidate={handlePromoteDramaCandidate}
                   onDeleteCandidate={handleDeleteDramaCandidate}
+                  onOpenBackupRestore={(mode) => setDramaBackupModal({ isOpen: true, mode })}
                 />
               )}
 
@@ -761,6 +837,7 @@ function StudioWorkspace() {
                   onAutoArchiveCandidates={handleAutoArchiveDramaCandidates}
                   onPromoteCandidate={handlePromoteDramaCandidate}
                   onDeleteCandidate={handleDeleteDramaCandidate}
+                  onOpenBackupRestore={(mode) => setDramaBackupModal({ isOpen: true, mode })}
                 />
               )}
 
@@ -777,6 +854,7 @@ function StudioWorkspace() {
                   onAutoArchiveCandidates={handleAutoArchiveDramaCandidates}
                   onPromoteCandidate={handlePromoteDramaCandidate}
                   onDeleteCandidate={handleDeleteDramaCandidate}
+                  onOpenBackupRestore={(mode) => setDramaBackupModal({ isOpen: true, mode })}
                 />
               )}
 
@@ -951,6 +1029,16 @@ function StudioWorkspace() {
           </AnimatePresence>
         </ModalPortal>
       )}
+
+      {/* Drama Projects & Candidate Plans Backup/Restore Modal */}
+      <DramaBackupRestoreModal
+        isOpen={dramaBackupModal.isOpen}
+        initialMode={dramaBackupModal.mode}
+        projects={dramaProjects}
+        candidates={dramaCandidates}
+        onClose={() => setDramaBackupModal((prev) => ({ ...prev, isOpen: false }))}
+        onRestoreConfirm={handleRestoreDramaBackup}
+      />
     </div>
   );
 }

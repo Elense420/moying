@@ -509,10 +509,15 @@ export const HOT_DRAMA_TRACKS: DramaTrackPreset[] = [
   },
 ];
 
+export type DramaCharacterTier = 'protagonist' | 'major_support' | 'recurring_antagonist';
+
 export interface DramaCharacterAsset {
   id: string;
   name: string;
-  roleTag: string; // 男主 / 女主 / 核心反派 / 关键配角
+  roleTag: string; // 男主 / 女主 / 核心反派 / 重要配角
+  tier?: DramaCharacterTier; // 角色层级：核心主角 / 重要配角 / 阶段或常驻反派
+  firstAppearanceEp?: number; // 首次登场集数（随剧本推进自动识别归档新配角时记录）
+  epistemicNote?: string; // 角色认知边界/当前知情范围备忘（防上帝视角穿帮）
   ageAndArchetype: string;
   appearanceZh: string; // 中文固定外貌服化道特征
   visualPromptEn: string; // MJ / 即梦 / 可灵 一致性英文生图 Tag
@@ -545,9 +550,87 @@ export interface DramaForeshadowItem {
   ownerOrRelation: string; // 关联角色或关系（如：苏晚 ↔ 陆执）
   plantedEpisode: number; // 首次埋设集数
   expectedPayoffEpisode?: string; // 预计发酵或回收的集数区间（如：第10集初揭 / 第28集引爆）
+  resolvedEpisode?: number; // 实际完成回收的集数
   status: DramaForeshadowStatus; // planted=待回收, fermenting=发酵推进中, resolved=已回收
   visualAnchorNote?: string; // 关键道具的固定视觉外观描述（供分镜生图锁死道具长相）
   payoffNote?: string; // 回收方式设计或实际回收记录
+}
+
+/**
+ * 多线叙事结构条目（主线 / 情感副线 / 人物成长线 / 悬疑暗线）
+ */
+export type DramaStoryArcType = '主线' | '情感副线' | '暗线/反派线' | '群像支线';
+
+export interface DramaStoryArc {
+  id: string;
+  title: string; // 故事线名称（如：极寒安全屋生存反杀主线 / 沈寂×苏晚前世救赎暗线）
+  arcType: DramaStoryArcType;
+  spanEpisodes: string; // 覆盖集数区间（如：第1-60集 / 第6-28集）
+  progressPct: number; // 当前推进完成度 0 ~ 100
+  currentStage: string; // 当前阶段（如：危机铺垫 / 冲突激化 / 中盘反转 / 终局收束）
+  coreConflictAndGoal: string; // 核心矛盾推进路径与终极闭环目标
+}
+
+/**
+ * 剧情节奏点与张力梯度条目（驱动节奏热力图与卡点编排）
+ */
+export type DramaRhythmTier =
+  | '蓄力铺垫'
+  | '拉扯升级'
+  | '爽点小高潮'
+  | '付费大卡点'
+  | '终局大爆发';
+
+export interface DramaPlotRhythmPoint {
+  id: string;
+  anchorEpisode: number; // 锚定核心集数（如 1, 3, 10, 20, 40）
+  episodeRange: string; // 集数标注（如：第1集 / 第9-10集）
+  rhythmTier: DramaRhythmTier; // 蓄力铺垫 / 拉扯升级 / 爽点小高潮 / 付费大卡点 / 终局大爆发
+  tensionScore: number; // 情绪与冲突烈度 1 ~ 100（用于渲染节奏热力图）
+  beatGoal: string; // 该节奏点的爆发事件、爽点兑现或断章悬念要求
+}
+
+/**
+ * 关键道具追踪表条目（Key Prop Manifest：实时追踪持有者、流转历史与生图外观）
+ */
+export type DramaKeyPropStatus =
+  | '持有中'
+  | '已移交'
+  | '遗失/争夺中'
+  | '已损毁'
+  | '已引爆回收';
+
+export interface DramaKeyPropItem {
+  id: string;
+  name: string; // 关键道具名（如：钛合金安全屋总控密钥 / 刻有S.W的碎裂耳返）
+  currentHolder: string; // 当前持有角色或存放地点（如：沈寂随身携带 / 锁在反派书房暗格）
+  debutEpisode: number; // 首次登场集数
+  milestoneEpisodes?: string; // 关键流转或发挥作用集数（如：第1集绑定 → 第12集升级）
+  visualSpec: string; // 固定视觉外观特征（供后期AI分镜锁死道具造型）
+  narrativeFunction: string; // 核心剧情作用、信息媒介功能或触发限制
+  status: DramaKeyPropStatus; // 持有中 / 已移交 / 遗失/争夺中 / 已损毁 / 已引爆回收
+}
+
+/**
+ * 漫剧专属逻辑与叙事护栏 SKILL（解决跨场瞬移、动机缺失与主角开上帝视角穿帮）
+ */
+export interface DramaScreenplaySkill {
+  id: string;
+  name: string;
+  badge: string;
+  description: string;
+  promptDirective: string;
+  enabled: boolean;
+  isBuiltin?: boolean;
+}
+
+/**
+ * 单集剧本生成时的前置逻辑与角色认知边界自检记录
+ */
+export interface DramaEpisodeLogicAudit {
+  spatialAndMotiveBridge: string; // 本集承接上集及场次切换的时空与行为动机因果链
+  povKnowledgeBoundary: string; // 角色认知隔离核查（明确哪些幕后信息主角尚不知情，或通过何种物理证据获知）
+  characterStateAndPropSnapshot?: string; // 本集结束时核心角色状态与持有道具快照（供后5集长文本记忆回溯）
 }
 
 export interface DramaNarrativeBible {
@@ -624,6 +707,8 @@ export interface DramaEpisode {
   targetDurationSec: number; // 默认 90~120秒
   coreConflictSummary: string; // 本集核心爽点/冲突梗概
   continuitySummary?: string; // 长篇跨集记忆专用高密度状态账本（含剧情结果+关系进展+道具/伏笔变化）
+  characterStateSnapshot?: string; // 本集结束时核心出场角色的位置、伤势/情绪状态与持有道具快照（供后5集回顾）
+  logicAudit?: DramaEpisodeLogicAudit; // 本集时空因果过渡与反上帝视角知情权核查记录
   opening3SecHook: string; // 黄金前3秒画面与台词钩子
   endingCliffhanger: string; // 集末留存断章悬念钩子
   scriptFormat?: DramaScriptFormat; // 甲方标准文学剧本格式流派
@@ -639,6 +724,7 @@ export interface DramaEpisodePlanItem {
   title: string;
   beatSummary: string;
   hookType: '免费强留存' | '小高潮爽点' | '核心付费卡点' | '反转高潮';
+  tensionScore?: number; // 单集预期张力值 1-100（用于节奏热力图联动）
   foreshadowingOrProps?: string; // 本集埋设或回收的伏笔、关键道具、核心线索备注
 }
 
@@ -662,7 +748,12 @@ export interface DramaProject {
   golden3SecHook: string; // 开篇第一集前3秒生死钩子
   synopsis: string; // 全剧起承转合商业大纲
   narrativeBible?: DramaNarrativeBible; // 全剧叙事架构圣经（故事线/主线/支线/框架结构/剧情节奏/底层规则/人物弧光）
-  foreshadowingLedger?: DramaForeshadowItem[]; // 全局角色伏笔与关键道具追踪回收台账
+  storyArcs?: DramaStoryArc[]; // 结构化多线叙事表（核心主线 / 情感副线 / 人物成长线 / 悬疑暗线及进度）
+  plotRhythm?: DramaPlotRhythmPoint[]; // 结构化节奏点与张力梯度表（驱动剧情节奏热力图）
+  keyPropManifest?: DramaKeyPropItem[]; // 关键道具追踪表（持有者、流转节点、视觉锚点与当前状态）
+  foreshadowingLedger?: DramaForeshadowItem[]; // 全局角色伏笔与暗线追踪回收台账
+  dramaSkills?: DramaScreenplaySkill[]; // 漫剧剧本逻辑护栏 SKILL 列表（反上帝视角、时空因果桥接等）
+  customProvenanceNote?: string; // 创作者在「逻辑溯源」窗口维护的跨集认知边界与关键上下文锁定备注
   characterAssets: DramaCharacterAsset[];
   sceneAnchors: DramaSceneAnchor[];
   episodePlan: DramaEpisodePlanItem[];
@@ -696,10 +787,14 @@ export interface DramaCandidatePlan {
   golden3SecHook: string;
   synopsis: string;
   narrativeBible?: DramaNarrativeBible;
+  storyArcs?: DramaStoryArc[];
+  plotRhythm?: DramaPlotRhythmPoint[];
+  keyPropManifest?: DramaKeyPropItem[];
   foreshadowingLedger?: DramaForeshadowItem[];
   seedCharacters: DramaCharacterAsset[];
   adoptedProjectId?: string;
   adoptedAt?: number;
 }
+
 
 

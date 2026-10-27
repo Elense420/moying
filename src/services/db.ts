@@ -1,4 +1,5 @@
 import { Book, ApiConfig, InspirationRecord, UiSettings, HistoryItem, NovelSkill, DEFAULT_PRESET_SKILLS, DramaProject, DramaCandidatePlan } from '../types';
+import { generateUUID } from '../utils/uuid';
 
 const DB_NAME = 'aiNovelistDB';
 const DB_VERSION = 4;
@@ -110,6 +111,9 @@ export async function dbClear(storeName: string): Promise<void> {
 
 export const BUILTIN_CONFIG_ID = 'builtin-gemini-line';
 
+export const UI_SETTINGS_STORAGE_KEY = 'moying_ui_settings_v1';
+export const CONFIGS_STORAGE_KEY = 'moying_api_configs_v1';
+
 export const DEFAULT_BUILTIN_CONFIG: ApiConfig = {
   id: BUILTIN_CONFIG_ID,
   name: 'Gemini 官方内置线路',
@@ -123,33 +127,104 @@ export const DEFAULT_BUILTIN_CONFIG: ApiConfig = {
   ],
 };
 
+export const DEFAULT_UI_SETTINGS: UiSettings = {
+  theme: 'ink',
+  mode: 'light',
+  chapterFontSize: '1.08rem',
+  chapterFontFamily: 'serif',
+  studioBrandName: '墨映工坊',
+  activeTrack: 'novel',
+  writerApiCfgId: BUILTIN_CONFIG_ID,
+  writerApiModel: 'gemini-3.6-flash',
+  rerollApiCfgId: BUILTIN_CONFIG_ID,
+  rerollApiModel: 'gemini-3.6-flash',
+  inspirationApiCfgId: BUILTIN_CONFIG_ID,
+  inspirationApiModel: 'gemini-3.6-flash',
+};
+
+export function readCachedConfigsSync(): ApiConfig[] {
+  try {
+    const raw = localStorage.getItem(CONFIGS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const list = [...parsed];
+        if (!list.some((c) => c && c.id === BUILTIN_CONFIG_ID)) {
+          list.unshift(DEFAULT_BUILTIN_CONFIG);
+        }
+        return list;
+      }
+    }
+  } catch {
+    // ignore storage parse error
+  }
+  return [DEFAULT_BUILTIN_CONFIG];
+}
+
+export function readCachedUiSettingsSync(): UiSettings {
+  try {
+    const raw = localStorage.getItem(UI_SETTINGS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          ...DEFAULT_UI_SETTINGS,
+          ...parsed,
+          studioBrandName: parsed.studioBrandName || DEFAULT_UI_SETTINGS.studioBrandName,
+          activeTrack: parsed.activeTrack === 'drama' ? 'drama' : 'novel',
+        };
+      }
+    }
+  } catch {
+    // ignore storage parse error
+  }
+  return { ...DEFAULT_UI_SETTINGS };
+}
+
+export async function persistApiConfigs(configs: ApiConfig[]): Promise<void> {
+  const normalized = [...configs];
+  if (!normalized.some((c) => c.id === BUILTIN_CONFIG_ID)) {
+    normalized.unshift(DEFAULT_BUILTIN_CONFIG);
+  }
+  try {
+    localStorage.setItem(CONFIGS_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+    // ignore quota error
+  }
+  await dbPut(STORE_NAMES.CONFIGS, { id: 'all', data: normalized });
+}
+
+export async function persistUiSettings(settings: UiSettings): Promise<void> {
+  const payload = { id: 'current', ...settings };
+  try {
+    localStorage.setItem(UI_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore quota error
+  }
+  await dbPut(STORE_NAMES.UI_SETTINGS, payload);
+}
+
 export async function seedInitialDataIfEmpty() {
   const existingBooks = await dbGetAll<Book>(STORE_NAMES.BOOKS);
   const existingConfigsWrapper = await dbGet<{ id: string; data: ApiConfig[] }>(STORE_NAMES.CONFIGS, 'all');
 
   let configs = existingConfigsWrapper?.data || [];
+  if (configs.length === 0) {
+    const cachedConfigs = readCachedConfigsSync();
+    if (cachedConfigs.length > 0) {
+      configs = cachedConfigs;
+    }
+  }
 
   if (!configs.some((c) => c.id === BUILTIN_CONFIG_ID)) {
     configs.unshift(DEFAULT_BUILTIN_CONFIG);
-    await dbPut(STORE_NAMES.CONFIGS, { id: 'all', data: configs });
   }
+  await persistApiConfigs(configs);
 
   const existingUiSettings = await dbGet<UiSettings>(STORE_NAMES.UI_SETTINGS, 'current');
   if (!existingUiSettings) {
-    const defaultUi: UiSettings = {
-      theme: 'ink',
-      mode: 'light',
-      chapterFontSize: '1.08rem',
-      studioBrandName: '墨映工坊',
-      activeTrack: 'novel',
-      writerApiCfgId: BUILTIN_CONFIG_ID,
-      writerApiModel: 'gemini-3.6-flash',
-      rerollApiCfgId: BUILTIN_CONFIG_ID,
-      rerollApiModel: 'gemini-3.6-flash',
-      inspirationApiCfgId: BUILTIN_CONFIG_ID,
-      inspirationApiModel: 'gemini-3.6-flash',
-    };
-    await dbPut(STORE_NAMES.UI_SETTINGS, { id: 'current', ...defaultUi });
+    const cachedUi = readCachedUiSettingsSync();
+    await persistUiSettings(cachedUi);
   }
 
   if (existingBooks.length === 0) {
@@ -327,11 +402,111 @@ export async function seedInitialDataIfEmpty() {
       targetAudience: '18-35岁短视频受众，热衷强视觉反差、极寒生存爽感与智商在线不圣母剧情',
       golden3SecHook: '【第1秒】零下72℃冻死惨状瞳孔特写骤然倒流 → 【第2秒】手机屏幕弹出距离血月冰封倒计时72:00:00 → 【第3秒】男主抓起桌上一摞房产证直接砸向典当行柜台：“全折现，今天之内！”',
       synopsis: '第一阶段（1-9集免费留存）：男主沈寂重生回末世前三天，闪电套现百亿改造顶层军工级安全屋、搬空三座冷链仓储。极寒降临当日，绿茶前女友与势利物业上门道德绑架索要物资，被电网与防爆门精准反制。\n第二阶段（10-12集付费卡点）：血月异变升级，第一条《小区夜间生存规则》浮现在所有幸存者窗户上，门外响起模仿熟人求救的诡异敲门声。\n第三阶段（13-40集高潮）：规则怪谈与极寒怪物双重进化，沈寂解锁安全屋地下机甲能源核心，建立末世唯一秩序交易站。',
+      storyArcs: [
+        {
+          id: 'arc-main-1',
+          title: '百亿恒温堡垒反杀与末世秩序重建主线',
+          arcType: '主线',
+          spanEpisodes: '第1-40集',
+          progressPct: 12,
+          currentStage: '72小时闪电套现囤货期',
+          coreConflictAndGoal: '沈寂凭前世记忆在血月冰封前锁死百亿物资与军工堡垒，层层反制前女友、物业恶霸与财阀掠夺团，最终揭开血月极寒源头。',
+        },
+        {
+          id: 'arc-mystery-2',
+          title: '血月《小区夜间生存规则》异变暗线',
+          arcType: '暗线/反派线',
+          spanEpisodes: '第8-40集',
+          progressPct: 5,
+          currentStage: '血色极光提前12小时异动',
+          coreConflictAndGoal: '极寒比前世提前12小时降临，楼道每逢午夜浮现血字规则与伪人敲门声，追踪规则背后的地底实验残骸。',
+        },
+        {
+          id: 'arc-sub-3',
+          title: '前世叛徒群像破防与邻居人性博弈支线',
+          arcType: '群像支线',
+          spanEpisodes: '第2-22集',
+          progressPct: 15,
+          currentStage: '断绝关系与首轮封门对峙',
+          coreConflictAndGoal: '林薇薇、富二代赵凯与势利物业从高高在上嘲讽到零下70度跪求半块饼干，制造强反差爽感。',
+        },
+      ],
+      plotRhythm: [
+        {
+          id: 'rhy-1',
+          anchorEpisode: 1,
+          episodeRange: '第1集',
+          rhythmTier: '爽点小高潮',
+          tensionScore: 88,
+          beatGoal: '重生72小时倒计时炸屏，百亿股权当场折现，血色极光提前12小时降临。',
+        },
+        {
+          id: 'rhy-2',
+          anchorEpisode: 3,
+          episodeRange: '第3集',
+          rhythmTier: '爽点小高潮',
+          tensionScore: 82,
+          beatGoal: '暴雪封城断电，室内红油火锅配室外冰封惨状，高压电弧防爆门首轮教做人。',
+        },
+        {
+          id: 'rhy-3',
+          anchorEpisode: 10,
+          episodeRange: '第10集',
+          rhythmTier: '付费大卡点',
+          tensionScore: 98,
+          beatGoal: '核心付费卡点：窗户浮现第一条血字生存规则，门外传来已死邻居的诡异求救声。',
+        },
+        {
+          id: 'rhy-4',
+          anchorEpisode: 20,
+          episodeRange: '第20集',
+          rhythmTier: '终局大爆发',
+          tensionScore: 92,
+          beatGoal: '解锁安全屋地底重装能源核心，反杀外部武装搜刮队并发现前世真凶线索。',
+        },
+      ],
+      keyPropManifest: [
+        {
+          id: 'prop-watch',
+          name: '战术血月倒计时机械表',
+          currentHolder: '沈寂（左腕随身佩戴）',
+          debutEpisode: 1,
+          milestoneEpisodes: '第1集觉醒 → 第10集感应规则波动',
+          visualSpec: '哑光钛金属表壳，深黑表盘带暗红数字倒计时微光，镜面有一道细微冰裂纹',
+          narrativeFunction: '精准锚定极寒异变剩余时间，且能在伪人靠近十米内产生高频蜂鸣预警。',
+          status: '持有中',
+        },
+        {
+          id: 'prop-bunker-key',
+          name: '28层军工堡垒虹膜总控终端',
+          currentHolder: '沈寂（仅本人虹膜绑定）',
+          debutEpisode: 1,
+          milestoneEpisodes: '第1集安装 → 第3集开启电网 → 第20集解锁地下能源舱',
+          visualSpec: '嵌于黑曜石墙面的军工级全息战术控制屏，带红色物理防爆闭锁拨杆',
+          narrativeFunction: '统管三层防弹窗、门外高压电弧防御网与室内独立核能供暖循环。',
+          status: '持有中',
+        },
+      ],
+      foreshadowingLedger: [
+        {
+          id: 'fs-aurora',
+          name: '极寒血色极光比前世提前12小时',
+          category: '核心剧情暗线',
+          ownerOrRelation: '沈寂 ↔ 未知规则源头',
+          plantedEpisode: 1,
+          expectedPayoffEpisode: '第10集 / 第24集',
+          status: 'planted',
+          payoffNote: '说明本世并非单纯时间重置，还有另一名神秘高维观察者或重生者介入导致灾变加速。',
+        },
+      ],
       characterAssets: [
         {
           id: 'char-shenji',
           name: '沈寂',
           roleTag: '核心男主',
+          tier: 'protagonist',
+          firstAppearanceEp: 1,
+          epistemicNote: '拥有前世前10天极寒记忆，但尚不知晓本世极寒为何提前12小时及幕后财阀实验真相。',
           ageAndArchetype: '26岁 · 重生清醒狠人 · 顶级安全屋主理人',
           appearanceZh: '黑发利落微分碎盖，眼神冷冽如刀，鼻梁高挺，常穿黑色高领战术冲锋衣或室内深灰羊绒衫，左腕戴一块战术倒计时机械表。',
           visualPromptEn: '26yo handsome Chinese man, sharp cold dark eyes, neat black layered short hair, wearing sleek black tactical turtleneck jacket, matte silver countdown watch on left wrist, anime semi-realistic cel-shaded lighting, 9:16 vertical framing',
@@ -342,6 +517,9 @@ export async function seedInitialDataIfEmpty() {
           id: 'char-linwan',
           name: '林薇薇',
           roleTag: '势利前女友（前期反派）',
+          tier: 'recurring_antagonist',
+          firstAppearanceEp: 1,
+          epistemicNote: '第1集以为沈寂卖房是破产发疯，完全不知道极寒末世即将降临。',
           ageAndArchetype: '24岁 · 精致利己绿茶',
           appearanceZh: '栗色大波浪卷发，妆容精致（后期冻得嘴唇发紫、睫毛结霜），身穿白色名媛貂皮大衣，戴珍珠耳环。',
           visualPromptEn: '24yo young woman, chestnut wavy long hair, wearing luxury white faux-fur coat, frost on eyelashes in blizzard, desperate expression, high contrast comic drama style',
@@ -660,12 +838,83 @@ export async function saveDramaCandidatesBatch(
   return getDramaCandidates();
 }
 
-export async function updateDramaCandidate(candidate: DramaCandidatePlan): Promise<void> {
+export async function updateDramaCandidate(
+  candidate: DramaCandidatePlan
+): Promise<DramaCandidatePlan[]> {
   await dbPut(STORE_NAMES.DRAMA_CANDIDATES, candidate);
+  return getDramaCandidates();
 }
 
-export async function deleteDramaCandidate(id: string): Promise<void> {
+export async function deleteDramaCandidate(id: string): Promise<DramaCandidatePlan[]> {
   await dbDelete(STORE_NAMES.DRAMA_CANDIDATES, id);
+  return getDramaCandidates();
 }
+
+export async function restoreDramaBackupData(params: {
+  projectsToRestore: DramaProject[];
+  candidatesToRestore: DramaCandidatePlan[];
+  conflictMode: 'overwrite' | 'clone';
+}): Promise<{
+  allProjects: DramaProject[];
+  allCandidates: DramaCandidatePlan[];
+  restoredProjectsCount: number;
+  restoredCandidatesCount: number;
+}> {
+  const { projectsToRestore, candidatesToRestore, conflictMode } = params;
+  const now = Date.now();
+
+  let restoredProjectsCount = 0;
+  for (const rawProj of projectsToRestore) {
+    if (!rawProj || !rawProj.title) continue;
+    const finalProj: DramaProject =
+      conflictMode === 'clone'
+        ? {
+            ...rawProj,
+            id: generateUUID(),
+            title: `${rawProj.title}（恢复副本）`,
+            lastModifiedAt: now,
+          }
+        : {
+            ...rawProj,
+            id: rawProj.id || generateUUID(),
+            lastModifiedAt: rawProj.lastModifiedAt || now,
+          };
+    await dbPut(STORE_NAMES.DRAMA_PROJECTS, finalProj);
+    restoredProjectsCount += 1;
+  }
+
+  let restoredCandidatesCount = 0;
+  for (const rawCand of candidatesToRestore) {
+    if (!rawCand || !rawCand.title) continue;
+    const finalCand: DramaCandidatePlan =
+      conflictMode === 'clone'
+        ? {
+            ...rawCand,
+            id: generateUUID(),
+            title: `${rawCand.title}（恢复副本）`,
+            createdAt: now,
+          }
+        : {
+            ...rawCand,
+            id: rawCand.id || generateUUID(),
+            createdAt: rawCand.createdAt || now,
+          };
+    await dbPut(STORE_NAMES.DRAMA_CANDIDATES, finalCand);
+    restoredCandidatesCount += 1;
+  }
+
+  const [allProjects, allCandidates] = await Promise.all([
+    dbGetAll<DramaProject>(STORE_NAMES.DRAMA_PROJECTS),
+    getDramaCandidates(),
+  ]);
+
+  return {
+    allProjects,
+    allCandidates,
+    restoredProjectsCount,
+    restoredCandidatesCount,
+  };
+}
+
 
 
