@@ -20,6 +20,10 @@ import {
   Feather,
   Copy,
   FolderTree,
+  Layers,
+  ListOrdered,
+  Award,
+  AlertTriangle,
 } from 'lucide-react';
 import { generateUUID } from '../utils/uuid';
 import {
@@ -35,6 +39,14 @@ import {
   SkillScope,
   SkillCategory,
   SkillRuleTier,
+  NovelChapterOutlineItem,
+  NovelVolumePlanItem,
+  NovelStoryUnitItem,
+  NovelCharacterRelationNode,
+  NovelKeyItem,
+  NovelForeshadowItem,
+  MasterOutlineSpec,
+  DistilledStyleProfile,
 } from '../types';
 import {
   dbPut,
@@ -56,6 +68,22 @@ import {
   exportSingleSkillPackage,
   readFileTextSmart,
 } from '../services/skillPackageParser';
+import {
+  NOVEL_SETTING_MODULES,
+  TOTAL_SYSTEM_FIELD_COUNT,
+  CRITICAL_SETTING_KEYS,
+  computeCriticalSettingsSignature,
+  countConfiguredSystemFields,
+  buildCompactSchemaGuideForAI,
+  formatNovelSystemSettingsForPrompt,
+} from '../data/novelArchitectureSchema';
+import {
+  NovelXpSystemBanner,
+  NovelElevenModulesMatrix,
+  NovelSigningSubmissionHub,
+} from './NovelSystemMatrixPanel';
+import { FourLayerOutlineWorkspace } from './FourLayerOutlineWorkspace';
+import { StyleDistillationPanel } from './StyleDistillationPanel';
 import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
 import { MotionButton, StaggerCard, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
@@ -69,6 +97,7 @@ interface SetupViewProps {
   onRefreshGlobalSkills: () => Promise<void>;
   onStartWritingFirstChapter: (newBook: Book) => void;
   onUpdateBookSettings: (updatedSettings: BookSettings, updatedTitle: string) => void;
+  onSaveDraftBook?: (draftBook: Book) => Promise<void>;
 }
 
 const LORE_TYPE_LABELS: Record<LorebookEntryType, string> = {
@@ -102,8 +131,11 @@ export const SetupView: React.FC<SetupViewProps> = ({
   onRefreshGlobalSkills,
   onStartWritingFirstChapter,
   onUpdateBookSettings,
+  onSaveDraftBook,
 }) => {
-  const [setupSection, setSetupSection] = useState<'core' | 'lorebook' | 'skills' | 'style'>('core');
+  const [setupSection, setSetupSection] = useState<
+    'core' | 'matrix' | 'chapter-outlines' | 'signing' | 'lorebook' | 'skills' | 'style'
+  >('core');
   const { openContextMenu, triggerQuickToast } = useContextMenu();
 
   const [title, setTitle] = useState('');
@@ -160,6 +192,43 @@ export const SetupView: React.FC<SetupViewProps> = ({
   const [styleHistory, setStyleHistory] = useState<HistoryItem[]>([]);
   const [selectedStyleId, setSelectedStyleId] = useState('');
 
+  // Per-Book XP System Switch & 11-Module Commercial Architecture State
+  const [xpSystemEnabled, setXpSystemEnabled] = useState<boolean>(() =>
+    Boolean((xpPreferences || '').trim())
+  );
+  const [bookXpNote, setBookXpNote] = useState<string>('');
+  const [systemSettings, setSystemSettings] = useState<Record<string, string[]>>({});
+  const [systemCustomNotes, setSystemCustomNotes] = useState<Record<string, string>>({});
+  const [lastSyncedSettingsHash, setLastSyncedSettingsHash] = useState<string>('');
+  const [systemSettingsDirty, setSystemSettingsDirty] = useState<boolean>(false);
+
+  // Four-Layer Rolling Outline, Cross-Entity Graph, Style Distillation & Signing State
+  const emptyMasterSpec: MasterOutlineSpec = {
+    corePromise: '',
+    ultimateEnding: '',
+    worldCeiling: '',
+    mainPlotline: '',
+    emotionalOrSubPlotline: '',
+    darkPlotline: '',
+  };
+  const [masterOutlineSpec, setMasterOutlineSpec] = useState<MasterOutlineSpec>(emptyMasterSpec);
+  const [volumePlan, setVolumePlan] = useState<NovelVolumePlanItem[]>([]);
+  const [storyUnits, setStoryUnits] = useState<NovelStoryUnitItem[]>([]);
+  const [chapterOutlines, setChapterOutlines] = useState<NovelChapterOutlineItem[]>([]);
+  const [characterGraph, setCharacterGraph] = useState<NovelCharacterRelationNode[]>([]);
+  const [keyItemRegistry, setKeyItemRegistry] = useState<NovelKeyItem[]>([]);
+  const [foreshadowLedger, setForeshadowLedger] = useState<NovelForeshadowItem[]>([]);
+  const [activeDistilledStyle, setActiveDistilledStyle] = useState<DistilledStyleProfile | null>(null);
+  const [autoZhuqueDeslop, setAutoZhuqueDeslop] = useState<boolean>(false);
+  const [targetPlatform, setTargetPlatform] = useState<string>('番茄小说');
+  const [commercialBlurb, setCommercialBlurb] = useState<string>('');
+  const [alternateTitles, setAlternateTitles] = useState<string[]>([]);
+  const [signingReviewReport, setSigningReviewReport] = useState<string>('');
+
+  const [isGeneratingChapterOutlines, setIsGeneratingChapterOutlines] = useState<boolean>(false);
+  const [isGeneratingPackaging, setIsGeneratingPackaging] = useState<boolean>(false);
+  const [isRunningSigningReview, setIsRunningSigningReview] = useState<boolean>(false);
+
   // Feedback & Audit Inspector
   const [statusMessage, setStatusMessage] = useState<{ type: 'info' | 'success' | 'error'; text: string } | null>(null);
   const [isImprovingOutline, setIsImprovingOutline] = useState(false);
@@ -187,8 +256,30 @@ export const SetupView: React.FC<SetupViewProps> = ({
       if (s.aiPersona) setAiPersona(s.aiPersona);
       setOutline(s.outline || '');
       setStyleReference(s.styleReference || '');
+      setActiveDistilledStyle(s.activeDistilledStyle || null);
+      setAutoZhuqueDeslop(Boolean(s.autoZhuqueDeslop));
       setLorebook(s.lorebook || []);
       setSkills(resolveBookSkills(currentBook, globalSkills));
+
+      setXpSystemEnabled(
+        s.xpSystemEnabled !== undefined ? Boolean(s.xpSystemEnabled) : Boolean((xpPreferences || '').trim())
+      );
+      setBookXpNote(s.bookXpNote || '');
+      setSystemSettings(s.systemSettings || {});
+      setSystemCustomNotes(s.systemCustomNotes || {});
+      setLastSyncedSettingsHash(s.lastSyncedSettingsHash || '');
+      setSystemSettingsDirty(Boolean(s.systemSettingsDirty));
+      setMasterOutlineSpec(s.masterOutlineSpec || emptyMasterSpec);
+      setVolumePlan(s.volumePlan || []);
+      setStoryUnits(s.storyUnits || []);
+      setChapterOutlines(s.chapterOutlines || []);
+      setCharacterGraph(s.characterGraph || []);
+      setKeyItemRegistry(s.keyItemRegistry || []);
+      setForeshadowLedger(s.foreshadowLedger || []);
+      setTargetPlatform(s.targetPlatform || '番茄小说');
+      setCommercialBlurb(s.commercialBlurb || '');
+      setAlternateTitles(s.alternateTitles || []);
+      setSigningReviewReport(s.signingReviewReport || '');
     } else {
       setTitle('');
       setGenre('');
@@ -202,8 +293,28 @@ export const SetupView: React.FC<SetupViewProps> = ({
       setWorld('');
       setOutline('');
       setStyleReference('');
+      setActiveDistilledStyle(null);
+      setAutoZhuqueDeslop(false);
       setLorebook([]);
       setSkills(globalSkills.map((g) => ({ ...g })));
+
+      setXpSystemEnabled(Boolean((xpPreferences || '').trim()));
+      setBookXpNote('');
+      setSystemSettings({});
+      setSystemCustomNotes({});
+      setLastSyncedSettingsHash('');
+      setSystemSettingsDirty(false);
+      setMasterOutlineSpec(emptyMasterSpec);
+      setVolumePlan([]);
+      setStoryUnits([]);
+      setChapterOutlines([]);
+      setCharacterGraph([]);
+      setKeyItemRegistry([]);
+      setForeshadowLedger([]);
+      setTargetPlatform('番茄小说');
+      setCommercialBlurb('');
+      setAlternateTitles([]);
+      setSigningReviewReport('');
     }
   }, [currentBook?.id, globalSkills]);
 
@@ -228,6 +339,41 @@ export const SetupView: React.FC<SetupViewProps> = ({
       .map((s) => s.trim())
       .filter(Boolean);
 
+  const handleUpdateMatrixFieldValues = (
+    fieldKey: string,
+    nextValues: string[],
+    isCriticalField?: boolean
+  ) => {
+    setSystemSettings((prev) => {
+      const next = { ...prev };
+      if (nextValues.length === 0) {
+        delete next[fieldKey];
+      } else {
+        next[fieldKey] = nextValues;
+      }
+
+      // Sync foundation.genre_types and foundation.narrative_pov to top-level genre/pov if helpful
+      if (fieldKey === 'foundation.genre_types' && nextValues.length > 0 && !genre.trim()) {
+        setGenre(nextValues.slice(0, 3).join(' / '));
+      }
+
+      // Check whether critical settings diverged from the last AI-synced outline state
+      const nextSig = computeCriticalSettingsSignature(next);
+      if (outline.trim() && (isCriticalField || CRITICAL_SETTING_KEYS.has(fieldKey))) {
+        if (!lastSyncedSettingsHash || nextSig !== lastSyncedSettingsHash) {
+          setSystemSettingsDirty(true);
+        } else {
+          setSystemSettingsDirty(false);
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleUpdateModuleCustomNote = (moduleId: string, note: string) => {
+    setSystemCustomNotes((prev) => ({ ...prev, [moduleId]: note }));
+  };
+
   // Live Prompt Audit computation
   const currentAuditReport = useMemo(() => {
     return buildUnifiedSystemPrompt({
@@ -247,12 +393,26 @@ export const SetupView: React.FC<SetupViewProps> = ({
         world,
         aiPersona,
         styleReference: styleReference || null,
+        activeDistilledStyle,
         lorebook,
         skills,
+        xpSystemEnabled,
+        bookXpNote,
+        systemSettings,
+        systemCustomNotes,
+        masterOutlineSpec,
+        volumePlan,
+        storyUnits,
+        chapterOutlines,
+        characterGraph,
+        keyItemRegistry,
+        foreshadowLedger,
+        targetPlatform,
       },
       globalSkills,
       xpPreferences,
       contextCorpus: `${title}\n${genre}\n${outline}\n${characters}`,
+      targetChapterIndex: 1,
     });
   }, [
     auditPreviewScope,
@@ -266,8 +426,21 @@ export const SetupView: React.FC<SetupViewProps> = ({
     world,
     aiPersona,
     styleReference,
+    activeDistilledStyle,
     lorebook,
     skills,
+    xpSystemEnabled,
+    bookXpNote,
+    systemSettings,
+    systemCustomNotes,
+    masterOutlineSpec,
+    volumePlan,
+    storyUnits,
+    chapterOutlines,
+    characterGraph,
+    keyItemRegistry,
+    foreshadowLedger,
+    targetPlatform,
     globalSkills,
     xpPreferences,
   ]);
@@ -500,18 +673,25 @@ export const SetupView: React.FC<SetupViewProps> = ({
     }
   };
 
-  // AI Deep Outline Refinement + Automatic Lorebook 2.0 Extraction (wired through promptEngine!)
+  // AI Deep Outline Refinement + 11-Module Auto-Selection + Volume Plan + Foreshadow + Lorebook 2.0
   const handleImproveOutline = async () => {
-    if (!outline.trim()) {
-      notify('请先在大纲框内写下几句核心梗概或草稿，再交由 AI 深度完善', 'error');
+    if (!outline.trim() && !title.trim() && !genre.trim()) {
+      notify('请先在大纲框内写下几句核心梗概（或填写书名与题材），再交由 AI 深度完善并勾选11大模块设定', 'error');
       return;
     }
 
-    await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: outline.trim() });
-    await loadHistories();
+    if (outline.trim()) {
+      await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: outline.trim() });
+      await loadHistories();
+    }
 
     setIsImprovingOutline(true);
-    notify('AI 正在结合您的 XP 创作宪法与大纲类 SKILL 深度推演大纲并构建世界书...', 'info');
+    notify(
+      xpSystemEnabled
+        ? 'AI 正在以 XP 创作宪法为基底，深度推演签约级大纲并同步自动勾选 11 大系统模块与分卷蓝图...'
+        : 'AI 正在按大众商业平台签约标准（已隔离个人 XP），深度推演大纲并同步自动勾选 11 大系统模块...',
+      'info'
+    );
 
     try {
       const activeCfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
@@ -519,45 +699,90 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
       const audit = buildUnifiedSystemPrompt({
         scope: 'outline',
-        roleHeader:
-          '你是一位顶级小说主编与结构策划师。请严格结合创作者的 XP 审美宪法、已挂载的大纲 SKILL 规范，深度扩充大纲并结构化提取角色表、世界观与世界书档案（Lorebook 2.0）。',
+        roleHeader: xpSystemEnabled
+          ? '你是一位顶级商业网文主编与架构策划师。请以创作者的 XP 审美宪法为底层创作基底，结合已挂载的大纲 SKILL，深度扩充签约级大纲，并同步为 11 大系统模块挑选最契合的细化设定项。'
+          : '你是一位顶级商业网文主编与架构策划师。当前作品已关闭个人 XP 系统，请严格按照主流网文商业平台签约标准，深度扩充大纲并同步为 11 大系统模块挑选最契合的细化设定项。',
         customSettings: {
           title,
           genre,
           style,
+          pov,
+          tense,
           outline,
           characters,
           world,
           aiPersona,
           lorebook,
           skills,
+          xpSystemEnabled,
+          bookXpNote,
+          systemSettings,
+          systemCustomNotes,
+          targetPlatform,
         },
         globalSkills,
         xpPreferences,
-        contextCorpus: `${title}\n${genre}\n${outline}\n${characters}`,
+        contextCorpus: `${title}\n${genre}\n${outline}\n${characters}\n${world}`,
       });
 
-      const userPrompt = `请深度完善当前作品大纲，并同步提炼【主要角色表】、【世界观法则】以及 3~5 条结构化【角色与癖好世界书条目 (Lorebook 2.0)】。
+      const compactSchemaGuide = buildCompactSchemaGuideForAI();
 
-注意：
-- 核心主角档案请设为 "activationMode": "constant"（全程常驻生效）；
-- 特定情境才触发的癖好/场景（如：生病喂药、暴雨夜失控、浴室擦发、特定道具等）请设为 "activationMode": "keyword" 并提供 3~6 个触发关键词，避免每章强行塞入所有设定导致死板！
+      const userPrompt = `请深度完善当前小说大纲（目标投稿平台：${targetPlatform || '主流商业网文平台'}），并同步完成以下商业签约级结构化设定：
+1. 扩充完整连载大纲（含核心卖点、前三章黄金开局、阶段冲突升级、核心关系拉扯与终局收束）；
+2. 提炼【主要角色设定表】与【世界观与力量/社会规则】；
+3. 撰写 250~350 字高点击率【黄金商业简介 (commercialBlurb)】以及 4 个备选高吸量书名 (alternateTitles)；
+4. 规划 3~5 卷【分卷结构蓝图 (volumePlan)】与 3~5 条【长线伏笔台账 (foreshadowLedger)】；
+5. **重点联动**：对照下方【11大系统设定模块字典】，在 "systemSettings" 对象中为至少 35~65 个关键字段（尤其是基础设定、人物设定、世界观、情节、剧情、风格、推进、物品、感情线、商业与场景氛围中的核心项）自动勾选 1~3 个最契合本书大纲的预设值（也可补充精准自定义词）！
+6. 提炼 3~5 条结构化【Lorebook 2.0 世界书档案】（${
+        xpSystemEnabled
+          ? '核心主角设为 constant；特定情境张力锚点可设为 xp_trope 或 scene_pack 并配 keyword 触发词'
+          : '严禁生成 xp_trope 类型！仅生成 character、world_rule 或 scene_pack'
+      }）。
+
+【11大系统设定模块字段字典（键名格式为 moduleId.fieldId）】
+${compactSchemaGuide}
 
 请严格输出合法的纯 JSON 对象（不要包裹 markdown 代码块）：
 {
-  "improvedOutline": "包含起承转合、阶段冲突推进、情感拉扯节奏与前3章开篇细纲的完整大纲文本",
-  "characters": "条理清晰的主要角色设定文本",
-  "worldView": "世界观背景与核心规则文本",
+  "suggestedGenre": "精准题材标签（若原题材为空可补全）",
+  "suggestedStyle": "精准文风基调描述",
+  "improvedOutline": "结构完整的签约级主线大纲文本",
+  "characters": "条理清晰的主要角色与重要配角档案文本",
+  "worldView": "世界观背景、升级/社会规则与铁律文本",
+  "commercialBlurb": "极具读者点击欲的商业买量简介（250-350字）",
+  "alternateTitles": ["备选书名1", "备选书名2", "备选书名3", "备选书名4"],
+  "systemSettings": {
+    "foundation.genre_types": ["都市异能", "悬疑脑洞"],
+    "foundation.scale_structure": ["百万字长篇", "三幕剧结构"],
+    "foundation.narrative_pov": ["第三人称限知(主角视角)"]
+  },
+  "volumePlan": [
+    {
+      "volumeIndex": 1,
+      "title": "第一卷卷名",
+      "chapterSpan": "第1章 - 第30章",
+      "coreConflict": "本卷核心外部阻力与内部矛盾",
+      "climaxGoal": "本卷终局大高潮爽点兑现"
+    }
+  ],
+  "foreshadowLedger": [
+    {
+      "name": "伏笔简述",
+      "plantedChapter": 1,
+      "expectedResolveChapter": "第28章",
+      "note": "回收方式与真相反转说明"
+    }
+  ],
   "lorebookEntries": [
     {
-      "name": "条目名称（如：攻·陆沉 / 情境锚点·高烧脆弱态）",
-      "entryType": "character 或 xp_trope 或 world_rule 或 scene_pack",
-      "activationMode": "constant 或 keyword",
+      "name": "条目名称",
+      "entryType": "character | world_rule | scene_pack${xpSystemEnabled ? ' | xp_trope' : ''}",
+      "activationMode": "constant | keyword",
       "keywords": ["关键词1", "关键词2"],
-      "appearance": "外貌体型与视觉反差细节",
-      "personality": "外在压迫感与内在矛盾心理",
-      "behaviorQuirks": "标志性微动作、说话语气或特殊反应",
-      "mustIncludeTaboos": "必写张力细节与绝对避雷红线"
+      "appearance": "外貌视觉细节",
+      "personality": "性格反差与心理内核",
+      "behaviorQuirks": "标志性微动作与说话习惯",
+      "mustIncludeTaboos": "必写细节与绝对避雷红线"
     }
   ]
 }`;
@@ -571,14 +796,20 @@ export const SetupView: React.FC<SetupViewProps> = ({
           { role: 'system', content: audit.systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.82,
+        temperature: 0.78,
       });
 
       const rawContent = (res.content || '').trim();
       let parsedData: any = null;
       try {
         const cleanJson = rawContent.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
-        parsedData = JSON.parse(cleanJson);
+        const firstBrace = cleanJson.indexOf('{');
+        const lastBrace = cleanJson.lastIndexOf('}');
+        parsedData = JSON.parse(
+          firstBrace >= 0 && lastBrace > firstBrace
+            ? cleanJson.slice(firstBrace, lastBrace + 1)
+            : cleanJson
+        );
       } catch {
         parsedData = null;
       }
@@ -587,21 +818,86 @@ export const SetupView: React.FC<SetupViewProps> = ({
         setOutline(parsedData.improvedOutline);
         if (parsedData.characters) setCharacters(parsedData.characters);
         if (parsedData.worldView) setWorld(parsedData.worldView);
+        if (!genre.trim() && parsedData.suggestedGenre) setGenre(parsedData.suggestedGenre);
+        if (!style.trim() && parsedData.suggestedStyle) setStyle(parsedData.suggestedStyle);
+        if (parsedData.commercialBlurb) setCommercialBlurb(parsedData.commercialBlurb);
+        if (Array.isArray(parsedData.alternateTitles) && parsedData.alternateTitles.length > 0) {
+          setAlternateTitles(parsedData.alternateTitles.filter(Boolean));
+        }
+
+        // Merge AI-selected 11-module system settings
+        let mergedSystemSettings: Record<string, string[]> = { ...systemSettings };
+        if (parsedData.systemSettings && typeof parsedData.systemSettings === 'object') {
+          Object.entries(parsedData.systemSettings).forEach(([k, val]) => {
+            if (Array.isArray(val)) {
+              const cleaned = val.map((x) => String(x || '').trim()).filter(Boolean);
+              if (cleaned.length > 0) {
+                const existing = mergedSystemSettings[k] || [];
+                mergedSystemSettings[k] = Array.from(new Set([...existing, ...cleaned]));
+              }
+            }
+          });
+        }
+        setSystemSettings(mergedSystemSettings);
+        const newSig = computeCriticalSettingsSignature(mergedSystemSettings);
+        setLastSyncedSettingsHash(newSig);
+        setSystemSettingsDirty(false);
+
+        // Sync genre/pov from foundation if empty
+        if (!genre.trim() && mergedSystemSettings['foundation.genre_types']?.length) {
+          setGenre(mergedSystemSettings['foundation.genre_types'].slice(0, 3).join(' / '));
+        }
+
+        if (Array.isArray(parsedData.volumePlan) && parsedData.volumePlan.length > 0) {
+          setVolumePlan(
+            parsedData.volumePlan.map((v: any, idx: number) => ({
+              id: generateUUID(),
+              volumeIndex: Number(v.volumeIndex) || idx + 1,
+              title: v.title || `第${idx + 1}卷`,
+              chapterSpan: v.chapterSpan || `第${idx * 30 + 1}章 - 第${(idx + 1) * 30}章`,
+              coreConflict: v.coreConflict || '',
+              climaxGoal: v.climaxGoal || '',
+            }))
+          );
+        }
+
+        if (Array.isArray(parsedData.foreshadowLedger) && parsedData.foreshadowLedger.length > 0) {
+          const newHooks: NovelForeshadowItem[] = parsedData.foreshadowLedger
+            .filter((h: any) => h && h.name)
+            .map((h: any) => ({
+              id: generateUUID(),
+              name: String(h.name).trim(),
+              plantedChapter: Number(h.plantedChapter) || 1,
+              expectedResolveChapter: h.expectedResolveChapter ? String(h.expectedResolveChapter) : undefined,
+              status: 'planted' as const,
+              note: h.note || '',
+            }));
+          if (newHooks.length > 0) {
+            setForeshadowLedger((prev) => {
+              const existingNames = new Set(prev.map((p) => p.name));
+              return [...prev, ...newHooks.filter((h) => !existingNames.has(h.name))];
+            });
+          }
+        }
 
         if (Array.isArray(parsedData.lorebookEntries) && parsedData.lorebookEntries.length > 0) {
-          const validTypes: LorebookEntryType[] = ['character', 'xp_trope', 'world_rule', 'scene_pack'];
-          const newLoreEntries: LorebookEntry[] = parsedData.lorebookEntries.map((e: any) => ({
-            id: generateUUID(),
-            name: e.name || '核心设定档案',
-            entryType: validTypes.includes(e.entryType) ? e.entryType : 'character',
-            activationMode: e.activationMode === 'keyword' ? 'keyword' : 'constant',
-            keywords: Array.isArray(e.keywords) ? e.keywords.filter(Boolean) : [],
-            appearance: e.appearance || '',
-            personality: e.personality || '',
-            behaviorQuirks: e.behaviorQuirks || '',
-            mustIncludeTaboos: e.mustIncludeTaboos || '',
-            enabled: true,
-          }));
+          const validTypes: LorebookEntryType[] = xpSystemEnabled
+            ? ['character', 'xp_trope', 'world_rule', 'scene_pack']
+            : ['character', 'world_rule', 'scene_pack'];
+          const newLoreEntries: LorebookEntry[] = parsedData.lorebookEntries
+            .filter((e: any) => xpSystemEnabled || e?.entryType !== 'xp_trope')
+            .map((e: any) => ({
+              id: generateUUID(),
+              name: e.name || '核心设定档案',
+              entryType: validTypes.includes(e.entryType) ? e.entryType : 'character',
+              activationMode: e.activationMode === 'keyword' ? 'keyword' : 'constant',
+              keywords: Array.isArray(e.keywords) ? e.keywords.filter(Boolean) : [],
+              appearance: e.appearance || '',
+              personality: e.personality || '',
+              behaviorQuirks: e.behaviorQuirks || '',
+              mustIncludeTaboos: e.mustIncludeTaboos || '',
+              enabled: true,
+            }));
 
           setLorebook((prev) => {
             const existingNames = new Set(prev.map((p) => p.name));
@@ -612,8 +908,12 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
         await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: parsedData.improvedOutline });
         await loadHistories();
+
+        const statsCount = countConfiguredSystemFields(mergedSystemSettings).configuredFields;
         notify(
-          `大纲完善完成（已调用 ${audit.activeSkills.length} 项大纲 SKILL${audit.hasXpConstitution ? ' + 全局 XP 宪法' : ''}），并自动同步了角色表、世界观与世界书！`,
+          `大纲完善完成！已同步自动勾选 11 大模块共 ${statsCount} 项精细设定、${
+            Array.isArray(parsedData.volumePlan) ? parsedData.volumePlan.length : 0
+          } 卷蓝图与世界书档案（可切换至「11大系统设定矩阵」查阅微调，再去「章节细纲台」一键生成分章细纲）`,
           'success'
         );
       } else {
@@ -629,7 +929,462 @@ export const SetupView: React.FC<SetupViewProps> = ({
     }
   };
 
-  // Extract Lorebook 2.0 entries independently
+  // Re-align Outline & Volume Plan when user manually modifies critical 11-module settings (Req 3.3)
+  const handleRealignOutlineFromSettings = async () => {
+    const formattedMatrix = formatNovelSystemSettingsForPrompt(systemSettings, systemCustomNotes);
+    if (!formattedMatrix.trim()) {
+      notify('当前 11 大系统设定模块尚未勾选任何设定项，请先勾选设定后再执行大纲重塑', 'error');
+      return;
+    }
+
+    if (outline.trim()) {
+      await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: outline.trim() });
+      await loadHistories();
+    }
+
+    setIsImprovingOutline(true);
+    notify('AI 正在以您最新手动调整的 11 大系统设定为最高准则，重新校准主线大纲、角色与分卷结构，消除逻辑冲突...', 'info');
+
+    try {
+      const activeCfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
+      const modelToUse = uiSettings.writerApiModel || 'gemini-3.6-flash';
+
+      const audit = buildUnifiedSystemPrompt({
+        scope: 'outline',
+        roleHeader:
+          '你是一位严谨的商业网文总编。作者刚刚手动修改了小说的核心架构设定（如题材、篇幅结构、叙事人称、金手指、感情线或结局形态）。请你以最新的【11大系统设定矩阵】为最高上位准则，重构并校准原有大纲、角色设定与分卷规划，彻底消除新旧设定之间的逻辑断层与前后矛盾！',
+        customSettings: {
+          title,
+          genre,
+          style,
+          pov,
+          tense,
+          outline,
+          characters,
+          world,
+          aiPersona,
+          lorebook,
+          skills,
+          xpSystemEnabled,
+          bookXpNote,
+          systemSettings,
+          systemCustomNotes,
+          volumePlan,
+          foreshadowLedger,
+          targetPlatform,
+        },
+        globalSkills,
+        xpPreferences,
+        contextCorpus: `${title}\n${outline}\n${formattedMatrix}`,
+      });
+
+      const userPrompt = `作者已手动调整了本书的【11大系统架构设定】，最新生效设定如下：
+${formattedMatrix}
+
+【原故事大纲草稿】
+${outline || '（暂无原大纲，请直接根据上方11大系统设定全新构建签约级主线大纲）'}
+
+【原角色设定】
+${characters || '（待同步校准）'}
+
+【原世界观设定】
+${world || '（待同步校准）'}
+
+请严格按照上方最新勾选的设定（特别是叙事人称、篇幅结构、核心冲突、金手指/升级体系、感情线模式与完结形态），重构并输出完全自洽、无任何设定打架的新版大纲与分卷规划。
+严格输出纯 JSON 对象（不要包裹代码块）：
+{
+  "realignedOutline": "与最新11大模块设定100%对齐的新版主线大纲全文",
+  "characters": "同步校准后的角色设定表",
+  "worldView": "同步校准后的世界观与底层规则",
+  "suggestedGenre": "对齐后的核心题材显示文本",
+  "suggestedPov": "第一人称 或 第三人称",
+  "commercialBlurb": "同步更新的商业黄金简介（250-350字）",
+  "volumePlan": [
+    {
+      "volumeIndex": 1,
+      "title": "第一卷标题",
+      "chapterSpan": "第1章 - 第30章",
+      "coreConflict": "核心矛盾",
+      "climaxGoal": "卷末高潮兑现"
+    }
+  ]
+}`;
+
+      const res = await chatCompletion({
+        provider: activeCfg?.provider,
+        baseUrl: activeCfg?.baseUrl,
+        apiKey: activeCfg?.apiKey,
+        model: modelToUse,
+        messages: [
+          { role: 'system', content: audit.systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.72,
+      });
+
+      const raw = (res.content || '').trim();
+      const cleanJson = raw.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
+      const fb = cleanJson.indexOf('{');
+      const lb = cleanJson.lastIndexOf('}');
+      const parsed = JSON.parse(fb >= 0 && lb > fb ? cleanJson.slice(fb, lb + 1) : cleanJson);
+
+      if (parsed.realignedOutline) {
+        setOutline(parsed.realignedOutline);
+        await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: parsed.realignedOutline });
+        await loadHistories();
+      }
+      if (parsed.characters) setCharacters(parsed.characters);
+      if (parsed.worldView) setWorld(parsed.worldView);
+      if (parsed.suggestedGenre) setGenre(parsed.suggestedGenre);
+      if (parsed.suggestedPov === '第一人称' || parsed.suggestedPov === '第三人称') {
+        setPov(parsed.suggestedPov);
+      }
+      if (parsed.commercialBlurb) setCommercialBlurb(parsed.commercialBlurb);
+      if (Array.isArray(parsed.volumePlan) && parsed.volumePlan.length > 0) {
+        setVolumePlan(
+          parsed.volumePlan.map((v: any, idx: number) => ({
+            id: generateUUID(),
+            volumeIndex: Number(v.volumeIndex) || idx + 1,
+            title: v.title || `第${idx + 1}卷`,
+            chapterSpan: v.chapterSpan || `第${idx * 30 + 1}章 - 第${(idx + 1) * 30}章`,
+            coreConflict: v.coreConflict || '',
+            climaxGoal: v.climaxGoal || '',
+          }))
+        );
+      }
+
+      const syncedHash = computeCriticalSettingsSignature(systemSettings);
+      setLastSyncedSettingsHash(syncedHash);
+      setSystemSettingsDirty(false);
+      notify('已根据最新手动勾选的 11 大系统设定重新校准全书大纲、角色与分卷蓝图，冲突预警已解除！', 'success');
+    } catch (err: any) {
+      notify(`重新校准大纲失败：${err.message || '返回格式解析异常'}`, 'error');
+    } finally {
+      setIsImprovingOutline(false);
+    }
+  };
+
+  // Batch Generate Concise Per-Chapter Outlines (Req 3.3)
+  const handleGenerateBatchChapterOutlines = async (
+    startChap: number,
+    count: number,
+    batchDirection: string
+  ) => {
+    if (!outline.trim()) {
+      notify('请先在「大纲与XP基底」填写并完善全书主线大纲，再生成分章细纲', 'error');
+      setSetupSection('core');
+      return;
+    }
+
+    setIsGeneratingChapterOutlines(true);
+    const endChap = startChap + count - 1;
+    notify(`AI 正在结合全书大纲、11大设定模块与前序脉络，推演第 ${startChap} ~ ${endChap} 章简明细纲...`, 'info');
+
+    try {
+      const activeCfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
+      const modelToUse = uiSettings.writerApiModel || 'gemini-3.6-flash';
+
+      const audit = buildUnifiedSystemPrompt({
+        scope: 'outline',
+        roleHeader:
+          '你是一位极擅商业网文连载节奏把控（黄金三章、小高潮卡点、章末断章留钩）的首席分章策划师。',
+        customSettings: {
+          title,
+          genre,
+          style,
+          chapterWords: Number(chapterWords) || 3500,
+          pov,
+          tense,
+          outline,
+          characters,
+          world,
+          lorebook,
+          skills,
+          xpSystemEnabled,
+          bookXpNote,
+          systemSettings,
+          systemCustomNotes,
+          volumePlan,
+          foreshadowLedger,
+          targetPlatform,
+        },
+        globalSkills,
+        xpPreferences,
+        contextCorpus: `${title}\n${outline}\n${batchDirection}`,
+      });
+
+      const priorOutlines = [...chapterOutlines]
+        .filter((c) => c.chapterIndex < startChap)
+        .sort((a, b) => a.chapterIndex - b.chapterIndex)
+        .slice(-15)
+        .map((c) => `第${c.chapterIndex}章《${c.title}》：${c.summary}${c.hookNote ? `（章末钩子：${c.hookNote}）` : ''}`)
+        .join('\n');
+
+      const userPrompt = `请为小说《${title || '未命名新书'}》规划 **第 ${startChap} 章 至 第 ${endChap} 章（共 ${count} 章）** 的简明章节细纲。
+单章目标字数约为 ${chapterWords} 字，因此每章细纲的事件容量要恰当饱满（既不能一句话空洞注水，也不能一章塞入十章的跨度）。
+
+${priorOutlines ? `【前序已定章节细纲回顾（务必严丝合缝承接上一章末尾钩子与人物状态）】\n${priorOutlines}\n` : '【黄金开局要求】第1~3章必须严格执行商业网文黄金三章法则：第1章强冲突/核心困境切入+金手指或核心张力初现；第2章立人设与利益碰撞；第3章首次爽点反击或关键转折留钩！\n'}
+${batchDirection.trim() ? `【作者对本批次章节的特别剧情侧重指令】\n${batchDirection.trim()}\n` : ''}
+
+要求：
+1. 每章 summary 控制在 **2 ~ 4 句话（约 70~140 字）**，清晰交代：本章场景与核心事件、人物互动/博弈推进、情绪或爽点变化；
+2. 每章必须提供具体的章末断章钩子 (hookNote)，提升平台追读率；
+3. 若本批次埋下了新的关键长线伏笔，可在 newForeshadows 数组中顺便补充。
+
+请严格输出纯 JSON 对象（不要包裹 markdown 代码块）：
+{
+  "chapters": [
+    {
+      "chapterIndex": ${startChap},
+      "title": "精炼有悬念的章节名（不含第X章前缀）",
+      "volumeTag": "所属分卷（如：第一卷·潜龙在渊）",
+      "summary": "2~4句话简述本章核心发生的事件、人物交锋与剧情推进。",
+      "hookNote": "章末悬念断章点"
+    }
+  ],
+  "newForeshadows": [
+    {
+      "name": "新埋伏笔名称",
+      "plantedChapter": ${startChap},
+      "expectedResolveChapter": "第${endChap + 10}章左右",
+      "note": "伏笔作用说明"
+    }
+  ]
+}`;
+
+      const res = await chatCompletion({
+        provider: activeCfg?.provider,
+        baseUrl: activeCfg?.baseUrl,
+        apiKey: activeCfg?.apiKey,
+        model: modelToUse,
+        messages: [
+          { role: 'system', content: audit.systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.78,
+      });
+
+      const raw = (res.content || '').trim();
+      const cleanJson = raw.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
+      const fb = cleanJson.indexOf('{');
+      const lb = cleanJson.lastIndexOf('}');
+      const parsed = JSON.parse(fb >= 0 && lb > fb ? cleanJson.slice(fb, lb + 1) : cleanJson);
+
+      const generatedList: NovelChapterOutlineItem[] = (parsed.chapters || []).map(
+        (c: any, idx: number) => {
+          const chapNum = Number(c.chapterIndex) || startChap + idx;
+          const cleanTitle = String(c.title || `章节 ${chapNum}`)
+            .replace(/^第[0-9零一二三四五六七八九十百千万]+章[\s:：·—-]*/u, '')
+            .trim();
+          return {
+            id: generateUUID(),
+            chapterIndex: chapNum,
+            title: cleanTitle || `第${chapNum}章推进`,
+            summary: String(c.summary || '').trim(),
+            volumeTag: c.volumeTag ? String(c.volumeTag) : undefined,
+            hookNote: c.hookNote ? String(c.hookNote) : undefined,
+            status:
+              currentBook && chapNum <= currentBook.chapters.length ? 'drafted' : 'planned',
+          };
+        }
+      );
+
+      if (generatedList.length === 0) {
+        throw new Error('模型未返回有效章节细纲数组');
+      }
+
+      setChapterOutlines((prev) => {
+        const replacedIndices = new Set(generatedList.map((g) => g.chapterIndex));
+        const kept = prev.filter((item) => !replacedIndices.has(item.chapterIndex));
+        return [...kept, ...generatedList].sort((a, b) => a.chapterIndex - b.chapterIndex);
+      });
+
+      if (Array.isArray(parsed.newForeshadows) && parsed.newForeshadows.length > 0) {
+        const addedHooks: NovelForeshadowItem[] = parsed.newForeshadows
+          .filter((h: any) => h && h.name)
+          .map((h: any) => ({
+            id: generateUUID(),
+            name: String(h.name).trim(),
+            plantedChapter: Number(h.plantedChapter) || startChap,
+            expectedResolveChapter: h.expectedResolveChapter
+              ? String(h.expectedResolveChapter)
+              : undefined,
+            status: 'planted' as const,
+            note: h.note || '',
+          }));
+        if (addedHooks.length > 0) {
+          setForeshadowLedger((prev) => {
+            const names = new Set(prev.map((p) => p.name));
+            return [...prev, ...addedHooks.filter((a) => !names.has(a.name))];
+          });
+        }
+      }
+
+      notify(
+        `成功生成第 ${startChap} ~ ${startChap + generatedList.length - 1} 章简明细纲！确认无误后可直接点击「进入章节生成」单章或批量连写。`,
+        'success'
+      );
+    } catch (err: any) {
+      notify(`生成章节细纲失败：${err.message || '请检查 API 线路'}`, 'error');
+    } finally {
+      setIsGeneratingChapterOutlines(false);
+    }
+  };
+
+  // Generate Commercial Packaging: High-CTR Alternate Titles & Golden Blurb (Req 3.4)
+  const handleGenerateCommercialPackaging = async () => {
+    if (!outline.trim()) {
+      notify('请先填写作品大纲后再提炼商业买量包装', 'error');
+      return;
+    }
+    setIsGeneratingPackaging(true);
+    try {
+      const activeCfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
+      const modelToUse = uiSettings.writerApiModel || 'gemini-3.6-flash';
+
+      const audit = buildUnifiedSystemPrompt({
+        scope: 'outline',
+        roleHeader: `你是一位深谙「${targetPlatform}」算法推荐池与书城点击率转化的金牌商业网文责编。`,
+        customSettings: {
+          title,
+          genre,
+          style,
+          outline,
+          characters,
+          world,
+          xpSystemEnabled,
+          bookXpNote,
+          systemSettings,
+          systemCustomNotes,
+          targetPlatform,
+        },
+        globalSkills,
+        xpPreferences,
+      });
+
+      const res = await chatCompletion({
+        provider: activeCfg?.provider,
+        baseUrl: activeCfg?.baseUrl,
+        apiKey: activeCfg?.apiKey,
+        model: modelToUse,
+        messages: [
+          { role: 'system', content: audit.systemPrompt },
+          {
+            role: 'user',
+            content: `请针对投稿平台【${targetPlatform}】的读者阅读偏好，为《${title || '未命名新书'}》打造：
+1. 6 个极具点击欲与留存吸引力的备选商业书名（涵盖反差型、悬念情绪型、直接卖点型）；
+2. 一段 240~340 字的【黄金买量简介】（开头第一句立住极致反差/冲突身份，中段抛出核心爽点或情感拉扯钩子，结尾留白引爆好奇心，附上阅读排雷/看点提示）。
+
+严格输出纯 JSON 对象：
+{
+  "alternateTitles": ["书名1", "书名2", "书名3", "书名4", "书名5", "书名6"],
+  "commercialBlurb": "黄金商业简介正文"
+}`,
+          },
+        ],
+        temperature: 0.82,
+      });
+
+      const clean = (res.content || '').trim().replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
+      const fb = clean.indexOf('{');
+      const lb = clean.lastIndexOf('}');
+      const parsed = JSON.parse(fb >= 0 && lb > fb ? clean.slice(fb, lb + 1) : clean);
+      if (Array.isArray(parsed.alternateTitles)) {
+        setAlternateTitles(parsed.alternateTitles.filter(Boolean));
+      }
+      if (parsed.commercialBlurb) {
+        setCommercialBlurb(parsed.commercialBlurb);
+      }
+      notify(`已按「${targetPlatform}」商业调性生成备选书名与黄金简介`, 'success');
+    } catch (err: any) {
+      notify(`生成商业包装失败：${err.message || '网络异常'}`, 'error');
+    } finally {
+      setIsGeneratingPackaging(false);
+    }
+  };
+
+  // Run Qualitative Chief Editor Signing Review (Req 3.4 - No fake cockpit numbers!)
+  const handleRunEditorialSigningReview = async () => {
+    if (!outline.trim()) {
+      notify('请先填写故事大纲后再执行签约内投审稿', 'error');
+      return;
+    }
+    setIsRunningSigningReview(true);
+    notify(`正在以「${targetPlatform}」责编签约标准审阅大纲、11大设定模块与前三章细纲...`, 'info');
+    try {
+      const activeCfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
+      const modelToUse = uiSettings.writerApiModel || 'gemini-3.6-flash';
+
+      const audit = buildUnifiedSystemPrompt({
+        scope: 'outline',
+        roleHeader: `你是「${targetPlatform}」资深签约主编，擅长一针见血指出网文内投稿件在商业卖点、黄金三章留存、人设辨识度、长线追读动力与设定自洽度上的优缺点，并给出可直接落地的改稿建议。不要输出虚假数字打分，只输出专业主编审稿意见。`,
+        customSettings: {
+          title,
+          genre,
+          style,
+          outline,
+          characters,
+          world,
+          xpSystemEnabled,
+          bookXpNote,
+          systemSettings,
+          systemCustomNotes,
+          volumePlan,
+          chapterOutlines,
+          targetPlatform,
+          commercialBlurb,
+        },
+        globalSkills,
+        xpPreferences,
+      });
+
+      const firstFiveOutlines = [...chapterOutlines]
+        .sort((a, b) => a.chapterIndex - b.chapterIndex)
+        .slice(0, 5)
+        .map((c) => `第${c.chapterIndex}章《${c.title}》：${c.summary}（钩子：${c.hookNote || '无'}）`)
+        .join('\n');
+
+      const sampleChapExcerpt =
+        currentBook && currentBook.chapters.length > 0
+          ? `\n【第一章已写正文节选】\n${(currentBook.chapters[0].text || '').slice(0, 1800)}`
+          : '';
+
+      const res = await chatCompletion({
+        provider: activeCfg?.provider,
+        baseUrl: activeCfg?.baseUrl,
+        apiKey: activeCfg?.apiKey,
+        model: modelToUse,
+        messages: [
+          { role: 'system', content: audit.systemPrompt },
+          {
+            role: 'user',
+            content: `请对以下拟投往【${targetPlatform}】的作品进行签约级主编审稿诊断：
+书名：《${title || '未定书名'}》
+商业简介：${commercialBlurb || '（未填写商业简介）'}
+前五章细纲：
+${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
+
+请按以下五个维度输出条理清晰、一针见血的审稿意见（纯文本分段，不要输出虚假百分比或数字打分）：
+一、【签约潜力定性与核心长板】
+二、【书名与商业简介吸量诊断】
+三、【黄金三章开局切入点与情绪留存评估】
+四、【11大设定模块与大纲潜在逻辑隐患/中期崩盘风险】
+五、【过稿可执行修改清单（按优先级列出3~5条具体改法）】`,
+          },
+        ],
+        temperature: 0.72,
+      });
+
+      setSigningReviewReport((res.content || '').trim());
+      notify(`已完成「${targetPlatform}」签约主编审稿评估`, 'success');
+    } catch (err: any) {
+      notify(`签约审稿评估失败：${err.message || '请检查 API 配置'}`, 'error');
+    } finally {
+      setIsRunningSigningReview(false);
+    }
+  };
+
+  // Extract Lorebook 2.0 entries independently (strictly respects xpSystemEnabled)
   const handleExtractLorebookFromOutline = async () => {
     if (!outline.trim() && !characters.trim()) {
       notify('请先填写故事大纲或主要角色设定后再执行智能提取', 'error');
@@ -637,7 +1392,12 @@ export const SetupView: React.FC<SetupViewProps> = ({
     }
 
     setIsExtractingLore(true);
-    notify('正在从大纲与 XP 宪法中拆解常驻角色卡与按需触发的 XP 情境卡...', 'info');
+    notify(
+      xpSystemEnabled
+        ? '正在从大纲与 XP 宪法中拆解常驻角色卡与按需触发的 XP 情境卡...'
+        : '正在从大纲与 11 大系统设定中拆解常驻角色卡、世界法则与场景细节卡...',
+      'info'
+    );
 
     try {
       const activeCfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
@@ -646,26 +1406,42 @@ export const SetupView: React.FC<SetupViewProps> = ({
       const audit = buildUnifiedSystemPrompt({
         scope: 'outline',
         roleHeader: '你是一位精通人物塑造与动态世界书架构的小说设定师。',
-        customSettings: { title, genre, style, outline, characters, world, skills },
+        customSettings: {
+          title,
+          genre,
+          style,
+          outline,
+          characters,
+          world,
+          skills,
+          xpSystemEnabled,
+          bookXpNote,
+          systemSettings,
+          systemCustomNotes,
+        },
         globalSkills,
         xpPreferences,
         contextCorpus: `${title}\n${outline}\n${characters}`,
       });
 
-      const prompt = `请根据当前作品大纲、角色表与全局 XP 审美宪法，提炼 4~6 条结构化【Lorebook 2.0 世界书档案】：
-- 将核心主角设为 "activationMode": "constant"（常驻注入）；
-- 将特定互动梗、特殊情境癖好（如生病照顾、吃醋失控、伤口处理、雨夜同处等）拆分为独立的 "xp_trope" 或 "scene_pack"，设为 "activationMode": "keyword" 并附上触发关键词数组，让正文只在对应情节自然触发，彻底告别千篇一律！
+      const prompt = `请根据当前作品大纲与角色表${xpSystemEnabled ? '以及 XP 审美宪法' : '（当前已关闭 XP 系统，严禁生成 xp_trope）'}，提炼 4~6 条结构化【Lorebook 2.0 世界书档案】：
+- 将核心主角与重要配角设为 "activationMode": "constant"（常驻注入）；
+- ${
+        xpSystemEnabled
+          ? '将特定互动梗、特殊情境张力（如生病照顾、吃醋失控、伤口处理、雨夜同处等）拆分为独立的 "xp_trope" 或 "scene_pack"，设为 "activationMode": "keyword" 并附上触发关键词数组！'
+          : '将特定副本规则、宗门/组织铁律或关键场景设为 "world_rule" 或 "scene_pack"，设为 "activationMode": "keyword" 并附上触发关键词数组！'
+      }
 
 严格输出纯 JSON 数组（不要包裹代码块）：
 [
   {
     "name": "条目名称",
-    "entryType": "character | xp_trope | world_rule | scene_pack",
+    "entryType": "character | ${xpSystemEnabled ? 'xp_trope | ' : ''}world_rule | scene_pack",
     "activationMode": "constant | keyword",
     "keywords": ["触发词1", "触发词2"],
     "appearance": "视觉与外貌细节",
     "personality": "性格反差与心理内核",
-    "behaviorQuirks": "微动作习惯/语气/XP张力表现",
+    "behaviorQuirks": "微动作习惯与语气特征",
     "mustIncludeTaboos": "必写细节与绝对禁忌"
   }
 ]`;
@@ -686,19 +1462,23 @@ export const SetupView: React.FC<SetupViewProps> = ({
       const entries = JSON.parse(cleanJson);
 
       if (Array.isArray(entries) && entries.length > 0) {
-        const validTypes: LorebookEntryType[] = ['character', 'xp_trope', 'world_rule', 'scene_pack'];
-        const newLoreEntries: LorebookEntry[] = entries.map((e: any) => ({
-          id: generateUUID(),
-          name: e.name || '世界书档案',
-          entryType: validTypes.includes(e.entryType) ? e.entryType : 'character',
-          activationMode: e.activationMode === 'keyword' ? 'keyword' : 'constant',
-          keywords: Array.isArray(e.keywords) ? e.keywords.filter(Boolean) : [],
-          appearance: e.appearance || '',
-          personality: e.personality || '',
-          behaviorQuirks: e.behaviorQuirks || '',
-          mustIncludeTaboos: e.mustIncludeTaboos || '',
-          enabled: true,
-        }));
+        const validTypes: LorebookEntryType[] = xpSystemEnabled
+          ? ['character', 'xp_trope', 'world_rule', 'scene_pack']
+          : ['character', 'world_rule', 'scene_pack'];
+        const newLoreEntries: LorebookEntry[] = entries
+          .filter((e: any) => xpSystemEnabled || e?.entryType !== 'xp_trope')
+          .map((e: any) => ({
+            id: generateUUID(),
+            name: e.name || '世界书档案',
+            entryType: validTypes.includes(e.entryType) ? e.entryType : 'character',
+            activationMode: e.activationMode === 'keyword' ? 'keyword' : 'constant',
+            keywords: Array.isArray(e.keywords) ? e.keywords.filter(Boolean) : [],
+            appearance: e.appearance || '',
+            personality: e.personality || '',
+            behaviorQuirks: e.behaviorQuirks || '',
+            mustIncludeTaboos: e.mustIncludeTaboos || '',
+            enabled: true,
+          }));
 
         setLorebook((prev) => {
           const existingNames = new Set(prev.map((p) => p.name));
@@ -743,80 +1523,194 @@ export const SetupView: React.FC<SetupViewProps> = ({
     notify('执笔人设指令已保存至模板库', 'success');
   };
 
-  const buildSettingsPayload = (): BookSettings => ({
-    genre: genre.trim(),
-    style: style.trim(),
-    chapterWords: Number(chapterWords) || 3500,
-    pov,
-    tense,
-    temperature: Number(temperature) || 0.85,
-    contextMemory: Number(contextMemory) ?? 4,
-    aiPersona: aiPersona.trim(),
-    outline: outline.trim(),
-    characters: characters.trim(),
-    world: world.trim(),
-    styleReference: styleReference.trim() || null,
-    lorebook,
-    skills,
-  });
+  const buildSettingsPayload = (): BookSettings => {
+    const resolvedGenre =
+      genre.trim() ||
+      (systemSettings['foundation.genre_types'] || []).slice(0, 3).join(' / ') ||
+      '未分类网文';
+
+    return {
+      genre: resolvedGenre,
+      style: style.trim(),
+      chapterWords: Number(chapterWords) || 3500,
+      pov,
+      tense,
+      temperature: Number(temperature) || 0.85,
+      contextMemory: Number(contextMemory) ?? 4,
+      aiPersona: aiPersona.trim(),
+      outline: outline.trim(),
+      characters: characters.trim(),
+      world: world.trim(),
+      styleReference: styleReference.trim() || null,
+      activeDistilledStyle,
+      autoZhuqueDeslop,
+      lorebook,
+      skills,
+      xpSystemEnabled,
+      bookXpNote: bookXpNote.trim(),
+      systemSettings,
+      systemCustomNotes,
+      lastSyncedSettingsHash,
+      systemSettingsDirty,
+      masterOutlineSpec,
+      volumePlan,
+      storyUnits,
+      chapterOutlines,
+      characterGraph,
+      keyItemRegistry,
+      foreshadowLedger,
+      targetPlatform,
+      commercialBlurb: commercialBlurb.trim(),
+      alternateTitles,
+      signingReviewReport,
+    };
+  };
+
+  // Save settings to current book OR save as a 0-chapter planned book in shelf anytime!
+  const handleSaveAllSettings = async () => {
+    const cleanTitle = title.trim() || '未命名签约企划案';
+    const payload = buildSettingsPayload();
+    if (!genre.trim() && payload.genre) {
+      setGenre(payload.genre);
+    }
+
+    if (currentBook) {
+      onUpdateBookSettings(payload, cleanTitle);
+      notify(`《${cleanTitle}》的 11 大系统设定、XP 开关、分章细纲与世界书已保存生效！`, 'success');
+      return;
+    }
+
+    if (onSaveDraftBook) {
+      const draftBook: Book = {
+        id: generateUUID(),
+        title: cleanTitle,
+        createdAt: Date.now(),
+        lastModifiedAt: Date.now(),
+        chapters: [],
+        archivedChapters: [],
+        summaries: [],
+        settings: payload,
+      };
+      if (!title.trim()) setTitle(cleanTitle);
+      await onSaveDraftBook(draftBook);
+      notify(`已将《${cleanTitle}》立项设定完整保存至书架（随时可继续完善细纲或开始生成章节）！`, 'success');
+    }
+  };
 
   const handleStartWriting = () => {
     if (!title.trim()) {
       notify('请先填写作品书名', 'error');
       return;
     }
-    if (!genre.trim()) {
-      notify('请填写作品题材分类', 'error');
+    const resolvedGenre =
+      genre.trim() || (systemSettings['foundation.genre_types'] || []).slice(0, 3).join(' / ');
+    if (!resolvedGenre) {
+      notify('请填写作品核心题材（或在 11 大模块「基础设定 → 题材类型」中勾选）', 'error');
       setSetupSection('core');
       return;
     }
     if (!outline.trim()) {
-      notify('请先填写故事核心大纲', 'error');
+      notify('请先填写或用 AI 完善故事核心大纲', 'error');
       setSetupSection('core');
       return;
     }
 
+    // If currentBook already has chapters, save latest settings and let user continue in WriterView;
+    // Wait: if currentBook.chapters.length > 0 and user comes from chapter-outlines "进入章节生成", we should update settings & jump or start new book depending on action!
+    const payload = buildSettingsPayload();
     const bookId = currentBook && currentBook.chapters.length === 0 ? currentBook.id : generateUUID();
     const bookToStart: Book = {
       id: bookId,
       title: title.trim(),
-      createdAt: currentBook ? currentBook.createdAt : Date.now(),
+      createdAt: currentBook && currentBook.chapters.length === 0 ? currentBook.createdAt : Date.now(),
       lastModifiedAt: Date.now(),
-      chapters: currentBook && currentBook.chapters.length === 0 ? [] : [],
+      chapters: [],
       archivedChapters: currentBook && currentBook.chapters.length === 0 ? currentBook.archivedChapters : [],
       summaries: currentBook && currentBook.chapters.length === 0 ? currentBook.summaries : [],
-      settings: buildSettingsPayload(),
+      settings: payload,
     };
 
     onStartWritingFirstChapter(bookToStart);
   };
 
-  const handleUpdateCurrentBook = () => {
-    if (!currentBook) return;
-    if (!title.trim()) {
-      notify('作品书名不能为空', 'error');
+  const handleProceedFromOutlinesToWriter = () => {
+    if (currentBook && currentBook.chapters.length > 0) {
+      // Save updated outlines & settings to existing serialized book, then inform user or jump
+      onUpdateBookSettings(buildSettingsPayload(), (title || currentBook.title).trim());
+      notify('章节细纲与 11 大系统设定已保存至本书！请点击顶部「正文创作」继续单章或批量连写。', 'success');
       return;
     }
-    onUpdateBookSettings(buildSettingsPayload(), title.trim());
-    notify(`《${title.trim()}》设定、世界书与 SKILL 挂载状态已保存生效`, 'success');
+    handleStartWriting();
   };
 
   const enabledLoreCount = lorebook.filter((l) => l.enabled).length;
   const enabledSkillCount = skills.filter((s) => s.enabled).length;
+  const configuredMatrixFields = useMemo(
+    () => countConfiguredSystemFields(systemSettings).configuredFields,
+    [systemSettings]
+  );
+
+  const bookPreviewForExport: Book = useMemo(
+    () => ({
+      id: currentBook?.id || 'draft-preview',
+      title: title.trim() || currentBook?.title || '未命名新书企划',
+      createdAt: currentBook?.createdAt || Date.now(),
+      lastModifiedAt: Date.now(),
+      chapters: currentBook?.chapters || [],
+      archivedChapters: currentBook?.archivedChapters || [],
+      summaries: currentBook?.summaries || [],
+      settings: buildSettingsPayload(),
+    }),
+    [
+      currentBook,
+      title,
+      genre,
+      style,
+      chapterWords,
+      pov,
+      tense,
+      temperature,
+      contextMemory,
+      aiPersona,
+      outline,
+      characters,
+      world,
+      styleReference,
+      activeDistilledStyle,
+      autoZhuqueDeslop,
+      lorebook,
+      skills,
+      xpSystemEnabled,
+      bookXpNote,
+      systemSettings,
+      systemCustomNotes,
+      masterOutlineSpec,
+      volumePlan,
+      storyUnits,
+      chapterOutlines,
+      characterGraph,
+      keyItemRegistry,
+      foreshadowLedger,
+      targetPlatform,
+      commercialBlurb,
+      alternateTitles,
+      signingReviewReport,
+    ]
+  );
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 pb-8">
+    <div className="max-w-6xl mx-auto space-y-6 pb-8">
       {/* Top Editorial Header & Book Title */}
       <section className="studio-card p-5 sm:p-7 space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
           <div className="space-y-1">
             <p className="text-xs text-[var(--text-muted)]">
               {currentBook && currentBook.chapters.length > 0
-                ? `连载设定维护 · 已写 ${currentBook.chapters.length} 章`
-                : '新书立项工坊 · 挂载世界书与 SKILL 2.0'}
+                ? `连载签约工程维护 · 已完稿 ${currentBook.chapters.length} 章 · 已细化 ${configuredMatrixFields}/${TOTAL_SYSTEM_FIELD_COUNT} 项系统设定`
+                : `商业签约级小说立项中枢 · 11大模块(${configuredMatrixFields}/${TOTAL_SYSTEM_FIELD_COUNT}) · 分章细纲(${chapterOutlines.length}章)`}
             </p>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] font-editorial-serif">
-              {currentBook ? `《${title || currentBook.title}》作品设定` : '创建新小说设定'}
+              {currentBook ? `《${title || currentBook.title}》体系化工程设定` : '创建商业签约级小说工程'}
             </h1>
           </div>
 
@@ -827,19 +1721,19 @@ export const SetupView: React.FC<SetupViewProps> = ({
               className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)] hover:opacity-90 text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Eye className="w-3.5 h-3.5" />
-              <span>挂载透视 ({enabledSkillCount} 技能 · {enabledLoreCount} 档案)</span>
+              <span>
+                挂载透视 ({xpSystemEnabled ? 'XP开' : 'XP关'} · {enabledSkillCount}技能 · {enabledLoreCount}档案)
+              </span>
             </button>
 
-            {currentBook && currentBook.chapters.length > 0 && (
-              <button
-                type="button"
-                onClick={handleUpdateCurrentBook}
-                className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Save className="w-3.5 h-3.5" />
-                <span>保存设定更改</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleSaveAllSettings}
+              className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{currentBook ? '保存全部设定' : '保存立项至书架'}</span>
+            </button>
 
             <button
               type="button"
@@ -854,6 +1748,23 @@ export const SetupView: React.FC<SetupViewProps> = ({
           </div>
         </div>
 
+        {/* Per-Book XP System Switch Banner (Requirement 5) */}
+        <NovelXpSystemBanner
+          xpSystemEnabled={xpSystemEnabled}
+          onToggleXpSystem={(next) => {
+            setXpSystemEnabled(next);
+            notify(
+              next
+                ? '已开启本书 XP 审美基底系统：大纲推演、细纲与章节生成将以 XP 宪法为底层创作锚点'
+                : '已关闭本书 XP 系统：全链路物理隔离个人 XP 宪法、XP 世界书与偏好技能，保持纯净商业叙事',
+              'info'
+            );
+          }}
+          bookXpNote={bookXpNote}
+          onChangeBookXpNote={setBookXpNote}
+          globalXpPreferences={xpPreferences}
+        />
+
         {/* Title & Genre Row */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
           <div className="sm:col-span-2">
@@ -864,23 +1775,43 @@ export const SetupView: React.FC<SetupViewProps> = ({
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="输入小说书名..."
+              placeholder="输入小说书名（也可在「平台签约与伏笔」生成高点击备选书名）..."
               className="studio-input w-full px-3.5 py-2.5 text-sm font-medium"
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
-              核心题材 *
+              核心题材标签 *
             </label>
             <input
               type="text"
               value={genre}
               onChange={(e) => setGenre(e.target.value)}
-              placeholder="例：现代都市纯爱 / 仙侠双洁 / 星际哨向"
+              placeholder="例：都市高武 / 古言权谋 / 规则怪谈"
               className="studio-input w-full px-3.5 py-2.5 text-sm"
             />
           </div>
         </div>
+
+        {/* Global Dirty Warning Strip if critical settings changed while on another tab */}
+        {systemSettingsDirty && setupSection !== 'matrix' && (
+          <div className="p-3.5 rounded-xl border border-amber-500/45 bg-amber-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-start gap-2 text-amber-800 dark:text-amber-300">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+              <span>
+                检测到您手动修改了「11大系统设定模块」中的核心骨架设定，随意更改关键设定可能导致大纲与后续剧情前后矛盾。建议立即让 AI 按最新设定重新校准大纲！
+              </span>
+            </div>
+            <button
+              type="button"
+              disabled={isImprovingOutline}
+              onClick={handleRealignOutlineFromSettings}
+              className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              {isImprovingOutline ? '校准大纲中...' : 'AI 按最新设定校准大纲'}
+            </button>
+          </div>
+        )}
 
         {/* Status Feedback Banner */}
         {statusMessage && (
@@ -904,13 +1835,32 @@ export const SetupView: React.FC<SetupViewProps> = ({
           </div>
         )}
 
-        {/* Mobile-friendly Segmented Sub-navigation */}
+        {/* 7-Tab Systematic Architecture Sub-navigation */}
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1 border-t border-[var(--border-subtle)]">
           {[
-            { id: 'core', label: '大纲与核心参数', icon: Sliders },
-            { id: 'lorebook', label: `世界书档案 (${enabledLoreCount}/${lorebook.length})`, icon: BookMarked },
-            { id: 'skills', label: `SKILL 2.0 挂载 (${enabledSkillCount}/${skills.length})`, icon: Zap },
-            { id: 'style', label: '执笔人设与文风样本', icon: FileText },
+            { id: 'core', label: '01 大纲与核心参数', icon: Sliders },
+            {
+              id: 'matrix',
+              label: `02 11大系统设定矩阵 (${configuredMatrixFields}/${TOTAL_SYSTEM_FIELD_COUNT})${systemSettingsDirty ? ' · 待校准' : ''}`,
+              icon: Layers,
+            },
+            {
+              id: 'chapter-outlines',
+              label: `03 四层拆纲与关联图谱 (${chapterOutlines.length}章)`,
+              icon: ListOrdered,
+            },
+            {
+              id: 'signing',
+              label: `04 平台签约与伏笔 (${foreshadowLedger.filter((f) => f.status !== 'resolved').length})`,
+              icon: Award,
+            },
+            { id: 'lorebook', label: `05 世界书 (${enabledLoreCount}/${lorebook.length})`, icon: BookMarked },
+            { id: 'skills', label: `06 SKILL挂载 (${enabledSkillCount}/${skills.length})`, icon: Zap },
+            {
+              id: 'style',
+              label: `07 执笔人设与文风蒸馏${activeDistilledStyle ? ' · 已挂载' : ''}`,
+              icon: FileText,
+            },
           ].map((tab) => {
             const Icon = tab.icon;
             const active = setupSection === tab.id;
@@ -941,28 +1891,39 @@ export const SetupView: React.FC<SetupViewProps> = ({
               <div>
                 <h2 className="text-base font-bold text-[var(--text-primary)]">故事主线大纲 *</h2>
                 <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                  AI 完善大纲时会自动读取您的「全局 XP 创作宪法」与「大纲类 SKILL」，并同步生成角色表与世界书卡片。
+                  点击右侧按钮，AI 将{xpSystemEnabled ? '以 XP 宪法为基底' : '按纯净商业平台标准'}深度完善大纲，并同步为「11大系统设定矩阵」自动勾选对应板块、提取分卷蓝图与世界书！
                 </p>
               </div>
 
-              <MotionButton
-                type="button"
-                disabled={isImprovingOutline}
-                onClick={handleImproveOutline}
-                className="btn-primary min-h-[44px] px-4 py-2 text-xs flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-50 cursor-pointer"
-              >
-                {isImprovingOutline ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>深度推演中...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>AI 完善大纲并提取世界书</span>
-                  </>
-                )}
-              </MotionButton>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSetupSection('matrix')}
+                  className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>查看 11 大系统设定 ({configuredMatrixFields})</span>
+                </button>
+
+                <MotionButton
+                  type="button"
+                  disabled={isImprovingOutline}
+                  onClick={handleImproveOutline}
+                  className="btn-primary min-h-[44px] px-4 py-2 text-xs flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-50 cursor-pointer"
+                >
+                  {isImprovingOutline ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>深度推演并勾选11大模块...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>AI 完善大纲 + 自动勾选11大设定</span>
+                    </>
+                  )}
+                </MotionButton>
+              </div>
             </div>
 
             <textarea
@@ -1124,11 +2085,107 @@ export const SetupView: React.FC<SetupViewProps> = ({
                 />
               </div>
             </div>
+
+            {/* Workflow Step Footer inside Core Section */}
+            <div className="pt-3 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3 text-xs">
+              <span className="text-[var(--text-muted)]">
+                规范化创作流：01 完善大纲 → 02 核查11大系统设定矩阵 → 03 一键生成章节细纲 → 正文单章/多章连写
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSetupSection('matrix')}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] font-medium text-[var(--text-primary)] cursor-pointer"
+                >
+                  下一步：核查 11 大系统设定 →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSetupSection('chapter-outlines')}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] font-semibold cursor-pointer"
+                >
+                  前往章节细纲创作台 →
+                </button>
+              </div>
+            </div>
           </section>
         </div>
       )}
 
-      {/* SECTION 2: Lorebook 2.0 */}
+      {/* SECTION 02: 11-Module × 20-Item Fine-Grained Novel System Matrix */}
+      {setupSection === 'matrix' && (
+        <NovelElevenModulesMatrix
+          systemSettings={systemSettings}
+          systemCustomNotes={systemCustomNotes}
+          systemSettingsDirty={systemSettingsDirty}
+          isSyncingOutline={isImprovingOutline}
+          onUpdateFieldValues={handleUpdateMatrixFieldValues}
+          onUpdateModuleCustomNote={handleUpdateModuleCustomNote}
+          onAiAutoPopulateFromOutline={handleImproveOutline}
+          onAiRealignOutlineFromSettings={handleRealignOutlineFromSettings}
+          onSaveSettingsNow={handleSaveAllSettings}
+        />
+      )}
+
+      {/* SECTION 03: Four-Layer Rolling Outline & Universal Cross-Entity Graph */}
+      {setupSection === 'chapter-outlines' && (
+        <FourLayerOutlineWorkspace
+          bookTitle={title || currentBook?.title || '未命名新书企划'}
+          genre={genre}
+          style={style}
+          outline={outline}
+          characters={characters}
+          world={world}
+          xpEnabled={xpSystemEnabled}
+          xpSummary={`${xpPreferences || ''}\n${bookXpNote || ''}`.trim()}
+          draftedChapterCount={currentBook?.chapters.length || 0}
+          masterOutlineSpec={masterOutlineSpec}
+          onChangeMasterSpec={setMasterOutlineSpec}
+          volumePlan={volumePlan}
+          onChangeVolumePlan={setVolumePlan}
+          storyUnits={storyUnits}
+          onChangeStoryUnits={setStoryUnits}
+          chapterOutlines={chapterOutlines}
+          onChangeChapterOutlines={setChapterOutlines}
+          characterGraph={characterGraph}
+          onChangeCharacterGraph={setCharacterGraph}
+          keyItemRegistry={keyItemRegistry}
+          onChangeKeyItemRegistry={setKeyItemRegistry}
+          foreshadowLedger={foreshadowLedger}
+          onChangeForeshadowLedger={setForeshadowLedger}
+          lorebook={lorebook}
+          onChangeLorebook={setLorebook}
+          configs={configs}
+          uiSettings={uiSettings}
+          onJumpToWriter={handleProceedFromOutlinesToWriter}
+        />
+      )}
+
+      {/* SECTION 04: Platform Signing Review, Commercial Packaging & Foreshadow Ledger */}
+      {setupSection === 'signing' && (
+        <NovelSigningSubmissionHub
+          bookPreview={bookPreviewForExport}
+          targetPlatform={targetPlatform}
+          onChangeTargetPlatform={setTargetPlatform}
+          commercialBlurb={commercialBlurb}
+          onChangeCommercialBlurb={setCommercialBlurb}
+          alternateTitles={alternateTitles}
+          onApplyAlternateTitle={(newTitle) => {
+            setTitle(newTitle);
+            notify(`已采用书名《${newTitle}》`, 'success');
+          }}
+          foreshadowLedger={foreshadowLedger}
+          onUpdateForeshadowLedger={setForeshadowLedger}
+          signingReviewReport={signingReviewReport}
+          isGeneratingPackaging={isGeneratingPackaging}
+          isRunningSigningReview={isRunningSigningReview}
+          onGenerateCommercialPackaging={handleGenerateCommercialPackaging}
+          onRunEditorialSigningReview={handleRunEditorialSigningReview}
+          onNotify={notify}
+        />
+      )}
+
+      {/* SECTION 05: Lorebook 2.0 */}
       {setupSection === 'lorebook' && (
         <section className="studio-card p-5 sm:p-7 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
@@ -1571,89 +2628,16 @@ export const SetupView: React.FC<SetupViewProps> = ({
             )}
           </section>
 
-          <section className="studio-card p-5 sm:p-7 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-3">
-              <div>
-                <h2 className="text-base font-bold text-[var(--text-primary)]">文笔韵律模仿样本 (可选)</h2>
-                <p className="text-xs text-[var(--text-muted)]">
-                  贴入 500 ~ 3000 字您钟爱的小说选段，AI 将仅模仿其冷暖语感、分句呼吸与用词密度，绝不抄袭人名剧情。
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <label className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] text-xs font-medium hover:bg-[var(--bg-muted)] flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>导入 txt/md</span>
-                  <input
-                    type="file"
-                    accept=".txt,.md"
-                    onChange={handleStyleFileInputChange}
-                    className="hidden"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={handleSaveStyleSnapshot}
-                  className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] text-xs font-medium hover:bg-[var(--bg-muted)] whitespace-nowrap"
-                >
-                  保存文风快照
-                </button>
-              </div>
-            </div>
-
-            <textarea
-              rows={7}
-              value={styleReference}
-              onChange={(e) => setStyleReference(e.target.value)}
-              placeholder="在此粘贴您喜欢的文笔段落样本..."
-              className="studio-input w-full p-3.5 text-sm leading-relaxed font-editorial-serif"
+          <section className="studio-card p-5 sm:p-7">
+            <StyleDistillationPanel
+              activeProfile={activeDistilledStyle}
+              onChangeActiveProfile={setActiveDistilledStyle}
+              legacyStyleReference={styleReference || null}
+              onClearLegacyStyleReference={() => setStyleReference('')}
+              configs={configs}
+              uiSettings={uiSettings}
+              onRefreshGlobalSkills={onRefreshGlobalSkills}
             />
-
-            {styleHistory.length > 0 && (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                <select
-                  value={selectedStyleId}
-                  onChange={(e) => setSelectedStyleId(e.target.value)}
-                  className="studio-input flex-1 min-h-[42px] px-3 py-2 text-xs"
-                >
-                  <option value="">选择历史文风快照 ({styleHistory.length})...</option>
-                  {styleHistory.map((s) => (
-                    <option key={s.id} value={String(s.id)}>
-                      {(s.content || '').slice(0, 42)}...
-                    </option>
-                  ))}
-                </select>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    disabled={!selectedStyleId}
-                    onClick={() => {
-                      const item = styleHistory.find((s) => String(s.id) === selectedStyleId);
-                      if (item?.content) {
-                        setStyleReference(item.content);
-                        notify('已加载历史文风样本', 'info');
-                      }
-                    }}
-                    className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)] text-xs font-medium disabled:opacity-40"
-                  >
-                    载入
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!selectedStyleId}
-                    onClick={async () => {
-                      await dbDelete(STORE_NAMES.STYLE_HISTORY, Number(selectedStyleId));
-                      setSelectedStyleId('');
-                      await loadHistories();
-                      notify('已删除该文风记录', 'info');
-                    }}
-                    className="min-h-[42px] px-3 py-2 rounded-xl text-rose-600 hover:bg-rose-500/10 text-xs font-medium disabled:opacity-40"
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
-            )}
           </section>
         </div>
       )}
@@ -2032,11 +3016,13 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
               <div className="p-3 studio-muted space-y-1">
-                <p className="text-[var(--text-muted)]">全局 XP 创作宪法</p>
+                <p className="text-[var(--text-muted)]">本书 XP 审美基底开关</p>
                 <p className="font-semibold text-[var(--text-primary)]">
-                  {currentAuditReport.hasXpConstitution
-                    ? `已注入 (${currentAuditReport.xpLength} 字)`
-                    : '未填写 (可在引擎与技能页配置)'}
+                  {!currentAuditReport.xpSystemEnabled
+                    ? '已关闭（全链路物理隔离）'
+                    : currentAuditReport.hasXpConstitution
+                    ? `已开启并注入 (${currentAuditReport.xpLength} 字)`
+                    : '已开启 (待填写XP内容)'}
                 </p>
               </div>
               <div className="p-3 studio-muted space-y-1">

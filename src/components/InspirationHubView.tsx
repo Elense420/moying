@@ -21,6 +21,8 @@ import {
   Loader2,
   Feather,
   Copy,
+  ShieldCheck,
+  ShieldOff,
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { generateUUID } from '../utils/uuid';
@@ -48,7 +50,7 @@ interface InspirationHubViewProps {
   uiSettings: UiSettings;
   xpPreferences: string;
   globalSkills: NovelSkill[];
-  onSelectInspirationForCreation: (record: InspirationRecord) => void;
+  onSelectInspirationForCreation: (record: InspirationRecord, xpSystemEnabled?: boolean) => void;
   onOpenBookFromInspiration: (bookId: string) => void;
 }
 
@@ -69,6 +71,9 @@ export const InspirationHubView: React.FC<InspirationHubViewProps> = ({
 }) => {
   const [subTab, setSubTab] = useState<'cards' | 'create' | 'records'>('cards');
   const { openContextMenu, triggerQuickToast } = useContextMenu();
+  const [useXpInInspiration, setUseXpInInspiration] = useState<boolean>(() =>
+    Boolean((xpPreferences || '').trim())
+  );
 
   // Idea Cards State
   const [ideaCards, setIdeaCards] = useState<IdeaCard[]>([]);
@@ -321,12 +326,22 @@ export const InspirationHubView: React.FC<InspirationHubViewProps> = ({
     const modelToUse = uiSettings.inspirationApiModel || 'gemini-3.6-flash';
 
     setIsConvertingCards(true);
-    notify('正在挂载您的 XP 创作宪法与大纲类 SKILL，将零散卡片融合为完整小说大纲...', 'info');
+    notify(
+      useXpInInspiration
+        ? '正在以 XP 创作宪法为基底并挂载大纲 SKILL，将零散卡片融合为完整小说大纲...'
+        : '正在按纯净商业网文标准（已关闭个人 XP），将零散卡片融合为完整小说大纲...',
+      'info'
+    );
 
     try {
       const audit = buildUnifiedSystemPrompt({
         scope: 'outline',
-        roleHeader: '你是一位极具商业敏锐度与文学审美的小说策划主编，擅长把零散名场面与反差设定编织成环环相扣的长篇大纲。',
+        roleHeader: useXpInInspiration
+          ? '你是一位极具商业敏锐度与文学审美的小说策划主编，请以创作者的 XP 审美宪法为底层创作基底，把零散名场面与反差设定编织成环环相扣的长篇大纲。'
+          : '你是一位极具商业敏锐度的主流网文策划主编（当前已隔离个人 XP 系统），请把零散灵感卡片编织成适合商业平台签约的长篇大纲。',
+        customSettings: {
+          xpSystemEnabled: useXpInInspiration,
+        },
         globalSkills,
         xpPreferences,
         contextCorpus: cardTexts,
@@ -392,7 +407,12 @@ ${cardTexts}`;
     const modelToUse = uiSettings.inspirationApiModel || 'gemini-3.6-flash';
 
     setIsGenerating(true);
-    notify(`正在结合 XP 宪法与大纲 SKILL 批量构思 ${numOutlines} 篇差异化小说方案...`, 'info');
+    notify(
+      useXpInInspiration
+        ? `正在以 XP 宪法为创作基底批量构思 ${numOutlines} 篇差异化小说方案...`
+        : `正在按大众商业平台风向（已关闭个人 XP）批量构思 ${numOutlines} 篇差异化小说方案...`,
+      'info'
+    );
 
     try {
       const selectedGenreStr = selectedTags.join('、');
@@ -401,7 +421,12 @@ ${cardTexts}`;
 
       const audit = buildUnifiedSystemPrompt({
         scope: 'outline',
-        roleHeader: '你是一位顶尖小说创意总监，擅长在同一核心审美偏好下构思截然不同世界观与开局切入点的新颖大纲。',
+        roleHeader: useXpInInspiration
+          ? '你是一位顶尖小说创意总监，擅长以创作者的 XP 审美宪法为创作基底，构思截然不同世界观与开局切入点的新颖大纲。'
+          : '你是一位顶尖商业网文创意总监（当前已隔离个人 XP 系统），擅长构思高留存、强冲突、适合主流小说平台签约的差异化大纲。',
+        customSettings: {
+          xpSystemEnabled: useXpInInspiration,
+        },
         globalSkills,
         xpPreferences,
         contextCorpus: corpus,
@@ -644,20 +669,42 @@ ${cardTexts}`;
       <section className="studio-card p-5 sm:p-7 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <p className="text-xs text-[var(--text-muted)]">创意孵化与脑洞归档 · 自动挂载大纲 SKILL 与 XP 宪法</p>
+            <p className="text-xs text-[var(--text-muted)]">
+              创意孵化与脑洞归档 · {useXpInInspiration ? '当前已开启 XP 审美基底' : '当前已关闭 XP（纯净商业脑暴）'}
+            </p>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] font-editorial-serif">
               灵感工坊
             </h1>
           </div>
 
-          <MotionButton
-            type="button"
-            onClick={() => setIsShareImportOpen(true)}
-            className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 self-start sm:self-auto cursor-pointer"
-          >
-            <Globe className="w-3.5 h-3.5" />
-            <span>贴入外部简介 AI 拆解看点</span>
-          </MotionButton>
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setUseXpInInspiration((v) => !v)}
+              className={`min-h-[42px] px-3.5 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                useXpInInspiration
+                  ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)]'
+                  : 'border-[var(--border-subtle)] bg-[var(--bg-muted)] text-[var(--text-secondary)]'
+              }`}
+              title="控制灵感脑暴、卡片融合以及立项开书时是否启用 XP 创作基底"
+            >
+              {useXpInInspiration ? (
+                <ShieldCheck className="w-3.5 h-3.5 text-[var(--accent)]" />
+              ) : (
+                <ShieldOff className="w-3.5 h-3.5" />
+              )}
+              <span>{useXpInInspiration ? 'XP基底：已开启' : 'XP基底：已关闭'}</span>
+            </button>
+
+            <MotionButton
+              type="button"
+              onClick={() => setIsShareImportOpen(true)}
+              className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Globe className="w-3.5 h-3.5" />
+              <span>贴入外部简介 AI 拆解看点</span>
+            </MotionButton>
+          </div>
         </div>
 
         {statusMessage && (
@@ -1121,7 +1168,7 @@ ${cardTexts}`;
                         id: 'launch-book',
                         label: '以此大纲立项开书',
                         icon: <Feather className="w-3.5 h-3.5" />,
-                        onSelect: () => onSelectInspirationForCreation(rec),
+                        onSelect: () => onSelectInspirationForCreation(rec, useXpInInspiration),
                       },
                       {
                         id: 'edit-rec',
@@ -1184,7 +1231,7 @@ ${cardTexts}`;
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        onSelectInspirationForCreation(rec);
+                        onSelectInspirationForCreation(rec, useXpInInspiration);
                       }}
                       className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[var(--accent)] text-[var(--accent-fg)] font-semibold flex items-center gap-1 cursor-pointer"
                     >
@@ -1404,7 +1451,7 @@ ${cardTexts}`;
                   onClick={() => {
                     const target = selectedRecord;
                     setSelectedRecord(null);
-                    onSelectInspirationForCreation(target);
+                    onSelectInspirationForCreation(target, useXpInInspiration);
                   }}
                   className="btn-primary min-h-[44px] px-5 py-2 text-xs flex items-center gap-1.5 cursor-pointer"
                 >

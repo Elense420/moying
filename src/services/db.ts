@@ -1,8 +1,20 @@
-import { Book, ApiConfig, InspirationRecord, UiSettings, HistoryItem, NovelSkill, DEFAULT_PRESET_SKILLS, DramaProject, DramaCandidatePlan } from '../types';
+import {
+  Book,
+  ApiConfig,
+  InspirationRecord,
+  UiSettings,
+  HistoryItem,
+  NovelSkill,
+  DEFAULT_PRESET_SKILLS,
+  LEGACY_DEPRECATED_SKILL_IDS,
+  DistilledStyleProfile,
+  DramaProject,
+  DramaCandidatePlan,
+} from '../types';
 import { generateUUID } from '../utils/uuid';
 
 const DB_NAME = 'aiNovelistDB';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 export const STORE_NAMES = {
   BOOKS: 'books',
@@ -11,6 +23,7 @@ export const STORE_NAMES = {
   OUTLINE_HISTORY: 'outlineHistory',
   UI_SETTINGS: 'uiSettings',
   STYLE_HISTORY: 'styleHistory',
+  DISTILLED_STYLES: 'distilledStyles',
   XP_PREFERENCES: 'xpPreferences',
   XP_PREFERENCES_HISTORY: 'xpPreferencesHistory',
   INSPIRATION_RECORDS: 'inspirationRecords',
@@ -736,33 +749,69 @@ export async function seedInitialDataIfEmpty() {
     }
   }
 
-  // Seed or upgrade default preset skills non-destructively
+  // Seed or upgrade the 6 GitHub skills & purge legacy preset skills
   await getGlobalSkills();
+  await getDistilledStyles();
+}
+
+const SKILLS_V3_MIGRATION_KEY = 'moyun_skills_v3_github_6';
+
+async function scrubLegacySkillsFromBooks(): Promise<void> {
+  const legacySet = new Set(LEGACY_DEPRECATED_SKILL_IDS);
+  const allBooks = await dbGetAll<Book>(STORE_NAMES.BOOKS);
+  for (const book of allBooks) {
+    if (book?.settings?.skills && Array.isArray(book.settings.skills)) {
+      const cleaned = book.settings.skills.filter((s) => !legacySet.has(s.id));
+      if (cleaned.length !== book.settings.skills.length) {
+        await dbPut(STORE_NAMES.BOOKS, {
+          ...book,
+          settings: {
+            ...book.settings,
+            skills: cleaned,
+          },
+        });
+      }
+    }
+  }
 }
 
 export async function getGlobalSkills(): Promise<NovelSkill[]> {
-  const list = await dbGetAll<NovelSkill>(STORE_NAMES.NOVEL_SKILLS);
-  if (!list || list.length === 0) {
+  const legacySet = new Set(LEGACY_DEPRECATED_SKILL_IDS);
+  const rawList = await dbGetAll<NovelSkill>(STORE_NAMES.NOVEL_SKILLS);
+
+  // Always purge any remaining deprecated v1/v2 built-in skills from IndexedDB
+  const survivingList: NovelSkill[] = [];
+  for (const item of rawList || []) {
+    if (legacySet.has(item.id)) {
+      await dbDelete(STORE_NAMES.NOVEL_SKILLS, item.id);
+    } else {
+      survivingList.push(item);
+    }
+  }
+
+  const migratedV3 = localStorage.getItem(SKILLS_V3_MIGRATION_KEY);
+  if (!migratedV3) {
+    await scrubLegacySkillsFromBooks();
+  }
+
+  if (survivingList.length === 0) {
     for (const s of DEFAULT_PRESET_SKILLS) {
       await dbPut(STORE_NAMES.NOVEL_SKILLS, s);
     }
+    localStorage.setItem(SKILLS_V3_MIGRATION_KEY, '1');
     return DEFAULT_PRESET_SKILLS;
   }
 
   const presetMap = new Map(DEFAULT_PRESET_SKILLS.map((p) => [p.id, p]));
-  const existingIds = new Set(list.map((s) => s.id));
+  const existingIds = new Set(survivingList.map((s) => s.id));
   const upgradedList: NovelSkill[] = [];
 
-  for (const item of list) {
+  for (const item of survivingList) {
     const presetRef = presetMap.get(item.id);
-    if (presetRef && (!item.scopes || !item.triggerMode)) {
+    if (presetRef && (!migratedV3 || !item.references || item.references.length === 0)) {
       const upgraded: NovelSkill = {
         ...presetRef,
-        ...item,
-        scopes: item.scopes && item.scopes.length > 0 ? item.scopes : presetRef.scopes,
-        triggerMode: item.triggerMode || presetRef.triggerMode || 'always',
-        keywords: item.keywords || presetRef.keywords || [],
-        priority: item.priority || presetRef.priority || 'normal',
+        enabled: item.enabled !== undefined ? item.enabled : presetRef.enabled,
       };
       await dbPut(STORE_NAMES.NOVEL_SKILLS, upgraded);
       upgradedList.push(upgraded);
@@ -780,16 +829,14 @@ export async function getGlobalSkills(): Promise<NovelSkill[]> {
     }
   }
 
-  // Inject newly added presets if user hasn't explicitly initialized them yet (one-time migration)
-  const migratedFlag = localStorage.getItem('moyun_skills_v2_migrated');
-  if (!migratedFlag) {
+  if (!migratedV3) {
     for (const preset of DEFAULT_PRESET_SKILLS) {
       if (!existingIds.has(preset.id)) {
         await dbPut(STORE_NAMES.NOVEL_SKILLS, preset);
         upgradedList.push(preset);
       }
     }
-    localStorage.setItem('moyun_skills_v2_migrated', '1');
+    localStorage.setItem(SKILLS_V3_MIGRATION_KEY, '1');
   }
 
   return upgradedList;
@@ -805,11 +852,111 @@ export async function deleteGlobalSkill(skillId: string): Promise<void> {
 
 export async function resetGlobalSkills(): Promise<NovelSkill[]> {
   await dbClear(STORE_NAMES.NOVEL_SKILLS);
+  await scrubLegacySkillsFromBooks();
   for (const s of DEFAULT_PRESET_SKILLS) {
     await dbPut(STORE_NAMES.NOVEL_SKILLS, s);
   }
-  localStorage.setItem('moyun_skills_v2_migrated', '1');
+  localStorage.setItem(SKILLS_V3_MIGRATION_KEY, '1');
   return DEFAULT_PRESET_SKILLS;
+}
+
+const DEFAULT_DISTILLED_STYLE_SEEDS: DistilledStyleProfile[] = [
+  {
+    id: 'distilled-seed-cold-blade',
+    name: '冷峻白描 · 错落短句刀锋流',
+    sourceAuthor: '武侠/硬派悬疑名家范式蒸馏',
+    createdAt: Date.now() - 86400000,
+    sampleExcerpt: '风停了。檐角的雨水落下来，砸在青石板上，碎成四瓣。他没有回头，右手拇指却已经抵住了刀镡。只差半寸。',
+    metrics: {
+      charCount: 1260,
+      sentenceCount: 74,
+      avgSentenceLen: 15.4,
+      sentenceLenStdDev: 13.8,
+      shortRatio: 44,
+      mediumRatio: 39,
+      longRatio: 17,
+      avgParagraphSentences: 1.9,
+      singleSentenceParaRatio: 36,
+      dialogueRatio: 34,
+      emDashPer1k: 0.8,
+      exclamationPer1k: 0.6,
+    },
+    narrativeVoice: '冷峻克制的贴身有限第三人称，镜头贴近人物指尖与视线落点，绝不替角色做煽情总结。',
+    sentenceCadence: '长短句强烈咬合（σ≈13.8）：铺陈环境用25~34字复合句，危机爆发或情绪拐点骤然收束为3~8字独句成段。',
+    sensorySignature: '偏重听觉微响（铁器摩擦、水滴、呼吸顿挫）与触觉冷暖湿度，极少堆砌色彩华丽形容词。',
+    dialogueCraft: '台词短促锋利，常答非所问或用物理动作直接替代回答，杜绝解释性长台词。',
+    lexicalFeatures: '高密度具体单音节/双音节实义动词（抵、扣、挑、碾、咽），严格克制“仿佛、似乎、不禁”等虚词。',
+    antiSlopTaboos: '绝对禁用“瞳孔微缩、嘴角勾起一抹弧度、不是…而是…、空气仿佛凝固、不容置疑”及章末升华总结。',
+    anonymizedAnchors: [
+      '灯芯爆了一记轻响。某甲把茶盏推到桌沿，没抬眼：“你来晚了半刻。”',
+      '巷口没有风。靴底碾过碎瓷的声音停在三步外，刀光比呼吸先到。',
+    ],
+    executableDirective: `【文风蒸馏DNA · 冷峻白描刀锋流】
+1. 句法呼吸（Burstiness σ≥13）：保持约 40% 短句（<12字）与 35% 独句自然段，在杀机或情绪顿挫处果断断句留白，拒绝每段均匀三四行的四平八稳排版。
+2. 镜头白描：只写可被摄像机与麦克风捕捉的物理动作与器物细节，严禁出现心理说明书与“他感到一阵莫名的情绪”式总结。
+3. 台词潜台词：人物对话不超过两句即穿插细微肢体反应，允许沉默或半截话，严禁使用破折号解释句。`,
+  },
+  {
+    id: 'distilled-seed-humid-tension',
+    name: '潮湿电影感 · 细腻拉扯慢镜头',
+    sourceAuthor: '现代文艺/高张力情感名家范式蒸馏',
+    createdAt: Date.now() - 43200000,
+    sampleExcerpt: '走廊尽头的声控灯灭了，只剩窗外霓虹在水杯壁上晃出一道暗红。她把濡湿的袖口往里折了一道，没接他递过来的伞。',
+    metrics: {
+      charCount: 1480,
+      sentenceCount: 68,
+      avgSentenceLen: 19.6,
+      sentenceLenStdDev: 14.2,
+      shortRatio: 33,
+      mediumRatio: 43,
+      longRatio: 24,
+      avgParagraphSentences: 2.3,
+      singleSentenceParaRatio: 28,
+      dialogueRatio: 31,
+      emDashPer1k: 1.1,
+      exclamationPer1k: 0.4,
+    },
+    narrativeVoice: '带有潮湿胶片质感的近景主观视角，擅长借日常器物错位折射人物未说出口的执念与防御。',
+    sentenceCadence: '舒缓绵密的长句描摹光影气味，紧接一句冷淡克制的短句戳破假象，节奏富于潮汐起伏。',
+    sensorySignature: '高频调用温度差、织物潮湿度、光斑折射与日常背景白噪音，用生活化实感消解悬浮网文腔。',
+    dialogueCraft: '口语松弛自然，人物越痛越说家常琐事，靠停顿、错开视线与摆弄手边小物件传递潜台词。',
+    lexicalFeatures: '善用生活化具象名词与微动作动词（折、洇、晃、摁灭、偏过头），剔除一切书面汇报词与翻译腔连词。',
+    antiSlopTaboos: '禁用“眼中闪过一丝复杂、声音不大却透着、他知道这意味着什么、命运的齿轮”等AI套话。',
+    anonymizedAnchors: [
+      '玻璃窗上蒙着一层薄雾，某乙用指腹划开一道缝，看楼下那盏车灯亮了很久，又熄灭。',
+      '“水凉了。”某甲把保温桶盖子拧紧，发出轻微的咔哒声，始终没提昨夜那通电话。',
+    ],
+    executableDirective: `【文风蒸馏DNA · 潮湿电影感慢镜头】
+1. 器物投射法则：人物情绪越剧烈，越要通过手边日常器物（水杯、袖口、灯影、钥匙扣）的细微错位来写，严禁直白喊出情绪词。
+2. 句长离散度控制（σ≥13.5）：长句负责营造温湿度与光影包裹感，短句负责冷淡收尾，单段控制在1~3句之间。
+3. 零AI腔红线：彻底禁用“不是…而是…”排比句、破折号追光解释句以及结尾预告式感叹。`,
+  },
+];
+
+const DISTILLED_SEED_FLAG = 'moyun_distilled_styles_v1_seeded';
+
+export async function getDistilledStyles(): Promise<DistilledStyleProfile[]> {
+  const existing = await dbGetAll<DistilledStyleProfile>(STORE_NAMES.DISTILLED_STYLES);
+  if ((!existing || existing.length === 0) && !localStorage.getItem(DISTILLED_SEED_FLAG)) {
+    for (const seed of DEFAULT_DISTILLED_STYLE_SEEDS) {
+      await dbPut(STORE_NAMES.DISTILLED_STYLES, seed);
+    }
+    localStorage.setItem(DISTILLED_SEED_FLAG, '1');
+    return DEFAULT_DISTILLED_STYLE_SEEDS;
+  }
+  return (existing || []).sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function saveDistilledStyle(
+  profile: DistilledStyleProfile
+): Promise<DistilledStyleProfile[]> {
+  await dbPut(STORE_NAMES.DISTILLED_STYLES, profile);
+  return getDistilledStyles();
+}
+
+export async function deleteDistilledStyle(id: string): Promise<DistilledStyleProfile[]> {
+  await dbDelete(STORE_NAMES.DISTILLED_STYLES, id);
+  return getDistilledStyles();
 }
 
 export async function getDramaCandidates(): Promise<DramaCandidatePlan[]> {

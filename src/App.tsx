@@ -71,6 +71,12 @@ import {
   deleteDramaCandidate,
   restoreDramaBackupData,
 } from './services/db';
+import { chatCompletion } from './services/apiClient';
+import {
+  buildNovelToDramaProjectMessages,
+  parseNovelToDramaProjectJson,
+  NovelToDramaAdaptationOptions,
+} from './services/dramaPromptEngine';
 import { generateUUID } from './utils/uuid';
 
 function StudioWorkspace() {
@@ -112,6 +118,8 @@ function StudioWorkspace() {
   // Modals (Novel Track)
   const [bookDetailTarget, setBookDetailTarget] = useState<Book | null>(null);
   const [isBookDetailOpen, setIsBookDetailOpen] = useState(false);
+  const [autoExpandDramatize, setAutoExpandDramatize] = useState(false);
+  const [isDramatizingBook, setIsDramatizingBook] = useState(false);
 
   const [readChapterTarget, setReadChapterTarget] = useState<Chapter | ArchivedChapter | null>(null);
   const [isReadChapterOpen, setIsReadChapterOpen] = useState(false);
@@ -350,6 +358,13 @@ function StudioWorkspace() {
   };
 
   const handleOpenBookDetail = (book: Book) => {
+    setAutoExpandDramatize(false);
+    setBookDetailTarget(book);
+    setIsBookDetailOpen(true);
+  };
+
+  const handleOpenBookDramatizeQuick = (book: Book) => {
+    setAutoExpandDramatize(true);
     setBookDetailTarget(book);
     setIsBookDetailOpen(true);
   };
@@ -459,7 +474,10 @@ function StudioWorkspace() {
     await handleSaveBook(updatedBook);
   };
 
-  const handleSelectInspirationForCreation = (record: InspirationRecord) => {
+  const handleSelectInspirationForCreation = (
+    record: InspirationRecord,
+    xpEnabled?: boolean
+  ) => {
     const dummyBook: Book = {
       id: generateUUID(),
       title: record.title,
@@ -484,6 +502,7 @@ function StudioWorkspace() {
         styleReference: null,
         lorebook: [],
         skills: globalSkills.map((sk) => ({ ...sk })),
+        xpSystemEnabled: xpEnabled !== undefined ? xpEnabled : Boolean(xpPreferences.trim()),
       },
     };
 
@@ -491,6 +510,45 @@ function StudioWorkspace() {
     localStorage.setItem('inspirationToLink', record.id);
     setUiSettings((prev) => ({ ...prev, activeTrack: 'novel' }));
     setActiveTab('setup');
+  };
+
+  const handleDramatizeNovelToDrama = async (
+    book: Book,
+    options: NovelToDramaAdaptationOptions
+  ) => {
+    const cfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
+    if (!cfg) {
+      triggerQuickToast('未找到可用的 API 线路，请先在「引擎与技能」中配置模型');
+      return;
+    }
+    const model = uiSettings.writerApiModel || cfg.modelsCache?.[0]?.id || 'gemini-3.6-flash';
+
+    setIsDramatizingBook(true);
+    const endTrack = beginGlobalActivity(`正在将《${book.title}》剧本化为漫剧立项...`);
+    try {
+      const messages = buildNovelToDramaProjectMessages(book, options);
+      const res = await chatCompletion({
+        provider: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model,
+        messages,
+        temperature: 0.78,
+      });
+      const dramaProject = parseNovelToDramaProjectJson(res.content || '', book, options);
+      await handleSaveDramaProject(dramaProject);
+      setIsBookDetailOpen(false);
+      setAutoExpandDramatize(false);
+      setUiSettings((prev) => ({ ...prev, activeTrack: 'drama' }));
+      setActiveTab('drama-setup');
+      triggerQuickToast(`已将小说《${book.title}》转化为漫剧剧本立项（已自动绑定原作对照）`);
+    } catch (err: any) {
+      console.error('Dramatize novel error:', err);
+      triggerQuickToast(`剧本化失败：${err?.message || '请检查模型线路或稍后重试'}`);
+    } finally {
+      endTrack();
+      setIsDramatizingBook(false);
+    }
   };
 
   // ======================== AI Comic-Drama Track Handlers ========================
@@ -764,6 +822,7 @@ function StudioWorkspace() {
                   onGoToSetup={handleQuickCreateBook}
                   onOpenDownloadBook={handleOpenDownloadById}
                   onRequestDeleteBook={requestDeleteBook}
+                  onDramatizeBookQuick={handleOpenBookDramatizeQuick}
                 />
               )}
 
@@ -777,6 +836,7 @@ function StudioWorkspace() {
                   onRefreshGlobalSkills={refreshGlobalSkills}
                   onStartWritingFirstChapter={handleStartWritingFirstChapter}
                   onUpdateBookSettings={handleUpdateBookSettings}
+                  onSaveDraftBook={handleSaveBook}
                 />
               )}
 
@@ -901,7 +961,12 @@ function StudioWorkspace() {
       <BookDetailModal
         book={bookDetailTarget}
         isOpen={isBookDetailOpen}
-        onClose={() => setIsBookDetailOpen(false)}
+        onClose={() => {
+          if (!isDramatizingBook) {
+            setIsBookDetailOpen(false);
+            setAutoExpandDramatize(false);
+          }
+        }}
         onContinueWriting={handleContinueWritingBook}
         onOpenDownloadDialog={handleOpenDownloadById}
         onDeleteBook={requestDeleteBook}
@@ -914,6 +979,9 @@ function StudioWorkspace() {
           setIsSummaryViewOpen(true);
         }}
         onDeleteSummary={handleDeleteSummary}
+        onDramatizeBook={handleDramatizeNovelToDrama}
+        isDramatizing={isDramatizingBook}
+        autoExpandDramatize={autoExpandDramatize}
       />
 
       <ReadChapterModal

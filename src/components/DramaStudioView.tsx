@@ -34,6 +34,7 @@ import {
   Link2,
   Package,
   ShieldAlert,
+  Columns2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -119,6 +120,7 @@ import {
   DramaLogicProvenanceWindow,
   DramaStructuredKanban,
 } from './DramaStructuredKanban';
+import { DramaSourceNovelSidebar } from './DramaSourceNovelSidebar';
 
 function getArcProgressWidthClass(pct: number): string {
   const v = Math.max(0, Math.min(100, Math.round(pct)));
@@ -3195,6 +3197,9 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
   const [selectedBookId, setSelectedBookId] = useState<string>(books[0]?.id || '');
   const [selectedBookChapterIdx, setSelectedBookChapterIdx] = useState<number>(0);
   const [isMemoryHubOpen, setIsMemoryHubOpen] = useState<boolean>(true);
+  const [isSourceNovelSidebarOpen, setIsSourceNovelSidebarOpen] = useState<boolean>(() =>
+    Boolean(currentProject?.sourceNovelId)
+  );
 
   useEffect(() => {
     if (currentProject?.preferredScriptFormat) {
@@ -3203,6 +3208,9 @@ export const DramaWriterView: React.FC<DramaWriterViewProps> = ({
     if (currentProject) {
       const spec = getEpisodeDurationSpec(currentProject.episodeDurationSec);
       setTargetShotCount(spec.recommendedShots);
+      if (currentProject.sourceNovelId) {
+        setIsSourceNovelSidebarOpen(true);
+      }
     }
   }, [currentProject?.id, currentProject?.episodeDurationSec]);
 
@@ -4231,6 +4239,20 @@ ${charContext}
             <div className="flex flex-wrap items-center gap-2">
               <MotionButton
                 type="button"
+                onClick={() => setIsSourceNovelSidebarOpen((v) => !v)}
+                className={`min-h-[38px] px-3.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  isSourceNovelSidebarOpen
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                    : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[var(--accent)]/50'
+                }`}
+                title="开启或收起右侧「原著小说对照」分屏侧边栏，边看小说原文边改写剧本"
+              >
+                <Columns2 className="w-3.5 h-3.5" />
+                <span>{isSourceNovelSidebarOpen ? '收起原作对照' : '原作对照分屏'}</span>
+              </MotionButton>
+
+              <MotionButton
+                type="button"
                 onClick={() => setIsFormatGuideOpen((v) => !v)}
                 className="min-h-[38px] px-3 py-1.5 rounded-xl studio-muted text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
               >
@@ -4329,8 +4351,20 @@ ${charContext}
           </div>
         )}
 
-        {/* Active Streaming Generation Lock Overlay & Live Preview */}
-        {isGenerating && (
+        <div
+          className={
+            isSourceNovelSidebarOpen
+              ? 'grid grid-cols-1 xl:grid-cols-12 gap-5 items-start'
+              : 'space-y-5'
+          }
+        >
+          <div
+            className={
+              isSourceNovelSidebarOpen ? 'xl:col-span-7 space-y-5 min-w-0' : 'space-y-5'
+            }
+          >
+            {/* Active Streaming Generation Lock Overlay & Live Preview */}
+            {isGenerating && (
           <section className="studio-card p-5 sm:p-6 space-y-4 border-[var(--accent)]">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
@@ -4990,6 +5024,39 @@ ${charContext}
             </div>
           </div>
         </section>
+          </div>
+
+          {isSourceNovelSidebarOpen && (
+            <div className="xl:col-span-5 xl:sticky xl:top-20 min-w-0">
+              <DramaSourceNovelSidebar
+                project={currentProject}
+                books={books}
+                targetEpisodeIndex={activeEpisode ? activeEpisode.index : targetEpisodeIndex}
+                isGenerating={isGenerating}
+                onBindSourceNovel={(novelId) => {
+                  onSaveProject({
+                    ...currentProject,
+                    sourceNovelId: novelId,
+                    lastModifiedAt: Date.now(),
+                  });
+                }}
+                onInsertExcerptToDirector={(excerpt) => {
+                  setDirectorInput((prev) =>
+                    prev.trim() ? `${prev.trim()}\n${excerpt}` : excerpt
+                  );
+                }}
+                onAdaptChapterToEpisode={(novelSrc) => {
+                  executeGenerateLiteraryScriptOnly(
+                    activeEpisode ? nextEpisodeNumber : targetEpisodeIndex,
+                    directorInput,
+                    novelSrc
+                  );
+                }}
+                onClose={() => setIsSourceNovelSidebarOpen(false)}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Messy Client Script Import & Wash Modal */}

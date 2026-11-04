@@ -1,4 +1,5 @@
 import {
+  Book,
   DramaProject,
   DramaTrackPreset,
   HOT_DRAMA_TRACKS,
@@ -3430,4 +3431,459 @@ export function parseDramaConsultantResponse(raw: string): DramaConsultantRespon
     };
   }
 }
+
+// ============================================================================
+// Novel -> Commercial Comic-Drama Project Adaptation Engine ("剧本化" — Req 2)
+// ============================================================================
+
+export interface NovelToDramaAdaptationOptions {
+  aspectRatio: DramaAspectRatio;
+  episodeDurationSec: number;
+  visualStyle: DramaVisualStyle;
+  totalPlannedEpisodes: number;
+  initialEpisodePlanCount: number;
+}
+
+export function buildNovelToDramaProjectMessages(
+  book: Book,
+  options: NovelToDramaAdaptationOptions
+): Array<{ role: 'system' | 'user'; content: string }> {
+  const durSpec = getEpisodeDurationSpec(options.episodeDurationSec);
+  const trackRefs = HOT_DRAMA_TRACKS.map(
+    (t) => `- ${t.id}：${t.name}（${t.channel} · 推荐视觉：${t.visualStyleRecommend}）`
+  ).join('\n');
+
+  const chapterOutlinesSnippet = (book.settings?.chapterOutlines || [])
+    .slice(0, 20)
+    .map(
+      (co) =>
+        `第${co.chapterIndex}章《${co.title}》：${co.summary}${co.hookNote ? `（钩子：${co.hookNote}）` : ''}`
+    )
+    .join('\n');
+
+  const writtenChaptersSnippet = (book.chapters || [])
+    .slice(0, 12)
+    .map((ch) => {
+      const clean = (ch.text || '').replace(/\s+/g, ' ').trim();
+      const head = clean.slice(0, 320);
+      const tail = clean.length > 500 ? ` ... [章末]：${clean.slice(-220)}` : '';
+      return `【原著第${ch.index}章《${ch.title}》（${clean.length}字）】：${head}${tail}`;
+    })
+    .join('\n\n');
+
+  const novelForeshadowSnippet = (book.settings?.foreshadowLedger || [])
+    .slice(0, 10)
+    .map(
+      (f) =>
+        `- ${f.name}（原著第${f.plantedChapter}章埋设${f.expectedResolveChapter ? ` → 预计${f.expectedResolveChapter}回收` : ''}）：${f.note}`
+    )
+    .join('\n');
+
+  const systemPrompt = `你是一位顶尖的网文IP漫剧改编总导演与商业短剧主编。
+你的任务是将一部已打磨好情节的小说（含原著大纲、角色设定、分章细纲与已写章节正文），精准改编转化为一套可直接投入工业化生产的【AI漫剧剧本立项工程（DramaProject）】。
+
+【核心改编铁律】：
+1. 影视化提纯：彻底剥离小说中冗长的静态心理独白与纯文字背景介绍，转化为外化可视动作（△）、强冲突对白、关键视觉道具与黄金前3秒画面奇观；
+2. 忠于原著骨架与因果逻辑：保留原著的核心人物关系张力、关键事件因果链与伏笔脉络，严禁出现无铺垫瞬移或角色“未见却知”的上帝视角漏洞；
+3. 规格严格对齐：画幅为「${options.aspectRatio}」，单集时长 **${durSpec.durationSec} 秒**（对应后续单集标准剧本约 ${durSpec.minWords}~${durSpec.maxWords} 字），全剧规划 **${options.totalPlannedEpisodes} 集**，画风锁定为「${options.visualStyle}」；
+4. 章节→剧集映射清晰：在首批发集细纲（前 ${options.initialEpisodePlanCount} 集）中，每集 coreConflict 开头请用「[对应原著第X章]」标注改编来源章节，方便编剧在执笔台开启「原作对照」分屏核对！
+5. 纯净商业漫剧隔离：严禁掺入任何私人露骨癖好标签，确保符合主流短视频漫剧平台商业投流审核规范。`;
+
+  const userPrompt = `请将以下原著小说一键转化为完整的【AI漫剧剧本立项工程 JSON】：
+
+【原著书名】：《${book.title}》
+【原著题材与基调】：${book.settings?.genre || '商业网文'} · ${book.settings?.style || '强冲突快节奏'}
+${book.settings?.commercialBlurb ? `【原著商业简介】：\n${book.settings.commercialBlurb}\n` : ''}
+【原著核心大纲】：
+${(book.settings?.outline || '暂无详细大纲，请从下方章节内容提炼主线').slice(0, 3500)}
+
+【原著角色设定】：
+${(book.settings?.characters || '请从大纲与章节正文中提炼核心主角、反派与关键配角').slice(0, 1800)}
+
+【原著世界观与规则】：
+${(book.settings?.world || '常规世界观').slice(0, 1200)}
+
+${novelForeshadowSnippet ? `【原著长线伏笔台账】：\n${novelForeshadowSnippet}\n` : ''}
+${chapterOutlinesSnippet ? `【原著分章细纲参考】：\n${chapterOutlinesSnippet}\n` : ''}
+${writtenChaptersSnippet ? `【原著已完稿章节正文节选（共 ${book.chapters.length} 章）】：\n${writtenChaptersSnippet}\n` : ''}
+
+可选热门赛道 ID 参考：
+${trackRefs}
+
+请严格输出合法的纯 JSON 对象（不要包裹 markdown 代码块）：
+{
+  "title": "${book.title}",
+  "trackId": "从上方赛道ID中选最匹配的一项",
+  "channel": "男频爆款 | 女频爆款 | 全民脑洞 | 悬疑惊悚",
+  "logline": "一句话高概念商业漫剧卖点（40-70字）",
+  "targetAudience": "核心受众画像",
+  "golden3SecHook": "第1集开场前3秒极具冲击力的画面与台词钩子",
+  "paywallEpisodeIndex": 10,
+  "synopsis": "改编后的商业漫剧总梗概（300-500字，突出冲突升级与付费卡点）",
+  "narrativeBible": {
+    "worldSettingAndRules": "视觉化世界观与战力/社会生存铁律",
+    "storylineOverview": "全剧故事线总览",
+    "mainPlotline": "贯穿全剧的核心主线目标",
+    "subPlotlines": "重要感情副线或暗线博弈",
+    "frameworkStructure": "全剧 ${options.totalPlannedEpisodes} 集阶段幕次结构",
+    "pacingStrategy": "基于单集 ${durSpec.durationSec} 秒的情绪爽点与悬念节奏分布",
+    "characterArcsAndRelations": "核心人物弧光、阵营对立与知情权边界"
+  },
+  "characterAssets": [
+    {
+      "name": "角色姓名",
+      "roleTag": "男主 / 女主 / 核心反派 / 关键配角",
+      "tier": "protagonist | recurring_antagonist | major_support",
+      "ageAndArchetype": "年龄与高辨识度人设原型",
+      "appearanceZh": "锁死不变的国漫/2.5D外貌、发型瞳色与标志性服饰描述",
+      "visualPromptEn": "1boy/1girl, detailed anime/2.5D character sheet tags in English",
+      "voicePersona": "配音音色与台词语速",
+      "signatureTrait": "标志性镜头微动作"
+    }
+  ],
+  "sceneAnchors": [
+    {
+      "sceneName": "核心高频场景名",
+      "stateVariant": "常规态 / 夜雨态 / 危机态",
+      "lightingAndMood": "光影色调与空间情绪锚点",
+      "visualPromptZh": "中文生图固定环境词",
+      "visualPromptEn": "English background prompt tags"
+    }
+  ],
+  "storyArcs": [
+    {
+      "title": "主线/支线名称",
+      "arcType": "主线 | 情感副线 | 暗线/反派线 | 群像支线",
+      "spanEpisodes": "第1-${options.totalPlannedEpisodes}集",
+      "progressPct": 15,
+      "currentStage": "初始立项就绪",
+      "coreConflictAndGoal": "核心推进目标与终极闭环"
+    }
+  ],
+  "plotRhythm": [
+    {
+      "anchorEpisode": 1,
+      "episodeRange": "第1集",
+      "rhythmTier": "爽点小高潮",
+      "tensionScore": 88,
+      "beatGoal": "黄金3秒抓人+原著首章核心矛盾引爆"
+    },
+    {
+      "anchorEpisode": 10,
+      "episodeRange": "第10集",
+      "rhythmTier": "付费大卡点",
+      "tensionScore": 96,
+      "beatGoal": "底牌将掀未掀促充值断章悬念"
+    }
+  ],
+  "keyPropManifest": [
+    {
+      "name": "关键视觉道具名",
+      "visualSpec": "固定外观材质特写描述",
+      "currentHolder": "初始持有者",
+      "debutEpisode": 1,
+      "status": "持有中",
+      "narrativeFunction": "道具推动剧情与因果发现的作用"
+    }
+  ],
+  "foreshadowingLedger": [
+    {
+      "name": "漫剧视觉伏笔名称",
+      "category": "关键道具 | 身世/人物伏笔 | 核心剧情暗线 | 规则/契约死穴",
+      "ownerOrRelation": "关联角色",
+      "plantedEpisode": 1,
+      "expectedPayoffEpisode": "第10集",
+      "status": "planted",
+      "visualAnchorNote": "镜头特写埋设方式",
+      "payoffNote": "后续反转回收逻辑"
+    }
+  ],
+  "episodePlan": [
+    {
+      "episodeIndex": 1,
+      "title": "第1集标题",
+      "beatSummary": "[对应原著第1章] 本集核心视觉事件与正面冲突交锋简述，集末钩子明确",
+      "hookType": "免费强留存",
+      "tensionScore": 85,
+      "foreshadowingOrProps": "埋设或出场的关键道具/伏笔备注"
+    }
+  ]
+}
+请确保 episodePlan 数组完整生成第 1 集至第 ${options.initialEpisodePlanCount} 集的分集细纲！`;
+
+  return [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+}
+
+export function parseNovelToDramaProjectJson(
+  raw: string,
+  book: Book,
+  options: NovelToDramaAdaptationOptions
+): DramaProject {
+  let parsed: any = null;
+  try {
+    const cleaned = (raw || '').replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
+    const fb = cleaned.indexOf('{');
+    const lb = cleaned.lastIndexOf('}');
+    if (fb >= 0 && lb > fb) {
+      parsed = JSON.parse(cleaned.slice(fb, lb + 1));
+    }
+  } catch {
+    parsed = null;
+  }
+
+  const matchedTrack =
+    HOT_DRAMA_TRACKS.find((t) => t.id === parsed?.trackId) || HOT_DRAMA_TRACKS[0];
+  const validChannels: DramaAudienceChannel[] = ['男频爆款', '女频爆款', '全民脑洞', '悬疑惊悚'];
+  const channel: DramaAudienceChannel = validChannels.includes(parsed?.channel)
+    ? parsed.channel
+    : matchedTrack.channel;
+
+  const characterAssets: DramaCharacterAsset[] =
+    Array.isArray(parsed?.characterAssets) && parsed.characterAssets.length > 0
+      ? parsed.characterAssets.map((c: any) => ({
+          id: generateUUID(),
+          name: String(c.name || '核心角色').trim(),
+          roleTag: String(c.roleTag || '主角').trim(),
+          tier:
+            c.tier === 'recurring_antagonist' || c.tier === 'major_support'
+              ? (c.tier as DramaCharacterTier)
+              : ('protagonist' as DramaCharacterTier),
+          firstAppearanceEp: 1,
+          ageAndArchetype: String(c.ageAndArchetype || ''),
+          appearanceZh: String(c.appearanceZh || ''),
+          visualPromptEn: String(c.visualPromptEn || ''),
+          voicePersona: String(c.voicePersona || '自然有张力'),
+          signatureTrait: String(c.signatureTrait || ''),
+        }))
+      : (book.settings?.lorebook || [])
+          .filter((l) => l.entryType === 'character')
+          .slice(0, 6)
+          .map((l) => ({
+            id: generateUUID(),
+            name: l.name,
+            roleTag: '原著核心角色',
+            tier: 'protagonist' as DramaCharacterTier,
+            firstAppearanceEp: 1,
+            ageAndArchetype: l.personality || '',
+            appearanceZh: l.appearance || '',
+            visualPromptEn: 'masterpiece, detailed anime style character portrait',
+            voicePersona: l.behaviorQuirks || '贴合原著人设声线',
+            signatureTrait: l.behaviorQuirks || '',
+          }));
+
+  const sceneAnchors: DramaSceneAnchor[] = Array.isArray(parsed?.sceneAnchors)
+    ? parsed.sceneAnchors
+        .filter((s: any) => s && s.sceneName)
+        .map((s: any) => ({
+          id: generateUUID(),
+          sceneName: String(s.sceneName).trim(),
+          stateVariant: s.stateVariant ? String(s.stateVariant).trim() : '常规态',
+          sourceRef: '原著小说剧本化提取',
+          lightingAndMood: String(s.lightingAndMood || s.lightingAndTone || ''),
+          visualPromptZh: String(s.visualPromptZh || s.environmentDesc || ''),
+          visualPromptEn: String(s.visualPromptEn || ''),
+        }))
+    : [];
+
+  const validArcTypes: DramaStoryArcType[] = ['主线', '情感副线', '暗线/反派线', '群像支线'];
+  const storyArcs: DramaStoryArc[] =
+    Array.isArray(parsed?.storyArcs) && parsed.storyArcs.length > 0
+      ? parsed.storyArcs.map((a: any) => ({
+          id: generateUUID(),
+          title: String(a.title || '原著主线改编'),
+          arcType: validArcTypes.includes(a.arcType) ? (a.arcType as DramaStoryArcType) : '主线',
+          spanEpisodes: String(a.spanEpisodes || `第1-${options.totalPlannedEpisodes}集`),
+          progressPct: Number(a.progressPct ?? a.progressPercent) || 15,
+          currentStage: String(a.currentStage || a.currentProgressNote || '由原著小说转化立项'),
+          coreConflictAndGoal: String(a.coreConflictAndGoal || a.coreGoalAndConflict || ''),
+        }))
+      : [
+          {
+            id: generateUUID(),
+            title: `《${book.title}》核心改编主线`,
+            arcType: '主线',
+            spanEpisodes: `第1-${options.totalPlannedEpisodes}集`,
+            progressPct: 15,
+            currentStage: '已绑定原著小说章节',
+            coreConflictAndGoal: (book.settings?.outline || '').slice(0, 180) || '推进原著核心矛盾',
+          },
+        ];
+
+  const validRhythmTiers: DramaRhythmTier[] = [
+    '蓄力铺垫',
+    '拉扯升级',
+    '爽点小高潮',
+    '付费大卡点',
+    '终局大爆发',
+  ];
+  const plotRhythm: DramaPlotRhythmPoint[] = Array.isArray(parsed?.plotRhythm)
+    ? parsed.plotRhythm.map((r: any) => {
+        const epNum = Number(r.anchorEpisode ?? r.episodeIndex) || 1;
+        return {
+          id: generateUUID(),
+          anchorEpisode: epNum,
+          episodeRange: String(r.episodeRange || `第${epNum}集`),
+          rhythmTier: validRhythmTiers.includes(r.rhythmTier)
+            ? (r.rhythmTier as DramaRhythmTier)
+            : '拉扯升级',
+          tensionScore: Math.max(10, Math.min(100, Number(r.tensionScore) || 80)),
+          beatGoal: String(r.beatGoal || r.beatLabel || '关键冲突爆发点'),
+        };
+      })
+    : [];
+
+  const validPropStatuses: DramaKeyPropStatus[] = [
+    '持有中',
+    '已移交',
+    '遗失/争夺中',
+    '已损毁',
+    '已引爆回收',
+  ];
+  const keyPropManifest: DramaKeyPropItem[] = Array.isArray(parsed?.keyPropManifest)
+    ? parsed.keyPropManifest
+        .filter((p: any) => p && p.name)
+        .map((p: any) => ({
+          id: generateUUID(),
+          name: String(p.name).trim(),
+          currentHolder: String(p.currentHolder || '主角'),
+          debutEpisode: Number(p.debutEpisode ?? p.firstAppearEpisode) || 1,
+          visualSpec: String(p.visualSpec || p.visualDesignLock || ''),
+          narrativeFunction: String(p.narrativeFunction || p.plotSignificance || ''),
+          status: validPropStatuses.includes(p.status)
+            ? (p.status as DramaKeyPropStatus)
+            : '持有中',
+        }))
+    : [];
+
+  const foreshadowingLedger: DramaForeshadowItem[] =
+    Array.isArray(parsed?.foreshadowingLedger) && parsed.foreshadowingLedger.length > 0
+      ? parsed.foreshadowingLedger
+          .filter((f: any) => f && f.name)
+          .map((f: any) => ({
+            id: generateUUID(),
+            name: String(f.name).trim(),
+            category: (VALID_FORESHADOW_CATEGORIES.includes(f.category)
+              ? f.category
+              : '核心剧情暗线') as DramaForeshadowCategory,
+            ownerOrRelation: String(f.ownerOrRelation || '主角线'),
+            plantedEpisode: Number(f.plantedEpisode) || 1,
+            expectedPayoffEpisode: String(f.expectedPayoffEpisode || ''),
+            status: 'planted' as DramaForeshadowStatus,
+            visualAnchorNote: String(f.visualAnchorNote || ''),
+            payoffNote: String(f.payoffNote || ''),
+          }))
+      : (book.settings?.foreshadowLedger || []).map((nf) => ({
+          id: generateUUID(),
+          name: nf.name,
+          category: '核心剧情暗线' as DramaForeshadowCategory,
+          ownerOrRelation: '原著继承线索',
+          plantedEpisode: nf.plantedChapter || 1,
+          expectedPayoffEpisode: nf.expectedResolveChapter || '',
+          status: (nf.status === 'resolved' ? 'resolved' : 'planted') as DramaForeshadowStatus,
+          visualAnchorNote: nf.note || '',
+          payoffNote: nf.note || '',
+        }));
+
+  const paywallIdx = Number(parsed?.paywallEpisodeIndex) || 10;
+
+  let episodePlan: DramaEpisodePlanItem[] = [];
+  if (Array.isArray(parsed?.episodePlan) && parsed.episodePlan.length > 0) {
+    episodePlan = parsed.episodePlan.map((ep: any, idx: number) => {
+      const epIdx = Number(ep.episodeIndex ?? ep.index) || idx + 1;
+      const defaultHook: DramaEpisodePlanItem['hookType'] =
+        epIdx === paywallIdx ? '核心付费卡点' : '免费强留存';
+      return {
+        episodeIndex: epIdx,
+        title:
+          String(ep.title || `第${epIdx}集`)
+            .replace(/^第\d+集[\s:：·—-]*/u, '')
+            .trim() || `剧情推进`,
+        beatSummary: String(ep.beatSummary || ep.coreConflict || ''),
+        hookType: VALID_HOOK_TYPES.includes(ep.hookType) ? ep.hookType : defaultHook,
+        tensionScore: Number(ep.tensionScore) || (epIdx === paywallIdx ? 95 : 75),
+        foreshadowingOrProps: ep.foreshadowingOrProps
+          ? String(ep.foreshadowingOrProps)
+          : ep.hookPoint
+          ? String(ep.hookPoint)
+          : undefined,
+      };
+    });
+  } else if ((book.settings?.chapterOutlines || []).length > 0) {
+    episodePlan = (book.settings.chapterOutlines || [])
+      .slice(0, options.initialEpisodePlanCount)
+      .map((co, idx) => {
+        const epIdx = idx + 1;
+        return {
+          episodeIndex: epIdx,
+          title: co.title,
+          beatSummary: `[对应原著第${co.chapterIndex}章] ${co.summary}`,
+          hookType: epIdx === paywallIdx ? '核心付费卡点' : '免费强留存',
+          tensionScore: epIdx === paywallIdx ? 95 : 78,
+          foreshadowingOrProps: co.hookNote || undefined,
+        };
+      });
+  } else if (book.chapters.length > 0) {
+    episodePlan = book.chapters.slice(0, options.initialEpisodePlanCount).map((ch, idx) => {
+      const epIdx = idx + 1;
+      return {
+        episodeIndex: epIdx,
+        title: ch.title,
+        beatSummary: `[对应原著第${ch.index}章《${ch.title}》] ${(ch.text || '')
+          .replace(/\s+/g, ' ')
+          .slice(0, 140)}...`,
+        hookType: epIdx === paywallIdx ? '核心付费卡点' : '免费强留存',
+        tensionScore: epIdx === paywallIdx ? 95 : 78,
+      };
+    });
+  }
+
+  const narrativeBible: DramaNarrativeBible = parsed?.narrativeBible
+    ? normalizeNarrativeBible(parsed.narrativeBible)
+    : {
+        worldSettingAndRules: book.settings?.world || '',
+        storylineOverview: (book.settings?.outline || '').slice(0, 500),
+        mainPlotline: (book.settings?.outline || '').slice(0, 400),
+        subPlotlines: '',
+        frameworkStructure: `由原著小说《${book.title}》改编，规划 ${options.totalPlannedEpisodes} 集漫剧结构`,
+        pacingStrategy: `单集 ${options.episodeDurationSec} 秒高频反转节奏`,
+        characterArcsAndRelations: book.settings?.characters || '',
+      };
+
+  return {
+    id: generateUUID(),
+    title: String(parsed?.title || book.title).replace(/[《》]/g, '').trim() || book.title,
+    createdAt: Date.now(),
+    lastModifiedAt: Date.now(),
+    trackId: matchedTrack.id,
+    channel,
+    trackName: matchedTrack.name,
+    visualStyle: options.visualStyle,
+    aspectRatio: options.aspectRatio,
+    episodeDurationSec: options.episodeDurationSec,
+    totalPlannedEpisodes: options.totalPlannedEpisodes,
+    paywallEpisodeIndex: paywallIdx,
+    logline:
+      String(parsed?.logline || book.settings?.commercialBlurb || '').slice(0, 160) ||
+      `改编自原著小说《${book.title}》的高张力商业漫剧企划`,
+    targetAudience: String(parsed?.targetAudience || matchedTrack.targetAudience),
+    golden3SecHook:
+      String(parsed?.golden3SecHook || '') ||
+      `开场3秒强视觉切入《${book.title}》首章核心危机现场`,
+    synopsis: String(parsed?.synopsis || book.settings?.outline || ''),
+    narrativeBible,
+    storyArcs,
+    plotRhythm,
+    keyPropManifest,
+    foreshadowingLedger,
+    characterAssets,
+    sceneAnchors,
+    episodePlan,
+    episodes: [],
+    sourceNovelId: book.id,
+  };
+}
+
 

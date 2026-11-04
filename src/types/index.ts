@@ -153,100 +153,215 @@ export const DOMESTIC_API_PRESETS: DomesticApiPreset[] = [
   },
 ];
 
-export const DEFAULT_PRESET_SKILLS: NovelSkill[] = [
-  {
-    id: 'skill-anti-repetition',
-    name: '剧情推进与反车轱辘话',
-    description: '破除每章重复心理独白与辞藻循环，强制每章必须有明确场景转换或实质事件推进。',
-    promptInstruction:
-      '【剧情推进与反车轱辘话铁律】\n1. 每章必须有明确的场景目标与外在情节演进（如空间转移、突发外部事件、人物交锋、解开或埋下新伏笔），严禁让角色在同一封闭空间内原地重复上章的情感拉扯。\n2. 前文已交代过的体型差概括、身世背景或阴鸷眼神套话，本章严禁大段复读，须化入当下具体动作交互中一笔带过。',
-    category: 'rule',
-    scopes: ['outline', 'chapter', 'reroll'],
-    triggerMode: 'always',
-    priority: 'high',
-    enabled: true,
-    isPreset: true,
-  },
-  {
-    id: 'skill-no-ai-style',
-    name: '去 AI 翻译腔与套话',
-    description: '禁止“然而”、“不得不承认”、“仿佛在诉说着”、“无形中”、“眼神中闪过一丝”等机械套话。',
-    promptInstruction:
-      '【去 AI 味语言规范】严禁使用 AI 高频套话与翻译腔（如：然而、不得不承认、仿佛在诉说着、无形中、眼神中闪过一丝、不可否认、某种意义上、空气仿佛凝固了等）。请采用地道、干练、富有呼吸感的中文网文与文学叙事。',
-    category: 'style',
-    scopes: ['chapter', 'polish'],
-    triggerMode: 'always',
-    priority: 'high',
-    enabled: true,
-    isPreset: true,
-  },
-  {
-    id: 'skill-no-negative-progressive',
-    name: '禁用生硬否定递进句',
-    description: '限制连续使用“不仅没有...反而...”、“非但没有...甚至...”等机械转折句式。',
-    promptInstruction:
-      '【句式节奏约束】严格限制“不仅没有…反而…”、“非但没有…甚至…”、“看似…实则…”等公式化转折对比句，单章最多出现1次。多使用短句动作、留白与自然顺承句。',
-    category: 'rule',
-    scopes: ['chapter', 'polish'],
-    triggerMode: 'always',
-    priority: 'normal',
-    enabled: true,
-    isPreset: true,
-  },
-  {
-    id: 'skill-sensory-imagery',
-    name: '电影镜头与五感细节',
-    description: '用光影、声响、温度、触感与微物理动作替代干瘪的抽象形容词。',
-    promptInstruction:
-      '【电影镜头与五感叙事】拒绝直接给出“他很愤怒/他很心疼”等抽象结论。必须通过指节泛白的力度、呼吸擦过耳廓的热度、衣物摩挲声、光影明暗切分与细微肢体停顿来折射人物内心。',
-    category: 'style',
-    scopes: ['chapter', 'polish'],
-    triggerMode: 'always',
-    priority: 'normal',
-    enabled: true,
-    isPreset: true,
-  },
-  {
-    id: 'skill-natural-dialogue',
-    name: '潜台词与自然口语台词',
-    description: '杜绝舞台朗诵腔与说教式长台词，让人物说话带停顿、克制与言外之意。',
-    promptInstruction:
-      '【台词与潜台词规范】人物对话必须贴合身份性格，短促自然，允许欲言又止、答非所问或动作打断台词。严禁出现长篇宣讲式心理剖析台词与悬浮剧场腔。',
-    category: 'style',
-    scopes: ['chapter', 'polish'],
-    triggerMode: 'always',
-    priority: 'normal',
-    enabled: true,
-    isPreset: true,
-  },
-  {
-    id: 'skill-outline-tension',
-    name: '大纲起承转合与钩子设计',
-    description: '在构思大纲与重掷后续走向时，强制设计外部阻力、情感信息差与章末悬念。',
-    promptInstruction:
-      '【大纲与剧情设计准则】规划大纲与后续剧情走向时，必须兼顾“外部事件冲突”与“内部情感信息差拉扯”，避免平铺直叙的流水账；每个阶段转折需具备明确的导火索事件与情绪爆点。',
-    category: 'structure',
-    scopes: ['outline', 'reroll'],
-    triggerMode: 'always',
-    priority: 'high',
-    enabled: true,
-    isPreset: true,
-  },
-  {
-    id: 'skill-intimacy-tension',
-    name: '亲密拉扯与微动作慢放',
-    description: '【关键词智能触发】当剧情出现拥抱、亲吻、发烧、失控、同床等词时自动激活张力慢放。',
-    promptInstruction:
-      '【亲密张力慢放法则】当前剧情涉及近距离肢体接触或情绪失控场面：请放慢叙事倍率，重点捕捉身高体型包裹感、体温反差、克制与失控边缘的呼吸急促感，做到张力拉满而不流于机械套路。',
-    category: 'preference',
-    scopes: ['chapter', 'polish'],
-    triggerMode: 'keyword',
-    keywords: ['亲吻', '吻', '拥抱', '抱住', '怀里', '发烧', '生病', '喂药', '失控', '眼眶', '床', '贴近', '气息', '浴室'],
-    priority: 'high',
-    enabled: true,
-    isPreset: true,
-  },
-];
+import { GITHUB_IMPLANTED_SKILLS, LEGACY_DEPRECATED_SKILL_IDS } from '../data/githubSkillsBundle';
+
+export { LEGACY_DEPRECATED_SKILL_IDS };
+
+export const DEFAULT_PRESET_SKILLS: NovelSkill[] = GITHUB_IMPLANTED_SKILLS;
+
+// ============================================================================
+// 四层拆纲法 (L1总纲 → L2分卷纲 → L3剧情单元纲 → L4单章细纲) & 全设定强关联图谱
+// ============================================================================
+
+export interface MasterOutlineSpec {
+  corePromise: string; // 核心读者契约（读者点进来的第一预期与全书爽点锚点）
+  ultimateEnding: string; // 最终结局锚点（主角终局归宿、核心矛盾最终闭合形态）
+  worldCeiling: string; // 战力/社会/代价顶层天花板（防止中后期设定膨胀崩盘）
+  mainPlotline: string; // 主线推进脉络（贯穿全书的核心冲突主轴）
+  emotionalOrSubPlotline: string; // 感情线 / 双主副线交织脉络
+  darkPlotline: string; // 暗线 / 幕后终极悬念（与主线互为因果）
+}
+
+export interface NovelVolumePlanItem {
+  id: string;
+  volumeIndex: number;
+  title: string;
+  chapterSpan: string; // e.g. "第1章 - 第30章"
+  stageGoal?: string; // 本卷阶段核心目标（围绕 L1 终局拆解出的阶段里程碑）
+  entryState?: string; // 入卷起点状态（主角处境/实力/关系起点）
+  exitState?: string; // 出卷终点状态反差（本卷收官时的实质跃迁与遗留新危机）
+  turningPoints?: string; // 1/4入局 · 中点惊变 · 3/4绝境 低谷反扑节点
+  coreConflict: string;
+  climaxGoal: string;
+}
+
+export interface NovelStoryUnitItem {
+  id: string;
+  volumeId: string; // 绑定所属 L2 分卷 ID
+  unitIndex: number;
+  title: string; // e.g. "第一单元 · 寒山拾魔与巡山危机"
+  chapterSpan: string; // e.g. "第1章 - 第6章"
+  volumeAlignment: string; // 围绕本卷阶段目标不跑偏锚点（说明本单元如何推进所属分卷目标）
+  coreConflict: string; // 单元核心对手/危机事件
+  payoffEvent: string; // 单元收束高潮与爽点兑现
+  breakthroughMethod: string; // 主角破局手段标签（强制相邻单元不雷同：如智取信息差 vs 底牌爆发 vs 借势反杀）
+  linkedCharacterIds?: string[]; // 本单元关联角色 ID 列表
+  linkedItemIds?: string[]; // 本单元涉及关键道具 ID 列表
+  linkedForeshadowIds?: string[]; // 本单元埋设/推进/回收的伏笔 ID 列表
+}
+
+export type ChapterPacingType =
+  | '爆发'
+  | '推进'
+  | '感情关系'
+  | '蓄力铺垫'
+  | '日常喘息'
+  | '过渡转场';
+
+export interface NovelChapterOutlineItem {
+  id: string;
+  chapterIndex: number;
+  title: string;
+  summary: string; // 2~4 sentences concise summary of what happens in this chapter
+  volumeId?: string; // 绑定所属 L2 分卷 ID
+  unitId?: string; // 绑定所属 L3 剧情单元 ID
+  volumeTag?: string; // e.g. "第一卷 · 潜龙在渊"
+  protagonistGoal?: string; // L4 主角本章具体目标
+  coreObstacle?: string; // L4 本章核心外部/内部阻力与反制
+  stateDelta?: string; // L4 本章实质推进增量（配额管控：至多1项大突破，防失速或原地踏步）
+  hookNote?: string; // L4 章末钩子（悬念/危机/认知反转）
+  pacingType?: ChapterPacingType; // 松紧档位（防连续高压疲劳或连续水文）
+  linkedCharacterIds?: string[]; // 本章登场/受影响角色 ID
+  linkedItemIds?: string[]; // 本章流转/动用的关键道具 ID
+  linkedForeshadowIds?: string[]; // 本章埋设/推进/回收的伏笔 ID
+  status?: 'planned' | 'drafted';
+}
+
+export type NovelCharacterRoleTier = '主角' | '核心主配/CP' | '重要配角' | '阶段反派' | '幕后反派';
+
+export interface NovelCharacterRelationNode {
+  id: string;
+  name: string;
+  roleType: NovelCharacterRoleTier;
+  coreDesire: string; // 核心欲望与行动底层动机（利益/恐惧/执念）
+  speechStyle: string; // 说话口癖、句长特征与潜台词习惯（供 character-designer 锁死声纹）
+  epistemicBoundary: string; // 当前认知与知情权边界（明确角色知道什么、不知道什么，严防开上帝视角）
+  currentStatus: string; // 当前状态快照（位置/伤势/立场/修为或资源状态）
+  debutChapter?: number;
+  relations?: Array<{ targetName: string; relation: string }>; // 与其他角色的动态关系锚点
+  lorebookId?: string; // 双向联动的世界书条目 ID
+}
+
+export type NovelKeyItemStatus =
+  | '未现世'
+  | '主角持有'
+  | '他人持有'
+  | '争夺遗失'
+  | '已消耗损毁';
+
+export interface NovelKeyItem {
+  id: string;
+  name: string;
+  category: string; // 信物 / 杀器 / 功法秘籍 / 关键线索 / 契约限制物
+  holderName: string; // 当前持有者名称或所在地点
+  holderCharacterId?: string; // 绑定关联角色节点 ID
+  originChapter?: number; // 首次出场或计划出场章号
+  rulesAndCost: string; // 核心功能、使用代价与冷却限制（防机械降神）
+  status: NovelKeyItemStatus;
+  linkedForeshadowIds?: string[]; // 关联伏笔 ID
+  milestoneNote?: string; // 流转轨迹记录
+}
+
+export interface NovelForeshadowItem {
+  id: string;
+  name: string;
+  plantedChapter: number;
+  progressedChapters?: string; // 中途推进/草蛇灰线呼应章号（如 "第6章、第14章"）
+  expectedResolveChapter?: string;
+  resolvedChapter?: number; // 实际回收闭合章号
+  targetUnitId?: string; // 计划在哪一 L3 剧情单元推进或回收
+  status: 'planted' | 'fermenting' | 'resolved';
+  note: string;
+  linkedCharacterIds?: string[]; // 关联角色 ID（谁埋下/谁受影响）
+  linkedItemIds?: string[]; // 关联关键道具 ID（伏笔载体）
+}
+
+export interface FourLayerAuditIssue {
+  id: string;
+  layer: 'L1总纲' | 'L2分卷纲' | 'L3单元纲' | 'L4单章细纲' | '跨设定关联';
+  severity: 'error' | 'warning';
+  title: string;
+  detail: string;
+  fixSuggestion: string;
+}
+
+// ============================================================================
+// 文风蒸馏工坊 (Style Distillation Engine — 替代旧版生硬原文粘贴模仿)
+// ============================================================================
+
+export interface StyleQuantitativeMetrics {
+  charCount: number;
+  sentenceCount: number;
+  avgSentenceLen: number;
+  sentenceLenStdDev: number; // 句长离散度 σ（Burstiness 核心人类指纹）
+  shortRatio: number; // 短句 (<12字) 占比 %
+  mediumRatio: number; // 中句 (12~28字) 占比 %
+  longRatio: number; // 长句 (>28字) 占比 %
+  avgParagraphSentences: number; // 段均句数
+  singleSentenceParaRatio: number; // 独句成段占比 %（呼吸留白感）
+  dialogueRatio: number; // 对白占比 %
+  emDashPer1k: number; // 每千字破折号数
+  exclamationPer1k: number; // 每千字感叹号数
+}
+
+export interface DistilledStyleProfile {
+  id: string;
+  name: string; // 蒸馏文风资产名称（如：冷峻古龙风短句留白 / 江南式细腻少年意气）
+  sourceAuthor?: string; // 原样本作者或作品备注（仅本地标记，绝不写入生成抄袭指令）
+  createdAt: number;
+  sampleExcerpt: string; // 本地留存的少量样本节选（不直接粗暴塞入正文防止串名）
+  metrics: StyleQuantitativeMetrics; // 精确统计出的句法指纹
+  narrativeVoice: string; // 1. 叙事视角距离与冷暖腔调
+  sentenceCadence: string; // 2. 句法长短错落与断句呼吸律
+  sensorySignature: string; // 3. 五感切入偏好与意象密度
+  dialogueCraft: string; // 4. 对白潜台词与动作打断习惯
+  lexicalFeatures: string; // 5. 词汇颗粒度、动词力度与虚词习惯
+  antiSlopTaboos: string; // 6. 该文风绝对排斥的违和词句与 AI 腔禁区
+  anonymizedAnchors: string[]; // 7. 去名化纯粹句法节奏示范锚点（已剥离原作人名地名设定词）
+  executableDirective: string; // 凝练可直接注入 System Prompt 的高权重文风契约
+}
+
+// ============================================================================
+// 腾讯朱雀 AI 检测对抗审查 (Tencent Zhuque Detector & story-deslop / story-review)
+// ============================================================================
+
+export interface ZhuqueFinding {
+  id: string;
+  ruleId: string;
+  categoryLabel: string;
+  severity: 'blocking' | 'advisory';
+  matchedText: string;
+  reason: string;
+  fixHint: string;
+}
+
+export interface ZhuqueAuditReport {
+  aiRiskScore: number; // 0 ~ 100 模拟朱雀 AIGC 浓度预估分（<20% 为安全人类过审区）
+  verdict: 'pass' | 'borderline' | 'high_risk';
+  burstinessStdDev: number; // 句长标准差 σ（人类通常 >= 12.5，AI 常 < 9.5）
+  avgSentenceLen: number;
+  shortSentencePct: number;
+  singleParaPct: number;
+  dialoguePct: number;
+  blockingCount: number;
+  advisoryCount: number;
+  findings: ZhuqueFinding[];
+}
+
+export interface StoryReviewDimensionResult {
+  dimension: string;
+  score: number; // 0 ~ 100
+  status: 'pass' | 'warn' | 'fail';
+  critique: string;
+  actionableFixes: string[];
+}
+
+export interface AdversarialStoryReviewReport {
+  overallPass: boolean;
+  overallScore: number;
+  summaryVerdict: string;
+  dimensions: StoryReviewDimensionResult[];
+}
 
 export interface BookSettings {
   genre: string;
@@ -263,6 +378,37 @@ export interface BookSettings {
   styleReference: string | null;
   lorebook?: LorebookEntry[];
   skills?: NovelSkill[];
+
+  // 文风蒸馏 DNA 挂载（升级替代原始粗放的 styleReference）
+  activeDistilledStyle?: DistilledStyleProfile | null;
+
+  // 朱雀过审级自动去 AI 味校准开关
+  autoZhuqueDeslop?: boolean;
+
+  // Per-Book XP System Switch & Note (100% pipeline control)
+  xpSystemEnabled?: boolean;
+  bookXpNote?: string;
+
+  // 11-Module × 20-Item (220-dimension) Commercial Novel Architecture System
+  systemSettings?: Record<string, string[]>; // key: `${moduleId}.${fieldId}` -> selected + custom strings
+  systemCustomNotes?: Record<string, string>; // key: moduleId -> freeform module supplement
+  lastSyncedSettingsHash?: string; // Snapshot hash from last AI outline sync
+  systemSettingsDirty?: boolean; // True when user manually tweaks critical settings after AI sync
+
+  // 四层拆纲法 (L1总纲 → L2分卷纲 → L3剧情单元纲 → L4单章细纲) & 全要素强关联图谱
+  masterOutlineSpec?: MasterOutlineSpec;
+  volumePlan?: NovelVolumePlanItem[];
+  storyUnits?: NovelStoryUnitItem[];
+  chapterOutlines?: NovelChapterOutlineItem[];
+  characterGraph?: NovelCharacterRelationNode[];
+  keyItemRegistry?: NovelKeyItem[];
+  foreshadowLedger?: NovelForeshadowItem[];
+
+  // Commercial Signing & Platform Submission Package
+  targetPlatform?: string;
+  commercialBlurb?: string;
+  alternateTitles?: string[];
+  signingReviewReport?: string;
 }
 
 export interface Chapter {

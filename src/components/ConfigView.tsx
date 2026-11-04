@@ -1180,9 +1180,9 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
         <section className="studio-card p-5 sm:p-7 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
             <div className="space-y-1">
-              <h2 className="text-base font-bold text-[var(--text-primary)]">全局 SKILL 2.0 工程规范中心</h2>
+              <h2 className="text-base font-bold text-[var(--text-primary)]">全局 SKILL 2.0 工程规范中心（已植入 GitHub 六大核心创作技能）</h2>
               <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-                原生兼容完整多文件 <code className="font-mono">.zip</code> 技能压缩包（含 <code className="font-mono">SKILL.md</code> 主路由、<code className="font-mono">references/</code> 按需渐进披露参考库与 <code className="font-mono">scripts/</code> 索引）以及单文件 <code className="font-mono">.md</code>，内置 UTF-8 / GB18030 智能防乱码解码器。
+                默认内置 GitHub 六大专业工程技能包：大纲 <code className="font-mono">novel-creator-skill</code>、人设 <code className="font-mono">character-designer</code>、正文 <code className="font-mono">story-long-write</code>、连载记忆 <code className="font-mono">webnovel-write</code>、过朱雀去味 <code className="font-mono">story-deslop</code> 与对抗审核 <code className="font-mono">story-review</code>，兼容完整多文件 <code className="font-mono">.zip</code> 与 <code className="font-mono">SKILL.md</code> 导入导出。
               </p>
             </div>
 
@@ -1215,11 +1215,11 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                     await resetGlobalSkills();
                     await onRefreshGlobalSkills();
                     setConfirmResetSkills(false);
-                    setSkillStatusMsg('已恢复默认 SKILL 2.0 规范预设');
+                    setSkillStatusMsg('已彻底清理旧版预设并重置为 GitHub 六大核心创作 SKILL 2.0 工程包');
                   }}
                   className="min-h-[42px] px-3.5 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold whitespace-nowrap"
                 >
-                  确认重置预设
+                  确认重置六大核心技能
                 </button>
               ) : (
                 <button
@@ -1227,7 +1227,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                   onClick={() => setConfirmResetSkills(true)}
                   className="min-h-[42px] px-3 py-2 rounded-xl border border-[var(--border-subtle)] text-xs text-[var(--text-secondary)] whitespace-nowrap"
                 >
-                  恢复预设
+                  重置六大核心技能
                 </button>
               )}
 

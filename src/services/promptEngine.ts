@@ -3,10 +3,21 @@ import {
   LorebookEntry,
   NovelSkill,
   SkillScope,
-  SkillCategory,
   SkillReferenceDoc,
+  NovelChapterOutlineItem,
+  NovelVolumePlanItem,
+  NovelStoryUnitItem,
+  NovelCharacterRelationNode,
+  NovelKeyItem,
+  NovelForeshadowItem,
+  MasterOutlineSpec,
+  DistilledStyleProfile,
+  LEGACY_DEPRECATED_SKILL_IDS,
 } from '../types';
 import { parseSingleSkillMarkdown } from './skillPackageParser';
+import { formatNovelSystemSettingsForPrompt } from '../data/novelArchitectureSchema';
+import { formatFourLayerAndEntityContextForPrompt } from './fourLayerOutlineEngine';
+import { formatDistilledStylePromptBlock } from './styleDistiller';
 
 export interface ActiveSkillRefHit {
   doc: SkillReferenceDoc;
@@ -29,6 +40,7 @@ export interface ActiveLoreMatch {
 
 export interface PromptAuditReport {
   scope: SkillScope;
+  xpSystemEnabled: boolean;
   hasXpConstitution: boolean;
   xpLength: number;
   activeSkills: ActiveSkillMatch[];
@@ -44,7 +56,8 @@ export interface PromptAuditReport {
  * takes effect across ALL books without stale snapshots, while respecting per-book toggles!
  */
 export function resolveBookSkills(book: Book | null | undefined, globalSkills: NovelSkill[]): NovelSkill[] {
-  const savedBookSkills = book?.settings?.skills || [];
+  const legacySet = new Set(LEGACY_DEPRECATED_SKILL_IDS);
+  const savedBookSkills = (book?.settings?.skills || []).filter((bs) => !legacySet.has(bs.id));
   if (!globalSkills || globalSkills.length === 0) {
     return savedBookSkills;
   }
@@ -54,15 +67,17 @@ export function resolveBookSkills(book: Book | null | undefined, globalSkills: N
     bookToggleMap.set(bs.id, bs.enabled);
   });
 
-  const merged = globalSkills.map((gs) => ({
-    ...gs,
-    enabled: bookToggleMap.has(gs.id) ? Boolean(bookToggleMap.get(gs.id)) : gs.enabled,
-  }));
+  const merged = globalSkills
+    .filter((gs) => !legacySet.has(gs.id))
+    .map((gs) => ({
+      ...gs,
+      enabled: bookToggleMap.has(gs.id) ? Boolean(bookToggleMap.get(gs.id)) : gs.enabled,
+    }));
 
   // Preserve any book-only custom skills not in globalSkills
   const globalIds = new Set(globalSkills.map((g) => g.id));
   savedBookSkills.forEach((bs) => {
-    if (!globalIds.has(bs.id)) {
+    if (!globalIds.has(bs.id) && !legacySet.has(bs.id)) {
       merged.push(bs);
     }
   });
@@ -276,6 +291,7 @@ export function buildUnifiedSystemPrompt(params: {
     title?: string;
     genre?: string;
     style?: string;
+    chapterWords?: number | string;
     pov?: string;
     tense?: string;
     outline?: string;
@@ -283,14 +299,29 @@ export function buildUnifiedSystemPrompt(params: {
     world?: string;
     aiPersona?: string;
     styleReference?: string | null;
+    activeDistilledStyle?: DistilledStyleProfile | null;
     lorebook?: LorebookEntry[];
     skills?: NovelSkill[];
+    xpSystemEnabled?: boolean;
+    bookXpNote?: string;
+    systemSettings?: Record<string, string[]>;
+    systemCustomNotes?: Record<string, string>;
+    masterOutlineSpec?: MasterOutlineSpec;
+    volumePlan?: NovelVolumePlanItem[];
+    storyUnits?: NovelStoryUnitItem[];
+    chapterOutlines?: NovelChapterOutlineItem[];
+    characterGraph?: NovelCharacterRelationNode[];
+    keyItemRegistry?: NovelKeyItem[];
+    foreshadowLedger?: NovelForeshadowItem[];
+    targetPlatform?: string;
+    commercialBlurb?: string;
   };
   globalSkills: NovelSkill[];
   xpPreferences?: string;
-  contextCorpus: string;
+  contextCorpus?: string;
   climaxMode?: boolean;
   forceAllLore?: boolean;
+  targetChapterIndex?: number;
 }): PromptAuditReport {
   const {
     scope,
@@ -299,32 +330,74 @@ export function buildUnifiedSystemPrompt(params: {
     customSettings,
     globalSkills,
     xpPreferences,
-    contextCorpus,
+    contextCorpus = '',
     climaxMode = false,
     forceAllLore = false,
+    targetChapterIndex,
   } = params;
 
   const s = customSettings || book?.settings;
   const bookTitle = customSettings?.title ?? book?.title ?? '';
 
+  // Resolve per-book XP System Switch:
+  // Explicitly respects customSettings.xpSystemEnabled ?? book.settings.xpSystemEnabled.
+  // If undefined (legacy book), defaults to true only if global xpPreferences is non-empty.
+  const explicitXpToggle =
+    customSettings?.xpSystemEnabled !== undefined
+      ? customSettings.xpSystemEnabled
+      : book?.settings?.xpSystemEnabled;
+  const effectiveXpEnabled =
+    explicitXpToggle !== undefined ? Boolean(explicitXpToggle) : Boolean((xpPreferences || '').trim());
+
+  const resolvedBookXpNote = (
+    customSettings?.bookXpNote ??
+    book?.settings?.bookXpNote ??
+    ''
+  ).trim();
+  const resolvedSystemSettings = customSettings?.systemSettings ?? book?.settings?.systemSettings;
+  const resolvedSystemNotes =
+    customSettings?.systemCustomNotes ?? book?.settings?.systemCustomNotes;
+  const resolvedMasterSpec =
+    customSettings?.masterOutlineSpec ?? book?.settings?.masterOutlineSpec;
+  const resolvedVolumePlan = customSettings?.volumePlan ?? book?.settings?.volumePlan;
+  const resolvedStoryUnits = customSettings?.storyUnits ?? book?.settings?.storyUnits;
+  const resolvedChapterOutlines =
+    customSettings?.chapterOutlines ?? book?.settings?.chapterOutlines;
+  const resolvedCharacterGraph =
+    customSettings?.characterGraph ?? book?.settings?.characterGraph;
+  const resolvedKeyItemRegistry =
+    customSettings?.keyItemRegistry ?? book?.settings?.keyItemRegistry;
+  const resolvedForeshadow =
+    customSettings?.foreshadowLedger ?? book?.settings?.foreshadowLedger;
+  const resolvedDistilledStyle =
+    customSettings?.activeDistilledStyle !== undefined
+      ? customSettings.activeDistilledStyle
+      : book?.settings?.activeDistilledStyle;
+  const resolvedPlatform = customSettings?.targetPlatform ?? book?.settings?.targetPlatform;
+
   let systemPrompt = roleHeader.trim();
 
-  if (scope === 'chapter') {
-    systemPrompt += `\n\n# 叙事动态推进与防死板核心法则（最高执行红线）
-1. 【场景事件驱动】：每一章必须有具体的事件发生或空间/关系实质移动（如：前往新地点、外部危机介入、人物交锋、解开或引发误会、实质性关系突破），严禁两人在同一房间原地复读心理独白。
-2. 【反车轱辘话与细节化】：严禁机械重复前文写过的体型差概括词与固定套话；将人设魅力化解到具体的一言一行与五感细节中，单章重点打磨 1~2 个核心名场面即可。
-3. 【节奏张弛有度】：交替使用对话机锋、环境氛围与微动作交互，保持阅读呼吸感。`;
+  if (scope === 'chapter' || scope === 'polish') {
+    systemPrompt += `\n\n# 叙事动态推进与【腾讯朱雀过审级】人类笔法核心红线（最高执行权重）
+1. 【场景事件与四层锚点驱动】：严守单章细纲的「主角目标 + 核心阻力 + 单章唯一推进配额 + 章末钩子」，绝不超前透支后续章节剧情，也绝不原地复读心理独白。
+2. 【因果转场与知情权边界】：空间切换必须具备明确物理诱因；角色未亲眼所见、未获渠道证实的幕后阴谋严禁在台词中开启上帝视角点破。
+3. 【过朱雀AIGC检测·高熵人类句法】：
+   - 保持句长高离散度（Burstiness σ≥13）：将 28~40 字的具象器物动作长句与 2~9 字的冷峻短句错落咬合，保持约 25%~38% 的独句自然段留白；
+   - 严禁出现“不是…而是… / 并非…而是… / 不仅没有…反而… / 声音不大却… / 没有A没有B只有C”句式；
+   - 严禁出现“瞳孔微缩、嘴角勾起一抹、眼中闪过一丝、指节泛白、空气仿佛凝固、不容置疑、不易察觉、莫名的情绪、取而代之的是、与此同时、这意味着”；
+   - 每千字破折号“——”不超过 1 个；章末严禁“没人知道/才刚刚开始/命运的齿轮”预告腔，必须停在具体动作、器物异变或半截台词上。`;
   }
 
-  if (bookTitle || s?.genre || s?.outline) {
+  if (bookTitle || s?.genre || s?.outline || resolvedPlatform) {
     systemPrompt += `\n\n# 作品核心档案`;
     if (bookTitle) systemPrompt += `\n- 书名：《${bookTitle}》`;
+    if (resolvedPlatform) systemPrompt += `\n- 目标首发签约平台：${resolvedPlatform}`;
     if (s?.genre) systemPrompt += `\n- 题材：${s.genre}`;
     if (s?.style) systemPrompt += `\n- 风格基调：${s.style}`;
     if (scope === 'chapter' || scope === 'polish') {
       systemPrompt += `\n- 叙事视角与时态：${s?.pov || '第三人称'} / ${s?.tense || '现在时'}`;
     }
-    if (s?.outline) systemPrompt += `\n- 核心大纲：\n${s.outline}`;
+    if (s?.outline) systemPrompt += `\n- 核心总纲文本：\n${s.outline}`;
   }
 
   if (s?.aiPersona && (scope === 'chapter' || scope === 'polish' || scope === 'outline')) {
@@ -339,31 +412,84 @@ export function buildUnifiedSystemPrompt(params: {
     systemPrompt += `\n\n# 世界观与底层规则\n${s.world}`;
   }
 
-  if (s?.styleReference && (scope === 'chapter' || scope === 'polish')) {
-    systemPrompt += `\n\n# 文笔韵律模仿样本（仅学习其句式节奏、用词质感与冷暖氛围，严禁抄袭样本内人名剧情）\n${s.styleReference.slice(0, 3500)}`;
+  // Inject 11-Module × 20-Item Commercial Novel System Settings
+  if (scope === 'outline' || scope === 'chapter' || scope === 'reroll') {
+    const sysMatrixBlock = formatNovelSystemSettingsForPrompt(
+      resolvedSystemSettings,
+      resolvedSystemNotes
+    );
+    if (sysMatrixBlock) {
+      systemPrompt += sysMatrixBlock;
+    }
   }
 
-  const trimmedXp = (xpPreferences || '').trim();
-  if (trimmedXp) {
-    systemPrompt += `\n\n# 创作者全局 XP 审美宪法与红线禁忌\n${trimmedXp}`;
+  // Inject 4-Layer Rolling Outline (L1→L2→L3→L4) & Cross-Entity Relational Graph (Characters + Key Items + Foreshadowing)
+  const fourLayerBlock = formatFourLayerAndEntityContextForPrompt(
+    {
+      masterOutlineSpec: resolvedMasterSpec,
+      volumePlan: resolvedVolumePlan,
+      storyUnits: resolvedStoryUnits,
+      chapterOutlines: resolvedChapterOutlines,
+      characterGraph: resolvedCharacterGraph,
+      keyItemRegistry: resolvedKeyItemRegistry,
+      foreshadowLedger: resolvedForeshadow,
+    },
+    targetChapterIndex,
+    scope
+  );
+  if (fourLayerBlock) {
+    systemPrompt += fourLayerBlock;
   }
 
-  // Evaluate Lorebook
-  const loreSource = s?.lorebook || [];
+  // Mount Distilled Style DNA first; fallback to raw styleReference only if no Distilled DNA is mounted
+  if (scope === 'chapter' || scope === 'polish') {
+    if (resolvedDistilledStyle) {
+      systemPrompt += formatDistilledStylePromptBlock(resolvedDistilledStyle);
+    } else if (s?.styleReference) {
+      systemPrompt += `\n\n# 临时文风参考样本（建议在「执笔人设与文风蒸馏」中升级为去名化蒸馏DNA以防串味）\n${s.styleReference.slice(0, 2600)}`;
+    }
+  }
+
+  // Strictly gated XP System Constitution (100% ON as core foundation vs 100% OFF physical isolation)
+  const combinedXpParts: string[] = [];
+  if (effectiveXpEnabled) {
+    const trimmedGlobalXp = (xpPreferences || '').trim();
+    if (trimmedGlobalXp) combinedXpParts.push(trimmedGlobalXp);
+    if (resolvedBookXpNote) combinedXpParts.push(`【本书专属 XP 张力补充基调】：\n${resolvedBookXpNote}`);
+  }
+  const combinedXpText = combinedXpParts.join('\n\n').trim();
+
+  if (effectiveXpEnabled && combinedXpText) {
+    systemPrompt += `\n\n# 创作者 XP 审美基底宪法（当前作品已开启 XP 系统 · 作为大纲、细纲与章节创作的核心审美底座）\n${combinedXpText}`;
+  } else if (!effectiveXpEnabled) {
+    systemPrompt += `\n\n# 纯正商业/通用叙事隔离护栏（当前作品已关闭 XP 系统）\n本书已明确关闭个人 XP 癖好系统，请完全聚焦于客观故事主线、人物弧光、商业爽点与逻辑推进，严禁强行掺入私人特定恋物/特殊癖好套路。`;
+  }
+
+  // Evaluate Lorebook (filter out xp_trope entries when XP system is disabled!)
+  const rawLoreSource = s?.lorebook || [];
+  const filteredLoreSource = effectiveXpEnabled
+    ? rawLoreSource
+    : rawLoreSource.filter((entry) => entry.entryType !== 'xp_trope');
+
   const { active: activeLore, standby: standbyLore } = evaluateLorebook(
-    loreSource,
+    filteredLoreSource,
     `${s?.genre || ''}\n${contextCorpus}`,
     forceAllLore || scope === 'outline'
   );
   systemPrompt += formatLorebookPromptBlock(activeLore);
 
-  // Resolve & Evaluate Skills (including genre + context corpus for reference routing)
-  const effectiveSkills = customSettings?.skills
+  // Resolve & Evaluate Skills (filter out preference/XP intimacy skills when XP system is disabled!)
+  const rawEffectiveSkills = customSettings?.skills
     ? customSettings.skills
     : resolveBookSkills(book, globalSkills);
+  const filteredSkills = effectiveXpEnabled
+    ? rawEffectiveSkills
+    : rawEffectiveSkills.filter(
+        (sk) => sk.category !== 'preference' && sk.id !== 'skill-intimacy-tension'
+      );
 
   const { active: activeSkills, standby: standbySkills } = evaluateSkillsForScope(
-    effectiveSkills,
+    filteredSkills,
     scope,
     `${s?.genre || ''}\n${s?.style || ''}\n${contextCorpus}`
   );
@@ -376,8 +502,9 @@ export function buildUnifiedSystemPrompt(params: {
 
   return {
     scope,
-    hasXpConstitution: trimmedXp.length > 0,
-    xpLength: trimmedXp.length,
+    xpSystemEnabled: effectiveXpEnabled,
+    hasXpConstitution: effectiveXpEnabled && combinedXpText.length > 0,
+    xpLength: effectiveXpEnabled ? combinedXpText.length : 0,
     activeSkills,
     standbySkills,
     activeLore,

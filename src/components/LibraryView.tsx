@@ -10,6 +10,7 @@ import {
   Download,
   Copy,
   Trash2,
+  Clapperboard,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Book } from '../types';
@@ -29,6 +30,7 @@ interface LibraryViewProps {
   onGoToSetup: () => void;
   onOpenDownloadBook?: (bookId: string) => void;
   onRequestDeleteBook?: (bookId: string) => void;
+  onDramatizeBookQuick?: (book: Book) => void;
 }
 
 export const LibraryView: React.FC<LibraryViewProps> = ({
@@ -39,6 +41,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onGoToSetup,
   onOpenDownloadBook,
   onRequestDeleteBook,
+  onDramatizeBookQuick,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
   const [searchQuery, setSearchQuery] = useState('');
@@ -235,9 +238,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       },
                       {
                         id: 'ctx-detail',
-                        label: '查看章节目录与历史存档',
+                        label: '查看章节目录与剧本化',
                         icon: <FolderOpen className="w-3.5 h-3.5" />,
                         onSelect: () => onOpenBookDetail(book),
+                      },
+                      {
+                        id: 'ctx-dramatize',
+                        label: '一键转化为漫剧剧本立项（剧本化）',
+                        icon: <Clapperboard className="w-3.5 h-3.5" />,
+                        disabled: !onDramatizeBookQuick,
+                        onSelect: () => onDramatizeBookQuick?.(book),
                       },
                       {
                         id: 'ctx-export',
@@ -332,6 +342,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       >
                         设定
                       </MotionButton>
+                      {onDramatizeBookQuick && (
+                        <MotionButton
+                          type="button"
+                          onClick={() => onDramatizeBookQuick(book)}
+                          className="min-h-[40px] px-2.5 py-1.5 rounded-lg text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                          title="将本小说大纲与章节转化为 AI 漫剧剧本立项"
+                        >
+                          <Clapperboard className="w-3.5 h-3.5" />
+                          <span>剧本化</span>
+                        </MotionButton>
+                      )}
                     </div>
 
                     <MotionButton

@@ -24,12 +24,19 @@ import {
   Sliders,
   Copy,
   Plus,
+  Layers,
+  ListOrdered,
+  Square,
+  ShieldCheck,
+  ShieldOff,
 } from 'lucide-react';
-import { Book, Chapter, Summary, UiSettings, ApiConfig, IdeaCard, NovelSkill } from '../types';
+import { Book, BookSettings, Chapter, Summary, UiSettings, ApiConfig, IdeaCard, NovelSkill } from '../types';
 import { streamChatCompletion, chatCompletion } from '../services/apiClient';
 import { buildUnifiedSystemPrompt } from '../services/promptEngine';
+import { analyzeTextForZhuque, buildZhuqueDeslopMessages } from '../services/zhuqueAudit';
 import { generateUUID } from '../utils/uuid';
 import { MotionButton, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
+import { ZhuqueAuditModal } from './ZhuqueAuditModal';
 import { useContextMenu } from './ContextMenu';
 
 interface WriterViewProps {
@@ -216,10 +223,33 @@ export const WriterView: React.FC<WriterViewProps> = ({
   const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [lastAutoSavedTime, setLastAutoSavedTime] = useState('');
 
+  // Multi-Chapter Batch Generation & Stipulated Word Count State (Requirement 4)
+  const [directorMode, setDirectorMode] = useState<'single' | 'batch'>('single');
+  const [batchChapterCount, setBatchChapterCount] = useState<number>(3);
+  const [stipulatedWordsPerChapter, setStipulatedWordsPerChapter] = useState<number>(() =>
+    Number(currentBook?.settings?.chapterWords || 3500)
+  );
+  const [batchProgress, setBatchProgress] = useState<{
+    currentStep: number;
+    totalSteps: number;
+    currentChapNum: number;
+  } | null>(null);
+  const stopBatchAfterCurrentRef = useRef<boolean>(false);
+  const [stopBatchRequested, setStopBatchRequested] = useState<boolean>(false);
+  const [isZhuqueModalOpen, setIsZhuqueModalOpen] = useState<boolean>(false);
+
+  const liveZhuqueReport = useMemo(() => analyzeTextForZhuque(chapterText), [chapterText]);
+
   const isInitialChapterLoadRef = useRef(true);
   const autoStartedBookIdsRef = useRef<Set<string>>(new Set());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const streamEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (currentBook?.settings?.chapterWords) {
+      setStipulatedWordsPerChapter(Number(currentBook.settings.chapterWords) || 3500);
+    }
+  }, [currentBook?.id, currentBook?.settings?.chapterWords]);
 
   useEffect(() => {
     try {
@@ -265,6 +295,7 @@ export const WriterView: React.FC<WriterViewProps> = ({
       xpPreferences,
       contextCorpus: corpus,
       climaxMode: climaxMultiplierEnabled,
+      targetChapterIndex: (currentBook.chapters?.length || 0) + 1,
     });
   }, [
     currentBook,
@@ -278,14 +309,14 @@ export const WriterView: React.FC<WriterViewProps> = ({
     climaxMultiplierEnabled,
   ]);
 
-  // Build Sliding Memory Context (Stage Summaries + Compressed Earlier Chapters + Head/Tail of Latest Chapter)
-  const buildMemoryContext = (upToChapterIndex?: number) => {
-    if (!currentBook) return '';
-    const memoryCount = Number(currentBook.settings?.contextMemory ?? 4);
+  // Build Sliding Memory Context from any Book snapshot (supports multi-chapter continuous loop!)
+  const buildMemoryContextForBook = (bookSnap: Book | null, upToChapterIndex?: number) => {
+    if (!bookSnap) return '';
+    const memoryCount = Number(bookSnap.settings?.contextMemory ?? 4);
     const parts: string[] = [];
 
-    if (currentBook.summaries && currentBook.summaries.length > 0) {
-      const summaryText = currentBook.summaries
+    if (bookSnap.summaries && bookSnap.summaries.length > 0) {
+      const summaryText = bookSnap.summaries
         .map((s) => `• 【${s.title || s.chapterRange || '阶段总结'}】：${s.content}`)
         .join('\n');
       parts.push(`# 前情阶段总结与伏笔脉络\n${summaryText}`);
@@ -293,8 +324,8 @@ export const WriterView: React.FC<WriterViewProps> = ({
 
     const sourceChapters =
       typeof upToChapterIndex === 'number'
-        ? currentBook.chapters.slice(0, upToChapterIndex)
-        : currentBook.chapters;
+        ? bookSnap.chapters.slice(0, upToChapterIndex)
+        : bookSnap.chapters;
 
     if (memoryCount > 0 && sourceChapters.length > 0) {
       const recentChapters = sourceChapters.slice(-memoryCount);
@@ -324,6 +355,30 @@ export const WriterView: React.FC<WriterViewProps> = ({
     }
 
     return parts.join('\n\n');
+  };
+
+  const buildMemoryContext = (upToChapterIndex?: number) =>
+    buildMemoryContextForBook(currentBook, upToChapterIndex);
+
+  const handleToggleBookXpSystem = async () => {
+    if (!currentBook || isGenerating) return;
+    const currentEnabled =
+      currentBook.settings?.xpSystemEnabled !== undefined
+        ? Boolean(currentBook.settings.xpSystemEnabled)
+        : Boolean((xpPreferences || '').trim());
+    const nextEnabled = !currentEnabled;
+    const updatedBook: Book = {
+      ...currentBook,
+      settings: {
+        ...currentBook.settings,
+        xpSystemEnabled: nextEnabled,
+      },
+      lastModifiedAt: Date.now(),
+    };
+    await onSaveBook(updatedBook);
+    triggerQuickToast(
+      nextEnabled ? '已开启本书 XP 审美基底' : '已关闭本书 XP 系统（纯净商业叙事）'
+    );
   };
 
   const handleSaveChapterEdits = async () => {
@@ -384,6 +439,7 @@ export const WriterView: React.FC<WriterViewProps> = ({
         globalSkills,
         xpPreferences,
         contextCorpus: `${currentBook.title}\n${nextPlotInput}\n${prevTail}`,
+        targetChapterIndex: targetChapNum,
       });
 
       const prompt = `请为即将创作的第 ${targetChapNum} 章设计一份简练、可直接驱动正文扩写的【单章 4 幕节拍细纲】：
@@ -530,19 +586,33 @@ ${polishSourceText}`;
     }
   };
 
-  // Core Chapter Expansion & Rewrite Flow (wired through unified promptEngine!)
+  // Core Single Chapter Expansion & Rewrite Flow (wired through unified promptEngine!)
   const handleGenerateNextChapter = async (plotHint: string = '', isRewrite: boolean = false) => {
     if (!currentBook || isGenerating) return;
 
     setIsGenerating(true);
+    setBatchProgress(null);
     setConfirmRewrite(false);
-    setGenMeta('正在装载大纲、世界书与 SKILL 2.0 规范，请求模型流式执笔...');
-
     const chapterIndexToGen = isRewrite ? currentChapterIndex + 1 : (currentBook.chapters?.length || 0) + 1;
-    const words = Number(currentBook.settings?.chapterWords || 3500);
-    const memory = buildMemoryContext(isRewrite ? currentChapterIndex : undefined);
+    const words = Math.max(500, Number(stipulatedWordsPerChapter || currentBook.settings?.chapterWords || 3500));
+    setGenMeta(`正在装载11大系统设定、章节细纲与世界书，流式执笔第 ${chapterIndexToGen} 章（规定 ${words} 字）...`);
+
+    const memory = buildMemoryContextForBook(currentBook, isRewrite ? currentChapterIndex : undefined);
+
+    const plannedOutline = (currentBook.settings?.chapterOutlines || []).find(
+      (c) => c.chapterIndex === chapterIndexToGen
+    );
 
     let combinedPlotHint = (plotHint || (!isRewrite ? nextPlotInput : '') || '').trim();
+    if (plannedOutline && !combinedPlotHint.includes(plannedOutline.summary)) {
+      const outlineDirective = `【本章预设章节细纲（第${plannedOutline.chapterIndex}章《${plannedOutline.title}》）】\n${plannedOutline.summary}${
+        plannedOutline.hookNote ? `\n章末悬念留钩目标：${plannedOutline.hookNote}` : ''
+      }`;
+      combinedPlotHint = combinedPlotHint
+        ? `${outlineDirective}\n\n【作者补充导演指令】\n${combinedPlotHint}`
+        : outlineDirective;
+    }
+
     const selectedCards = ideaCards.filter((c) => selectedIdeaCardIds.includes(c.id));
     if (selectedCards.length > 0) {
       const cardsText = selectedCards
@@ -560,30 +630,34 @@ ${polishSourceText}`;
 
     const audit = buildUnifiedSystemPrompt({
       scope: 'chapter',
-      roleHeader: '你是一名顶级资深职业小说家，正在严格按照作品档案、世界书与已挂载 SKILL 规范创作小说章节。',
+      roleHeader: '你是一名顶级资深职业小说家，正在严格按照作品11大系统设定、章节细纲、世界书与已挂载 SKILL 规范创作小说章节。',
       book: currentBook,
       globalSkills,
       xpPreferences,
       contextCorpus: `${currentBook.title}\n${combinedPlotHint}\n${prevTailForTrigger}`,
       climaxMode: climaxMultiplierEnabled,
+      targetChapterIndex: chapterIndexToGen,
     });
 
-    let userPrompt = `请创作第 ${chapterIndexToGen} 章正文，目标字数约 ${words} 字（请充实展开场景细节与人物对话交锋，切勿敷衍缩水）。`;
+    const minWords = Math.round(words * 0.9);
+    const maxWords = Math.round(words * 1.15);
+    let userPrompt = `请创作第 ${chapterIndexToGen} 章正文。
+【硬性字数规定】：创作者明确规定本章正文目标字数为 **${words} 字**（有效汉字区间建议 ${minWords} ~ ${maxWords} 字）。请扎实铺陈场景感官、动作交锋与人物对话细节，严禁敷衍缩水或草草收尾！`;
     if (memory) {
       userPrompt += `\n\n${memory}\n`;
     }
     if (combinedPlotHint) {
-      userPrompt += `\n# 本章核心推进指令（最高剧情优先级，请完整落地）：\n${combinedPlotHint}\n`;
+      userPrompt += `\n# 本章核心推进指令与细纲（最高剧情优先级，请完整落地）：\n${combinedPlotHint}\n`;
     }
 
     userPrompt += `\n输出格式规范（严格遵守分隔符，正文中严禁出现 "---"）：
-### 第${chapterIndexToGen}章：[拟定富有画面感与张力的章节标题]
-[此处开始章节正文，段落清晰，对话与微动作交织]
+### 第${chapterIndexToGen}章：${plannedOutline?.title ? plannedOutline.title : '[拟定富有画面感与张力的章节标题]'}
+[此处开始章节正文，段落清晰，对话与微动作交织，严格写足约 ${words} 字]
 ---
 #### 后续发展建议
 - [建议1：包含具体外部事件触发、人物互动与悬念留钩的下一章走向，35~80字]
 - [建议2：包含具体空间转换或新矛盾介入的下一章走向，35~80字]
-- [建议3：侧重主角双方关系试探、信息差揭露或亲密拉扯的下一章走向，35~80字]
+- [建议3：侧重主角双方关系试探、信息差揭露或张力拉扯的下一章走向，35~80字]
 - [建议4：意料之外的转折或危机迫近走向，35~80字]`;
 
     let accumulatedRaw = '';
@@ -612,7 +686,7 @@ ${polishSourceText}`;
       const finalRaw = result.content || accumulatedRaw;
       const parsed = parseChapterAndSuggestions(finalRaw, `第 ${chapterIndexToGen} 章`);
 
-      // Empty response (0-word) guard: never overwrite existing chapter or lose user input!
+      // Empty response (0-word) guard
       if (parsed.bodyText.trim().length === 0) {
         if (activeChapter) {
           setChapterText(activeChapter.text || '');
@@ -634,13 +708,60 @@ ${polishSourceText}`;
 
       setLastFailedRequest(null);
 
-      const metaText = `${activeModelName} · ${(latency / 1000).toFixed(1)}s · ${parsed.bodyText.length} 字 · 已激活 ${audit.activeSkills.length} 项 SKILL / ${audit.activeLore.length} 条世界书`;
+      let finalBodyText = parsed.bodyText;
+      let deslopTag = '';
+
+      // Optional Automatic Post-Write Zhuque De-Slop Pass when enabled and AI risk >= 22%
+      if (currentBook.settings?.autoZhuqueDeslop) {
+        const preAudit = analyzeTextForZhuque(finalBodyText);
+        if (preAudit.aiRiskScore >= 22) {
+          setGenMeta(
+            `初稿完成（朱雀风险 ${preAudit.aiRiskScore}%），正在自动执行 story-deslop 人类化去味重铸...`
+          );
+          const charVoiceNotes = (currentBook.settings?.characterGraph || [])
+            .map(
+              (c) =>
+                `${c.name}(${c.roleType})：声纹「${c.speechStyle || '贴合人设'}」 | 知情边界「${
+                  c.epistemicBoundary || '仅知亲历'
+                }」`
+            )
+            .join('\n');
+          const deslopMsgs = buildZhuqueDeslopMessages({
+            chapterTitle: parsed.title,
+            chapterText: finalBodyText,
+            auditReport: preAudit,
+            distilledStyle: currentBook.settings?.activeDistilledStyle,
+            characterSpeechNotes: charVoiceNotes,
+          });
+          let deslopAcc = '';
+          const deslopRes = await streamChatCompletion({
+            provider: writerCfg?.provider,
+            baseUrl: writerCfg?.baseUrl,
+            apiKey: writerCfg?.apiKey,
+            model: activeModelName,
+            messages: deslopMsgs,
+            temperature: 0.78,
+            onChunk: (c) => {
+              deslopAcc += c;
+              setChapterText(deslopAcc);
+            },
+          });
+          const cleanedDeslop = (deslopRes.content || deslopAcc).trim();
+          if (cleanedDeslop.length >= finalBodyText.length * 0.65) {
+            finalBodyText = cleanedDeslop;
+            const postAudit = analyzeTextForZhuque(finalBodyText);
+            deslopTag = ` · 朱雀去味(${preAudit.aiRiskScore}%→${postAudit.aiRiskScore}%)`;
+          }
+        }
+      }
+
+      const metaText = `${activeModelName} · ${(latency / 1000).toFixed(1)}s · ${finalBodyText.length}/${words}字 · ${audit.xpSystemEnabled ? 'XP开' : 'XP关'} · ${audit.activeSkills.length}项SKILL${deslopTag}`;
 
       const newChapter: Chapter = {
         id: generateUUID(),
         index: chapterIndexToGen,
         title: parsed.title,
-        text: parsed.bodyText,
+        text: finalBodyText,
         meta: metaText,
         userNextPlotInput: '',
         allSuggestions: [{ suggestions: parsed.suggestions, timestamp: Date.now() }],
@@ -666,10 +787,19 @@ ${polishSourceText}`;
         updatedChapters.push(newChapter);
       }
 
+      const updatedChapterOutlines = (currentBook.settings?.chapterOutlines || []).map((co) =>
+        co.chapterIndex === chapterIndexToGen ? { ...co, status: 'drafted' as const } : co
+      );
+
       const updatedBook: Book = {
         ...currentBook,
         chapters: updatedChapters,
         archivedChapters,
+        settings: {
+          ...currentBook.settings,
+          chapterWords: words,
+          chapterOutlines: updatedChapterOutlines,
+        },
         lastModifiedAt: Date.now(),
       };
 
@@ -695,6 +825,211 @@ ${polishSourceText}`;
       });
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  // Multi-Chapter Continuous Streaming Generator with Stipulated Word Count per Chapter (Requirement 4)
+  const handleBatchGenerateChapters = async () => {
+    if (!currentBook || isGenerating) return;
+    const totalSteps = Math.max(1, Math.min(30, Number(batchChapterCount) || 3));
+    const words = Math.max(500, Number(stipulatedWordsPerChapter || currentBook.settings?.chapterWords || 3500));
+    const minWords = Math.round(words * 0.9);
+    const maxWords = Math.round(words * 1.15);
+
+    setIsGenerating(true);
+    stopBatchAfterCurrentRef.current = false;
+    setStopBatchRequested(false);
+    setConfirmRewrite(false);
+
+    let workingBook: Book = {
+      ...currentBook,
+      chapters: [...(currentBook.chapters || [])],
+      settings: {
+        ...currentBook.settings,
+        chapterWords: words,
+      },
+    };
+
+    const initialUserPlotNote = nextPlotInput.trim();
+    const selectedCards = ideaCards.filter((c) => selectedIdeaCardIds.includes(c.id));
+    let completedCount = 0;
+
+    try {
+      for (let step = 1; step <= totalSteps; step++) {
+        const chapNum = (workingBook.chapters?.length || 0) + 1;
+        setBatchProgress({
+          currentStep: step,
+          totalSteps,
+          currentChapNum: chapNum,
+        });
+        setChapterTitle(`第 ${chapNum} 章 · 批量连写中 (${step}/${totalSteps})...`);
+        setChapterText('');
+        setGenMeta(`批量连写进度：正在流式生成第 ${chapNum} 章（本批第 ${step}/${totalSteps} 章 · 规定每章 ${words} 字）...`);
+
+        const memory = buildMemoryContextForBook(workingBook);
+        const plannedOutline = (workingBook.settings?.chapterOutlines || []).find(
+          (c) => c.chapterIndex === chapNum
+        );
+        const nextPlannedOutline = (workingBook.settings?.chapterOutlines || []).find(
+          (c) => c.chapterIndex === chapNum + 1
+        );
+
+        const directiveBlocks: string[] = [];
+        if (plannedOutline) {
+          directiveBlocks.push(
+            `【本章既定章节细纲 · 第${plannedOutline.chapterIndex}章《${plannedOutline.title}》】\n${plannedOutline.summary}${
+              plannedOutline.hookNote ? `\n本章结尾断章钩子：${plannedOutline.hookNote}` : ''
+            }`
+          );
+        } else {
+          directiveBlocks.push(
+            `【连载递进要求】当前为连续批量生成的第 ${step}/${totalSteps} 章（全书第 ${chapNum} 章），请严格承接上一章末尾悬念并结合主线大纲与分卷目标稳步推进实质剧情，切勿快进跳章或原地踏步！`
+          );
+        }
+
+        if (nextPlannedOutline) {
+          directiveBlocks.push(
+            `【下一章（第${chapNum + 1}章）预告边界（仅供收尾铺垫，严禁在本章提前透支写完！）】：${nextPlannedOutline.summary}`
+          );
+        }
+
+        if (initialUserPlotNote) {
+          directiveBlocks.push(
+            step === 1
+              ? `【作者对本轮连写的总体导演指令（自本章起贯彻）】：\n${initialUserPlotNote}`
+              : `【作者本轮连写总体基调参考】：\n${initialUserPlotNote}`
+          );
+        }
+
+        if (step === 1 && selectedCards.length > 0) {
+          directiveBlocks.push(
+            `【首章需自然融入的灵感卡片】：\n${selectedCards
+              .map((c) => `- [${c.category || '灵感'}] ${c.content}`)
+              .join('\n')}`
+          );
+        }
+
+        const combinedDirective = directiveBlocks.join('\n\n');
+        const prevTail =
+          workingBook.chapters.length > 0
+            ? workingBook.chapters[workingBook.chapters.length - 1]?.text?.slice(-650) || ''
+            : '';
+
+        const audit = buildUnifiedSystemPrompt({
+          scope: 'chapter',
+          roleHeader:
+            '你是一名顶级资深职业连载小说家，正在执行多章节连续执笔任务。每一章都必须严丝合缝承接上一章结尾现场，严格执行章节细纲边界与规定字数。',
+          book: workingBook,
+          globalSkills,
+          xpPreferences,
+          contextCorpus: `${workingBook.title}\n${combinedDirective}\n${prevTail}`,
+          climaxMode: climaxMultiplierEnabled,
+          targetChapterIndex: chapNum,
+        });
+
+        let userPrompt = `请创作《${workingBook.title}》第 ${chapNum} 章正文（当前为连续生成批次的第 ${step}/${totalSteps} 章）。
+【硬性每章字数规定】：本章正文必须写足约 **${words} 字**（建议区间 ${minWords} ~ ${maxWords} 字），充实展开场景细节、人物动作与对话博弈，严禁因为批量连写而缩水敷衍！`;
+
+        if (memory) {
+          userPrompt += `\n\n${memory}\n`;
+        }
+        userPrompt += `\n# 本章推进蓝图与边界控制：\n${combinedDirective}\n`;
+        userPrompt += `\n输出格式规范（正文中严禁出现 "---"）：
+### 第${chapNum}章：${plannedOutline?.title ? plannedOutline.title : '[拟定富有画面感与张力的章节标题]'}
+[此处开始第${chapNum}章完整正文，严格写足约 ${words} 字]
+---
+#### 后续发展建议
+- [下一章走向建议1，35~80字]
+- [下一章走向建议2，35~80字]
+- [下一章走向建议3，35~80字]
+- [下一章走向建议4，35~80字]`;
+
+        let accumulatedRaw = '';
+        const chapStart = Date.now();
+
+        const result = await streamChatCompletion({
+          provider: writerCfg?.provider,
+          baseUrl: writerCfg?.baseUrl,
+          apiKey: writerCfg?.apiKey,
+          model: activeModelName,
+          messages: [
+            { role: 'system', content: audit.systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: Number(workingBook.settings?.temperature || 0.85),
+          onChunk: (chunk) => {
+            accumulatedRaw += chunk;
+            const parsed = parseChapterAndSuggestions(accumulatedRaw, `第 ${chapNum} 章`);
+            if (parsed.title) setChapterTitle(parsed.title);
+            setChapterText(parsed.bodyText);
+          },
+        });
+
+        const chapLatency = Date.now() - chapStart;
+        const finalRaw = result.content || accumulatedRaw;
+        const parsed = parseChapterAndSuggestions(finalRaw, `第 ${chapNum} 章`);
+
+        if (!parsed.bodyText.trim()) {
+          throw new Error(`第 ${chapNum} 章模型返回空文本（已完成并自动保存前 ${completedCount} 章）`);
+        }
+
+        const metaText = `批量连写(${step}/${totalSteps}) · ${activeModelName} · ${(chapLatency / 1000).toFixed(1)}s · ${parsed.bodyText.length}/${words}字`;
+        const newChap: Chapter = {
+          id: generateUUID(),
+          index: chapNum,
+          title: parsed.title,
+          text: parsed.bodyText,
+          meta: metaText,
+          userNextPlotInput: '',
+          allSuggestions: [{ suggestions: parsed.suggestions, timestamp: Date.now() }],
+        };
+
+        const updatedOutlines = (workingBook.settings?.chapterOutlines || []).map((co) =>
+          co.chapterIndex === chapNum ? { ...co, status: 'drafted' as const } : co
+        );
+
+        workingBook = {
+          ...workingBook,
+          chapters: [...workingBook.chapters, newChap],
+          settings: {
+            ...workingBook.settings,
+            chapterWords: words,
+            chapterOutlines: updatedOutlines,
+          },
+          lastModifiedAt: Date.now(),
+        };
+
+        await onSaveBook(workingBook);
+        completedCount += 1;
+        setCurrentChapterIndex(workingBook.chapters.length - 1);
+        setChapterTitle(newChap.title);
+        setChapterText(newChap.text);
+        setGenMeta(metaText);
+
+        if (stopBatchAfterCurrentRef.current && step < totalSteps) {
+          setGenMeta(`已按您的指令在第 ${chapNum} 章完稿后安全停止（本次共成功连写 ${completedCount} 章）`);
+          break;
+        }
+      }
+
+      if (completedCount > 0) {
+        setNextPlotInput('');
+        triggerQuickToast(`连续生成完成：共新增 ${completedCount} 章并自动保存！`);
+      }
+    } catch (err: any) {
+      const errMsg = err.message || '网络或模型响应中断';
+      setGenMeta(`批量连写中断（已安全保存 ${completedCount} 章）：${errMsg}`);
+      setNoticeModal({
+        isOpen: true,
+        type: 'error',
+        title: `批量连写在第 ${completedCount + 1} 步中断`,
+        message: `已完成的前 ${completedCount} 章正文均已实时存入本地书库，绝无丢失！\n中断原因：${errMsg}`,
+      });
+    } finally {
+      setIsGenerating(false);
+      setBatchProgress(null);
+      stopBatchAfterCurrentRef.current = false;
+      setStopBatchRequested(false);
     }
   };
 
@@ -931,7 +1266,19 @@ ${chapterTail}
   }
 
   const totalWordCount = (currentBook.chapters || []).reduce((acc, ch) => acc + (ch.text?.length || 0), 0);
-  const targetChapterWords = Number(currentBook.settings?.chapterWords || 3500);
+  const targetChapterWords = Math.max(500, Number(stipulatedWordsPerChapter || currentBook.settings?.chapterWords || 3500));
+  const nextChapterNum = (currentBook.chapters?.length || 0) + 1;
+  const upcomingPlannedOutline = (currentBook.settings?.chapterOutlines || []).find(
+    (c) => c.chapterIndex === nextChapterNum
+  );
+  const batchEndChapNum = nextChapterNum + Math.max(1, Number(batchChapterCount) || 3) - 1;
+  const plannedCountInBatchRange = (currentBook.settings?.chapterOutlines || []).filter(
+    (c) => c.chapterIndex >= nextChapterNum && c.chapterIndex <= batchEndChapNum
+  ).length;
+  const isBookXpEnabled =
+    currentBook.settings?.xpSystemEnabled !== undefined
+      ? Boolean(currentBook.settings.xpSystemEnabled)
+      : Boolean((xpPreferences || '').trim());
   const progressPercent = Math.min(
     99,
     Math.max(4, Math.floor((chapterText.length / Math.max(500, targetChapterWords)) * 100))
@@ -1014,6 +1361,27 @@ ${chapterTail}
                 <MotionButton
                   type="button"
                   disabled={isGenerating || !chapterText.trim()}
+                  onClick={() => setIsZhuqueModalOpen(true)}
+                  className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer tabular-nums ${
+                    !chapterText.trim()
+                      ? 'border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                      : liveZhuqueReport.verdict === 'pass'
+                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                      : liveZhuqueReport.verdict === 'borderline'
+                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                      : 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                  }`}
+                  title="打开腾讯朱雀AIGC检测、一键去AI味重铸、四维对抗审读与章节记忆回写"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    朱雀质检{chapterText.trim() ? ` · AI痕 ${liveZhuqueReport.aiRiskScore}%` : ''}
+                  </span>
+                </MotionButton>
+
+                <MotionButton
+                  type="button"
+                  disabled={isGenerating || !chapterText.trim()}
                   onClick={handleOpenPolishModal}
                   className="min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer"
                   title="选中文本或针对局部段落进行去AI味精修与张力慢放"
@@ -1088,17 +1456,36 @@ ${chapterTail}
               </div>
             </div>
 
-            {/* Locked Streaming Progress Header (Active ONLY during AI expansion/rewrite) */}
+            {/* Locked Streaming Progress Header (Active ONLY during AI expansion/rewrite/batch) */}
             {isGenerating && (
               <div className="sticky top-16 z-20 p-4 rounded-2xl border border-[var(--accent)]/30 bg-[var(--bg-surface)]/95 backdrop-blur-md shadow-lg space-y-2.5 bg-[radial-gradient(circle_at_top_right,var(--accent-soft),transparent_68%)]">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-2 font-semibold text-[var(--text-primary)]">
                     <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)] shrink-0" />
-                    <span>AI 正在流式扩写正文 · 编辑区与输入区已安全锁定</span>
+                    <span>
+                      {batchProgress
+                        ? `正在连续生成第 ${batchProgress.currentStep} / ${batchProgress.totalSteps} 章（全书第 ${batchProgress.currentChapNum} 章）`
+                        : 'AI 正在流式扩写正文 · 编辑区与输入区已安全锁定'}
+                    </span>
                   </div>
-                  <span className="font-mono text-[var(--text-secondary)] tabular-nums">
-                    实时输出 {chapterText.length} / 目标 {targetChapterWords} 字 ({progressPercent}%)
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[var(--text-secondary)] tabular-nums">
+                      实时输出 {chapterText.length} / 规定 {targetChapterWords} 字 ({progressPercent}%)
+                    </span>
+                    {batchProgress && batchProgress.currentStep < batchProgress.totalSteps && (
+                      <button
+                        type="button"
+                        disabled={stopBatchRequested}
+                        onClick={() => {
+                          stopBatchAfterCurrentRef.current = true;
+                          setStopBatchRequested(true);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-60"
+                      >
+                        {stopBatchRequested ? '写完本章后将停止' : '写完本章后停止'}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <progress
@@ -1239,13 +1626,13 @@ ${chapterTail}
         {/* RIGHT COLUMN (4 cols): Sticky Copilot Director & SKILL Inspector */}
         <aside className="lg:col-span-4 lg:sticky lg:top-20 space-y-4">
           {/* Card 1: Real-time SKILL 2.0 & Lorebook 2.0 Mount Status */}
-          <div className="studio-card p-4 space-y-3">
+          <div className="studio-card p-4 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
-                <h3 className="text-xs font-bold text-[var(--text-primary)]">引擎挂载状态</h3>
+                <h3 className="text-xs font-bold text-[var(--text-primary)]">引擎与设定挂载状态</h3>
                 <p className="text-[11px] text-[var(--text-muted)] mt-0.5 tabular-nums">
                   {liveAuditReport?.activeSkills.length || 0} 项 SKILL · {liveAuditReport?.activeLore.length || 0} 条世界书 ·{' '}
-                  {liveAuditReport?.hasXpConstitution ? 'XP宪法已挂载' : '未设XP宪法'}
+                  {(currentBook.settings?.chapterOutlines || []).length} 章细纲
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
@@ -1261,19 +1648,44 @@ ${chapterTail}
                   type="button"
                   onClick={onGoToSetup}
                   className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-xl border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)] cursor-pointer"
-                  title="修改作品设定与SKILL开关"
+                  title="修改11大系统设定、章节细纲与SKILL开关"
                 >
                   <Sliders className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
 
+            {/* Per-Book XP System Switch inside Writer */}
+            <button
+              type="button"
+              disabled={isGenerating}
+              onClick={handleToggleBookXpSystem}
+              className={`w-full min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
+                isBookXpEnabled
+                  ? 'bg-[var(--accent-soft)] border-[var(--accent)]/45 text-[var(--text-primary)]'
+                  : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+              }`}
+              title="随时切换本书是否以 XP 审美系统为底层创作基底"
+            >
+              <span className="flex items-center gap-2">
+                {isBookXpEnabled ? (
+                  <ShieldCheck className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                ) : (
+                  <ShieldOff className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
+                )}
+                <span>本书 XP 审美基底系统</span>
+              </span>
+              <span className="text-[11px] font-semibold">
+                {isBookXpEnabled ? '已开启 (全链路基底)' : '已关闭 (纯净商业)'}
+              </span>
+            </button>
+
             {/* Climax Slow-Motion Switch */}
             <button
               type="button"
               disabled={isGenerating}
               onClick={() => setClimaxMultiplierEnabled(!climaxMultiplierEnabled)}
-              className={`w-full min-h-[42px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
+              className={`w-full min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
                 climaxMultiplierEnabled
                   ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)]'
                   : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
@@ -1285,20 +1697,57 @@ ${chapterTail}
               </span>
               <span className="text-[11px] font-semibold">{climaxMultiplierEnabled ? '已开启' : '关闭'}</span>
             </button>
+
+            {/* Auto Post-Write Zhuque De-Slop Switch */}
+            <button
+              type="button"
+              disabled={isGenerating}
+              onClick={async () => {
+                if (!currentBook) return;
+                const nextFlag = !currentBook.settings?.autoZhuqueDeslop;
+                await onSaveBook({
+                  ...currentBook,
+                  settings: {
+                    ...currentBook.settings,
+                    autoZhuqueDeslop: nextFlag,
+                  },
+                  lastModifiedAt: Date.now(),
+                });
+                triggerQuickToast(
+                  nextFlag
+                    ? '已开启写后自动过朱雀去味校准（AI痕≥22%时自动重铸）'
+                    : '已关闭写后自动去味（仍可随时点击上方朱雀质检手动执行）'
+                );
+              }}
+              className={`w-full min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
+                currentBook.settings?.autoZhuqueDeslop
+                  ? 'bg-emerald-500/15 border-emerald-500/45 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+              }`}
+              title="开启后，每次单章完稿若检出朱雀AIGC痕迹≥22%，将自动无缝运行一次 story-deslop 人类化重铸"
+            >
+              <span className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                <span>写后自动过朱雀去味校准</span>
+              </span>
+              <span className="text-[11px] font-semibold">
+                {currentBook.settings?.autoZhuqueDeslop ? '已开启' : '按需手动'}
+              </span>
+            </button>
           </div>
 
-          {/* Card 2: Next Chapter Director (Active on latest chapter) */}
+          {/* Card 2: Next Chapter & Multi-Chapter Batch Director (Active on latest chapter) */}
           {isLastChapter ? (
             <div className="studio-card p-4 sm:p-5 space-y-4">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-bold text-[var(--text-primary)]">
-                  下一章导演台 (第 {(currentBook.chapters?.length || 0) + 1} 章)
+                  章节执笔导演台 (第 {nextChapterNum} 章起)
                 </h3>
                 <MotionButton
                   type="button"
                   disabled={isGenerating || isGeneratingBeats}
                   onClick={handleGenerateChapterBeats}
-                  className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[var(--bg-muted)] hover:opacity-85 text-[11px] font-semibold text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-45 cursor-pointer"
+                  className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--bg-muted)] hover:opacity-85 text-[11px] font-semibold text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-45 cursor-pointer"
                   title="AI 自动规划起承转合4幕场景节拍，彻底杜绝原地水字数"
                 >
                   {isGeneratingBeats ? (
@@ -1310,37 +1759,250 @@ ${chapterTail}
                 </MotionButton>
               </div>
 
+              {/* Single vs Multi-Chapter Continuous Mode Switcher */}
+              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl studio-muted text-xs">
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => setDirectorMode('single')}
+                  className={`min-h-[34px] rounded-lg font-semibold transition-colors cursor-pointer ${
+                    directorMode === 'single'
+                      ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-2xs'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  单章精写模式
+                </button>
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => setDirectorMode('batch')}
+                  className={`min-h-[34px] rounded-lg font-semibold transition-colors cursor-pointer flex items-center justify-center gap-1 ${
+                    directorMode === 'batch'
+                      ? 'bg-[var(--accent)] text-[var(--accent-fg)] shadow-2xs'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>多章连续生成</span>
+                </button>
+              </div>
+
+              {/* Stipulated Word Count Per Chapter Control (Works for BOTH Single & Multi-Chapter!) */}
+              <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/60 space-y-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="font-semibold text-[var(--text-primary)]">
+                    规定每章目标字数
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={500}
+                      max={15000}
+                      step={250}
+                      disabled={isGenerating}
+                      value={stipulatedWordsPerChapter}
+                      onChange={(e) =>
+                        setStipulatedWordsPerChapter(Math.max(500, Number(e.target.value) || 2000))
+                      }
+                      className="studio-input w-20 px-2 py-1 text-xs font-bold tabular-nums text-right"
+                    />
+                    <span className="text-[11px] text-[var(--text-muted)]">字/章</span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[2000, 3000, 3500, 4500].map((presetW) => (
+                    <button
+                      key={presetW}
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={() => setStipulatedWordsPerChapter(presetW)}
+                      className={`py-1 rounded-lg border text-[11px] tabular-nums transition-colors cursor-pointer ${
+                        Number(stipulatedWordsPerChapter) === presetW
+                          ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-bold'
+                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      {presetW}字
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Multi-Chapter Batch Count Selector (when in batch mode) */}
+              {directorMode === 'batch' && (
+                <div className="p-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent-soft)]/35 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-[var(--text-primary)]">
+                      本次连续生成章节数
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={2}
+                        max={30}
+                        disabled={isGenerating}
+                        value={batchChapterCount}
+                        onChange={(e) =>
+                          setBatchChapterCount(
+                            Math.min(30, Math.max(1, Number(e.target.value) || 2))
+                          )
+                        }
+                        className="studio-input w-16 px-2 py-1 text-xs font-bold tabular-nums text-right"
+                      />
+                      <span className="text-[11px] text-[var(--text-muted)]">章</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {[2, 3, 5, 8, 10].map((cnt) => (
+                      <button
+                        key={cnt}
+                        type="button"
+                        disabled={isGenerating}
+                        onClick={() => setBatchChapterCount(cnt)}
+                        className={`py-1 rounded-lg border text-[11px] tabular-nums transition-colors cursor-pointer ${
+                          Number(batchChapterCount) === cnt
+                            ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)] font-bold'
+                            : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                        }`}
+                      >
+                        连写{cnt}章
+                      </button>
+                    ))}
+                  </div>
+
+                  <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed tabular-nums">
+                    将连续流式生成 **第 {nextChapterNum} 章 ~ 第 {batchEndChapNum} 章**（预计总计约{' '}
+                    {(batchChapterCount * targetChapterWords).toLocaleString()} 字；其中{' '}
+                    {plannedCountInBatchRange}/{batchChapterCount} 章已备有预设章节细纲，每写完一章实时落库并刷新下一章记忆窗口）。
+                  </p>
+                </div>
+              )}
+
+              {/* Upcoming Chapter 4-Layer Outline Preview Card */}
+              {upcomingPlannedOutline && (
+                <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)]/55 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-[var(--text-primary)] flex items-center gap-1">
+                      <ListOrdered className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                      <span>
+                        第 {upcomingPlannedOutline.chapterIndex} 章 L4 细纲：《{upcomingPlannedOutline.title}》
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={() => handleSaveNextPlotInput(upcomingPlannedOutline.summary)}
+                      className="text-[11px] font-medium text-[var(--accent)] hover:underline shrink-0 cursor-pointer"
+                    >
+                      填入编辑框
+                    </button>
+                  </div>
+                  {(upcomingPlannedOutline.protagonistGoal ||
+                    upcomingPlannedOutline.coreObstacle ||
+                    upcomingPlannedOutline.hookNote) && (
+                    <div className="space-y-0.5 text-[11px] text-[var(--text-secondary)] pt-0.5">
+                      {upcomingPlannedOutline.protagonistGoal && (
+                        <p>· <strong>主角目标：</strong>{upcomingPlannedOutline.protagonistGoal}</p>
+                      )}
+                      {upcomingPlannedOutline.coreObstacle && (
+                        <p>· <strong>核心阻力：</strong>{upcomingPlannedOutline.coreObstacle}</p>
+                      )}
+                      {upcomingPlannedOutline.hookNote && (
+                        <p className="text-[var(--accent)]">· <strong>章末钩子：</strong>{upcomingPlannedOutline.hookNote}</p>
+                      )}
+                    </div>
+                  )}
+                  <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed line-clamp-3">
+                    {upcomingPlannedOutline.summary}
+                  </p>
+                  <p className="text-[10px] text-[var(--text-muted)]">
+                    注：执笔引擎会自动挂载所属分卷、防跑偏剧情单元、关联角色知情权边界与关键道具。
+                  </p>
+                </div>
+              )}
+
               <textarea
-                rows={4}
+                rows={3}
                 disabled={isGenerating}
                 value={nextPlotInput}
                 onChange={(e) => handleSaveNextPlotInput(e.target.value)}
                 placeholder={
                   isGenerating
                     ? 'AI 正在流式扩写中，导演输入框已锁定...'
-                    : '输入下一章具体剧情要求，或点选下方 AI 走向建议 / 右上角「生成4幕细纲」自动排布冲突节奏...'
+                    : directorMode === 'batch'
+                    ? '（选填）输入本轮连续多章生成的总体剧情要求或节奏叮嘱...'
+                    : '（选填）输入下一章补充要求，或点选下方 AI 走向建议...'
                 }
                 className="studio-input w-full p-3 text-xs leading-relaxed disabled:opacity-55 disabled:cursor-not-allowed"
               />
 
-              <MotionButton
-                type="button"
-                disabled={isGenerating}
-                onClick={() => handleGenerateNextChapter(nextPlotInput, false)}
-                className="btn-primary w-full min-h-[48px] px-5 py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>正在流式执笔中...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 fill-current" />
-                    <span>继续扩写下一章</span>
-                  </>
-                )}
-              </MotionButton>
+              {directorMode === 'batch' ? (
+                <div className="space-y-2">
+                  <MotionButton
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={handleBatchGenerateChapters}
+                    className="btn-primary w-full min-h-[48px] px-5 py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isGenerating && batchProgress ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>
+                          连写第 {batchProgress.currentStep}/{batchProgress.totalSteps} 章 (全书第{' '}
+                          {batchProgress.currentChapNum} 章)...
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Layers className="w-4 h-4" />
+                        <span>
+                          连续生成 {batchChapterCount} 章（每章 {targetChapterWords} 字）
+                        </span>
+                      </>
+                    )}
+                  </MotionButton>
+
+                  {isGenerating && batchProgress && batchProgress.currentStep < batchProgress.totalSteps && (
+                    <button
+                      type="button"
+                      disabled={stopBatchRequested}
+                      onClick={() => {
+                        stopBatchAfterCurrentRef.current = true;
+                        setStopBatchRequested(true);
+                      }}
+                      className="w-full min-h-[40px] px-4 py-2 rounded-xl border border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
+                    >
+                      <Square className="w-3 h-3 fill-current" />
+                      <span>
+                        {stopBatchRequested
+                          ? `已预约：第 ${batchProgress.currentChapNum} 章写完落库后安全停止`
+                          : '写完当前章后安全停止连写'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <MotionButton
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => handleGenerateNextChapter(nextPlotInput, false)}
+                  className="btn-primary w-full min-h-[48px] px-5 py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>正在流式执笔中...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 fill-current" />
+                      <span>继续扩写第 {nextChapterNum} 章（规定 {targetChapterWords} 字）</span>
+                    </>
+                  )}
+                </MotionButton>
+              )}
 
               {/* AI 4 Plot Suggestions */}
               <div className="pt-3 border-t border-[var(--border-subtle)] space-y-3">
@@ -1743,9 +2405,13 @@ ${chapterTail}
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
               <div className="p-3 studio-muted space-y-1">
-                <p className="text-[var(--text-muted)]">全局 XP 创作宪法</p>
+                <p className="text-[var(--text-muted)]">本书 XP 审美基底</p>
                 <p className="font-semibold text-[var(--text-primary)]">
-                  {liveAuditReport.hasXpConstitution ? `已注入 (${liveAuditReport.xpLength} 字)` : '未设置'}
+                  {!liveAuditReport.xpSystemEnabled
+                    ? '已关闭 (物理隔离)'
+                    : liveAuditReport.hasXpConstitution
+                    ? `已开启并注入 (${liveAuditReport.xpLength} 字)`
+                    : '已开启 (待填全局XP)'}
                 </p>
               </div>
               <div className="p-3 studio-muted space-y-1">
@@ -2025,6 +2691,46 @@ ${chapterTail}
             </div>
           </div>
         </ModalPortal>
+      )}
+
+      {/* Tencent Zhuque Audit + story-deslop + story-review + webnovel-write Memory Modal */}
+      {currentBook && (
+        <ZhuqueAuditModal
+          isOpen={isZhuqueModalOpen}
+          onClose={() => setIsZhuqueModalOpen(false)}
+          bookTitle={currentBook.title}
+          chapterIndex={activeChapter?.index || currentChapterIndex + 1}
+          chapterTitle={chapterTitle || activeChapter?.title || `第 ${currentChapterIndex + 1} 章`}
+          chapterText={chapterText}
+          settings={currentBook.settings}
+          configs={configs}
+          uiSettings={uiSettings}
+          onApplyRewrittenText={async (newText: string) => {
+            setChapterText(newText);
+            if (currentChapterIndex >= 0 && currentBook.chapters[currentChapterIndex]) {
+              const postReport = analyzeTextForZhuque(newText);
+              const nextChapters = [...currentBook.chapters];
+              nextChapters[currentChapterIndex] = {
+                ...nextChapters[currentChapterIndex],
+                text: newText,
+                meta: `story-deslop 朱雀过审重铸 (AI痕 ${postReport.aiRiskScore}% · σ=${postReport.burstinessStdDev}) · ${new Date().toLocaleTimeString()}`,
+              };
+              await onSaveBook({
+                ...currentBook,
+                chapters: nextChapters,
+                lastModifiedAt: Date.now(),
+              });
+            }
+          }}
+          onApplyMemoryWritebackSettings={async (nextSettings: BookSettings, toastMsg: string) => {
+            await onSaveBook({
+              ...currentBook,
+              settings: nextSettings,
+              lastModifiedAt: Date.now(),
+            });
+            triggerQuickToast(toastMsg);
+          }}
+        />
       )}
     </div>
   );

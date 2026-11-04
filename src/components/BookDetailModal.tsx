@@ -1,6 +1,26 @@
-import React, { useState } from 'react';
-import { X, ChevronDown, ChevronUp, Feather, Download, Trash2, BookOpen, Copy } from 'lucide-react';
-import { Book, Chapter, ArchivedChapter, Summary } from '../types';
+import React, { useState, useEffect } from 'react';
+import {
+  X,
+  ChevronDown,
+  ChevronUp,
+  Feather,
+  Download,
+  Trash2,
+  BookOpen,
+  Copy,
+  Clapperboard,
+  Sparkles,
+  Loader2,
+} from 'lucide-react';
+import {
+  Book,
+  Chapter,
+  ArchivedChapter,
+  Summary,
+  DramaAspectRatio,
+  DramaVisualStyle,
+} from '../types';
+import { NovelToDramaAdaptationOptions } from '../services/dramaPromptEngine';
 import JSZip from 'jszip';
 import { MotionButton, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
@@ -15,7 +35,20 @@ interface BookDetailModalProps {
   onReadChapter: (chapter: Chapter | ArchivedChapter) => void;
   onOpenSummaryView: (summary: Summary) => void;
   onDeleteSummary: (summaryId: string) => void;
+  onDramatizeBook?: (book: Book, options: NovelToDramaAdaptationOptions) => Promise<void>;
+  isDramatizing?: boolean;
+  autoExpandDramatize?: boolean;
 }
+
+const DRAMA_VISUAL_STYLE_OPTIONS: DramaVisualStyle[] = [
+  '2.5D精致厚涂精绘',
+  '国漫厚涂精绘',
+  '新中式古风玄幻',
+  '日韩唯美赛璐璐网漫',
+  '暗黑赛博霓虹',
+  '写实电影感漫剧',
+  '美式硬派漫画',
+];
 
 export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   book,
@@ -27,10 +60,25 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onReadChapter,
   onOpenSummaryView,
   onDeleteSummary,
+  onDramatizeBook,
+  isDramatizing = false,
+  autoExpandDramatize = false,
 }) => {
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [selectedArchivedIds, setSelectedArchivedIds] = useState<string[]>([]);
+  const [isDramatizePanelOpen, setIsDramatizePanelOpen] = useState<boolean>(autoExpandDramatize);
+  const [aspectRatio, setAspectRatio] = useState<DramaAspectRatio>('9:16 竖屏短剧');
+  const [episodeDurationSec, setEpisodeDurationSec] = useState<number>(90);
+  const [visualStyle, setVisualStyle] = useState<DramaVisualStyle>('2.5D精致厚涂精绘');
+  const [totalPlannedEpisodes, setTotalPlannedEpisodes] = useState<number>(60);
+  const [initialEpisodePlanCount, setInitialEpisodePlanCount] = useState<number>(12);
   const { openContextMenu, triggerQuickToast } = useContextMenu();
+
+  useEffect(() => {
+    if (isOpen) {
+      setIsDramatizePanelOpen(Boolean(autoExpandDramatize));
+    }
+  }, [isOpen, autoExpandDramatize, book?.id]);
 
   if (!isOpen || !book) return null;
 
@@ -103,17 +151,174 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--bg-muted)] shrink-0 cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {onDramatizeBook && (
+              <MotionButton
+                type="button"
+                disabled={isDramatizing}
+                onClick={() => setIsDramatizePanelOpen((v) => !v)}
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  isDramatizePanelOpen
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                    : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[var(--accent)]/50'
+                }`}
+              >
+                <Clapperboard className="w-3.5 h-3.5" />
+                <span>剧本化</span>
+              </MotionButton>
+            )}
+
+            <button
+              type="button"
+              disabled={isDramatizing}
+              onClick={onClose}
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--bg-muted)] shrink-0 cursor-pointer disabled:opacity-40"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Scrollable Body */}
         <div className="p-5 sm:p-6 overflow-y-auto space-y-6 flex-1 text-sm">
+          {/* Expandable Novel -> Drama Script Studio Panel (剧本化) */}
+          {onDramatizeBook && isDramatizePanelOpen && (
+            <section className="p-4 sm:p-5 rounded-2xl border border-[var(--accent)]/45 bg-[var(--accent-soft)]/35 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    <Clapperboard className="w-4 h-4 text-[var(--accent)]" />
+                    <h3 className="text-sm sm:text-base font-bold text-[var(--text-primary)]">
+                      小说一键「剧本化」· 转化为 AI 漫剧剧本立项
+                    </h3>
+                  </div>
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                    自动读取《{book.title}》的核心大纲（{(book.settings?.outline || '').length}字）、
+                    分章细纲（{(book.settings?.chapterOutlines || []).length}章）与已完稿正文（
+                    {book.chapters.length}章）作为预设输入，提炼为商业漫剧立项并自动绑定「原作对照分屏」。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={isDramatizing}
+                  onClick={() => setIsDramatizePanelOpen(false)}
+                  className="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0 cursor-pointer"
+                >
+                  收起
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                <div className="space-y-1">
+                  <label className="font-medium text-[var(--text-secondary)]">画幅规格</label>
+                  <select
+                    value={aspectRatio}
+                    disabled={isDramatizing}
+                    onChange={(e) => setAspectRatio(e.target.value as DramaAspectRatio)}
+                    className="studio-input w-full min-h-[38px] px-2.5 py-1.5 text-xs"
+                  >
+                    <option value="9:16 竖屏短剧">9:16 竖屏短剧</option>
+                    <option value="16:9 横屏中剧">16:9 横屏中剧</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-medium text-[var(--text-secondary)]">单集目标时长</label>
+                  <select
+                    value={episodeDurationSec}
+                    disabled={isDramatizing}
+                    onChange={(e) => setEpisodeDurationSec(Number(e.target.value))}
+                    className="studio-input w-full min-h-[38px] px-2.5 py-1.5 text-xs"
+                  >
+                    <option value={60}>60 秒（快节奏卡点）</option>
+                    <option value={90}>90 秒（主流商业标配）</option>
+                    <option value={120}>120 秒（深度剧情张力）</option>
+                    <option value={180}>180 秒（精品中剧体量）</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-medium text-[var(--text-secondary)]">漫剧视觉画风</label>
+                  <select
+                    value={visualStyle}
+                    disabled={isDramatizing}
+                    onChange={(e) => setVisualStyle(e.target.value as DramaVisualStyle)}
+                    className="studio-input w-full min-h-[38px] px-2.5 py-1.5 text-xs"
+                  >
+                    {DRAMA_VISUAL_STYLE_OPTIONS.map((st) => (
+                      <option key={st} value={st}>
+                        {st}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="font-medium text-[var(--text-secondary)]">规划总集数</label>
+                    <select
+                      value={totalPlannedEpisodes}
+                      disabled={isDramatizing}
+                      onChange={(e) => setTotalPlannedEpisodes(Number(e.target.value))}
+                      className="studio-input w-full min-h-[38px] px-2 py-1.5 text-xs"
+                    >
+                      <option value={40}>40 集</option>
+                      <option value={60}>60 集</option>
+                      <option value={80}>80 集</option>
+                      <option value={100}>100 集</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="font-medium text-[var(--text-secondary)]">首批细纲</label>
+                    <select
+                      value={initialEpisodePlanCount}
+                      disabled={isDramatizing}
+                      onChange={(e) => setInitialEpisodePlanCount(Number(e.target.value))}
+                      className="studio-input w-full min-h-[38px] px-2 py-1.5 text-xs"
+                    >
+                      <option value={10}>前 10 集</option>
+                      <option value={12}>前 12 集</option>
+                      <option value={16}>前 16 集</option>
+                      <option value={20}>前 20 集</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <span className="text-[11px] text-[var(--text-muted)]">
+                  转化完成后将自动跳转至「AI 漫剧 · 立项与圣经」，原小说数据毫发无损。
+                </span>
+                <MotionButton
+                  type="button"
+                  disabled={isDramatizing}
+                  onClick={() =>
+                    onDramatizeBook(book, {
+                      aspectRatio,
+                      episodeDurationSec,
+                      visualStyle,
+                      totalPlannedEpisodes,
+                      initialEpisodePlanCount,
+                    })
+                  }
+                  className="btn-primary min-h-[42px] px-5 py-2 text-xs font-semibold flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                >
+                  {isDramatizing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>AI 正在提炼漫剧圣经与分集细纲...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>立即转化为漫剧剧本立项</span>
+                    </>
+                  )}
+                </MotionButton>
+              </div>
+            </section>
+          )}
+
           {/* Outline Accordion */}
           <div className="rounded-xl border border-[var(--border-subtle)] overflow-hidden">
             <button
@@ -325,11 +530,24 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             <span>删除作品</span>
           </MotionButton>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {onDramatizeBook && (
+              <MotionButton
+                type="button"
+                disabled={isDramatizing}
+                onClick={() => setIsDramatizePanelOpen(true)}
+                className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--accent)]/50 bg-[var(--accent-soft)]/50 hover:bg-[var(--accent-soft)] text-[var(--accent)] text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Clapperboard className="w-4 h-4" />
+                <span>剧本化</span>
+              </MotionButton>
+            )}
+
             <MotionButton
               type="button"
+              disabled={isDramatizing}
               onClick={() => onOpenDownloadDialog(book.id)}
-              className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[var(--text-primary)] text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[var(--text-primary)] text-xs font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               <Download className="w-4 h-4" />
               <span>导出电子书</span>
@@ -337,11 +555,12 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
             <MotionButton
               type="button"
+              disabled={isDramatizing}
               onClick={() => {
                 onClose();
                 onContinueWriting(book);
               }}
-              className="btn-primary min-h-[44px] px-5 py-2 text-xs flex items-center gap-1.5 cursor-pointer"
+              className="btn-primary min-h-[44px] px-5 py-2 text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               <Feather className="w-4 h-4" />
               <span>进入执笔</span>
