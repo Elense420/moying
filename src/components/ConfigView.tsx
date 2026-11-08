@@ -58,6 +58,13 @@ import {
 import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
 import { PWAInstallButton } from './PWAInstallButton';
 import { SPRING_INDICATOR, MotionButton, StaggerCard, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
+import {
+  checkAllSkillsUpdates,
+  checkSingleSkillUpdate,
+  updateSkillFromGithub,
+  SkillUpdateInfo,
+  GITHUB_SKILL_REPOSITORIES,
+} from '../services/githubSkillUpdater';
 import { useContextMenu } from './ContextMenu';
 
 interface ConfigViewProps {
@@ -387,7 +394,78 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
     setTimeout(() => setXpStatus(''), 3500);
   };
 
-  // SKILL 2.0 Hub Handlers
+  // SKILL 2.0 Hub Handlers & GitHub Sync
+  const [isCheckingSkillUpdates, setIsCheckingSkillUpdates] = useState(false);
+  const [updatingSkillId, setUpdatingSkillId] = useState<string | null>(null);
+  const [skillUpdateMap, setSkillUpdateMap] = useState<Record<string, SkillUpdateInfo>>({});
+
+  const handleCheckSkillUpdates = async () => {
+    setIsCheckingSkillUpdates(true);
+    setSkillStatusMsg('正在通过 GitHub API 检索 6 大开源技能远程最新 Commit 与发布状态...');
+    try {
+      const results = await checkAllSkillsUpdates(globalSkills);
+      setSkillUpdateMap(results);
+      const updateCount = Object.values(results).filter((r) => r.hasUpdate).length;
+      if (updateCount > 0) {
+        setSkillStatusMsg(`检测完成：发现 ${updateCount} 项技能存在 GitHub 远程新版本，可单项点击更新或一键拉取！`);
+      } else {
+        setSkillStatusMsg('检测完成：全部 GitHub 技能均已对齐远程最新代码，当前已是最新状态。');
+      }
+    } catch (err: any) {
+      setSkillStatusMsg(`检查技能更新失败：${err.message}`);
+    } finally {
+      setIsCheckingSkillUpdates(false);
+    }
+  };
+
+  const handleUpdateSingleSkill = async (skill: NovelSkill) => {
+    setUpdatingSkillId(skill.id);
+    try {
+      const { updatedSkill, summary } = await updateSkillFromGithub(skill);
+      await onRefreshGlobalSkills();
+      setSkillUpdateMap((prev) => ({
+        ...prev,
+        [skill.id]: {
+          ...(prev[skill.id] || {}),
+          skillId: skill.id,
+          slug: skill.slug || skill.name,
+          hasUpdate: false,
+          currentSha: updatedSkill.githubRepo?.installedCommitSha || 'latest',
+          remoteSha: updatedSkill.githubRepo?.installedCommitSha || 'latest',
+          remoteDate: updatedSkill.githubRepo?.installedCommitDate || '',
+          remoteMessage: '已拉取最新',
+          repoUrl: prev[skill.id]?.repoUrl || '',
+        },
+      }));
+      setSkillStatusMsg(summary);
+      triggerQuickToast(`已成功更新「${skill.name}」！`);
+    } catch (err: any) {
+      setSkillStatusMsg(`更新「${skill.name}」失败：${err.message}`);
+    } finally {
+      setUpdatingSkillId(null);
+    }
+  };
+
+  const handleUpdateAllPendingSkills = async () => {
+    const pendingSkills = globalSkills.filter((s) => skillUpdateMap[s.id]?.hasUpdate);
+    if (pendingSkills.length === 0) return;
+    setIsCheckingSkillUpdates(true);
+    let successCount = 0;
+    for (const sk of pendingSkills) {
+      try {
+        await updateSkillFromGithub(sk);
+        successCount++;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    await onRefreshGlobalSkills();
+    const updatedMap = await checkAllSkillsUpdates(globalSkills);
+    setSkillUpdateMap(updatedMap);
+    setIsCheckingSkillUpdates(false);
+    setSkillStatusMsg(`已完成一键全量更新：成功拉取并热载入了 ${successCount} 项技能最新代码！`);
+  };
+
   const parseCommaList = (raw: string): string[] =>
     raw
       .split(/[,，、\s]+/)
@@ -1199,6 +1277,36 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                 />
               </label>
 
+              <MotionButton
+                type="button"
+                disabled={isCheckingSkillUpdates}
+                onClick={handleCheckSkillUpdates}
+                className="min-h-[42px] px-3.5 py-2 rounded-xl border border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                title="通过 GitHub API 检测 6 大技能开源仓库最新 commit 与更新"
+              >
+                {isCheckingSkillUpdates ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Globe className="w-3.5 h-3.5" />
+                )}
+                <span>{isCheckingSkillUpdates ? '正在检测更新...' : '检查 GitHub 技能更新'}</span>
+              </MotionButton>
+
+              {(Object.values(skillUpdateMap) as SkillUpdateInfo[]).some((u) => u.hasUpdate) && (
+                <MotionButton
+                  type="button"
+                  disabled={isCheckingSkillUpdates}
+                  onClick={handleUpdateAllPendingSkills}
+                  className="btn-primary min-h-[42px] px-4 py-2 text-xs flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                  title="一键将所有存在远程更新的技能拉取并热载入"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>
+                    一键拉取全部更新 ({(Object.values(skillUpdateMap) as SkillUpdateInfo[]).filter((u) => u.hasUpdate).length}项)
+                  </span>
+                </MotionButton>
+              )}
+
               <button
                 type="button"
                 onClick={handleExportAllSkillsZip}
@@ -1369,6 +1477,82 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                     <p className="text-xs text-[var(--text-secondary)] leading-relaxed line-clamp-2">
                       {skill.description}
                     </p>
+
+                    {/* GitHub Repository Tracking & Update Actions */}
+                    {Boolean(skill.githubRepo || GITHUB_SKILL_REPOSITORIES[skill.slug || skill.name]) && (() => {
+                      const origin = skill.githubRepo || GITHUB_SKILL_REPOSITORIES[skill.slug || skill.name];
+                      const updateInfo = skillUpdateMap[skill.id];
+                      const isUpdating = updatingSkillId === skill.id;
+
+                      return (
+                        <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-1.5 text-[var(--text-muted)] text-[11px] font-mono truncate">
+                            <Globe className="w-3.5 h-3.5 shrink-0 text-blue-500" />
+                            <a
+                              href={origin.repoUrl || `https://github.com/${origin.owner}/${origin.repo}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="hover:underline truncate"
+                            >
+                              {origin.owner}/{origin.repo}
+                            </a>
+                            <span className="text-[10px] opacity-75">
+                              ({origin.installedCommitSha || 'v' + (skill.version || '1.0')})
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {updateInfo?.hasUpdate ? (
+                              <MotionButton
+                                type="button"
+                                disabled={isUpdating}
+                                onClick={() => handleUpdateSingleSkill(skill)}
+                                className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-700 dark:text-amber-300 text-[11px] font-semibold flex items-center gap-1 cursor-pointer hover:bg-amber-500/25"
+                                title={`远程有新 Commit: ${updateInfo.remoteMessage || updateInfo.remoteSha}`}
+                              >
+                                {isUpdating ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3 h-3" />
+                                )}
+                                <span>发现更新 · 点击更新</span>
+                              </MotionButton>
+                            ) : updateInfo ? (
+                              <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-medium">
+                                ✓ 已是最新
+                              </span>
+                            ) : (
+                              <MotionButton
+                                type="button"
+                                disabled={isUpdating || isCheckingSkillUpdates}
+                                onClick={async () => {
+                                  setUpdatingSkillId(skill.id);
+                                  try {
+                                    const info = await checkSingleSkillUpdate(skill);
+                                    setSkillUpdateMap((prev) => ({ ...prev, [skill.id]: info }));
+                                    if (info.hasUpdate) {
+                                      triggerQuickToast(`「${skill.name}」发现 GitHub 远程更新！`);
+                                    } else {
+                                      triggerQuickToast(`「${skill.name}」已是最新版本`);
+                                    }
+                                  } finally {
+                                    setUpdatingSkillId(null);
+                                  }
+                                }}
+                                className="px-2 py-1 rounded-lg border border-[var(--border-subtle)] text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-muted)] flex items-center gap-1 cursor-pointer"
+                              >
+                                {isUpdating ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Globe className="w-3 h-3" />
+                                )}
+                                <span>检查更新</span>
+                              </MotionButton>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="p-2.5 studio-muted text-[11px] text-[var(--text-muted)] font-mono line-clamp-2">

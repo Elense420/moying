@@ -740,7 +740,7 @@ ${polishSourceText}`;
             apiKey: writerCfg?.apiKey,
             model: activeModelName,
             messages: deslopMsgs,
-            temperature: 0.78,
+            temperature: 0.35,
             onChunk: (c) => {
               deslopAcc += c;
               setChapterText(deslopAcc);

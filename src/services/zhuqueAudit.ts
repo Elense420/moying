@@ -297,8 +297,175 @@ export function analyzeTextForZhuque(rawText: string): ZhuqueAuditReport {
 }
 
 /**
- * Builds the `story-deslop` + Tencent Zhuque Humanization Prompt to rewrite a chapter
- * so its AI trace drops below 20% WITHOUT losing any plot beats, items, foreshadowing, or word count.
+ * Honest system transparency disclosure statement for user awareness.
+ */
+export const ZHUQUE_AUDIT_TRANSPARENCY_NOTE =
+  '【技术原理与实测说明】：腾讯朱雀为腾讯内部企业级 AIGC 安全检测器，官方从未开放免密或免签约的公网 API。本系统集成的是基于开源检测器（zenstory-ai check-ai-patterns 等）与腾讯朱雀公开发布的 AIGC 文本特征白皮书构建的「本地启发式特征扫描与突发度算法引擎」。本系统绝不弄虚作假，通过真实的本地正则与统计特征（句长方差 σ、独句段比率、22类高危套路句式），实打实定位并清除 AI 机械腔。';
+
+export interface SurgicalSentenceFinding {
+  sentenceIndex: number;
+  originalSentence: string;
+  matchedRules: string[];
+  fixHint: string;
+}
+
+/**
+ * Extracts only the specific sentences that triggered AI pattern rules.
+ * This enables surgical replacements without re-generating the entire chapter,
+ * preventing LLM prompt backfire where rewriting generates new AI patterns.
+ */
+export function findSurgicalSentences(rawText: string): SurgicalSentenceFinding[] {
+  const text = (rawText || '').trim();
+  if (!text) return [];
+
+  const sentences = splitSentences(text);
+  const results: SurgicalSentenceFinding[] = [];
+
+  sentences.forEach((sent, idx) => {
+    const matchedRules: string[] = [];
+    let fixHint = '';
+
+    for (const rule of ZHUQUE_PATTERN_RULES) {
+      if (rule.regex.test(sent)) {
+        matchedRules.push(rule.categoryLabel);
+        if (!fixHint) fixHint = rule.fixHint;
+      }
+      rule.regex.lastIndex = 0; // reset regex state
+    }
+
+    // Check trailer endings in the sentence
+    if (TRAILER_ENDING_REGEX.test(sent)) {
+      matchedRules.push('章末预告片升华腔');
+      if (!fixHint) fixHint = '停在具体物理动作或戛然而止的半句对白上，严禁宏大叙事总结。';
+    }
+    TRAILER_ENDING_REGEX.lastIndex = 0;
+
+    // Check em-dash abuse in a single short sentence
+    if ((sent.match(/——/g) || []).length >= 2) {
+      matchedRules.push('破折号堆叠解释腔');
+      if (!fixHint) fixHint = '改为逗号或句号拆解。';
+    }
+
+    if (matchedRules.length > 0) {
+      results.push({
+        sentenceIndex: idx,
+        originalSentence: sent,
+        matchedRules,
+        fixHint,
+      });
+    }
+  });
+
+  return results;
+}
+
+/**
+ * Builds surgical replacement prompt targeting ONLY the problematic sentences.
+ * This preserves 98% of the original chapter and only fixes the dirty sentences.
+ */
+export function buildSurgicalDeslopMessages(params: {
+  chapterTitle: string;
+  dirtySentences: SurgicalSentenceFinding[];
+  distilledStyle?: DistilledStyleProfile | null;
+  characterSpeechNotes?: string;
+}): Message[] {
+  const { chapterTitle, dirtySentences, distilledStyle, characterSpeechNotes } = params;
+
+  const sentencePrompts = dirtySentences
+    .map(
+      (item, i) =>
+        `【病灶原句 ${i + 1}】（命中：${item.matchedRules.join('、')}）\n原句："${item.originalSentence}"\n修改方向：${item.fixHint}`
+    )
+    .join('\n\n');
+
+  const styleClause = distilledStyle
+    ? `\n\n【遵循的文风指纹《${distilledStyle.name}》】\n${distilledStyle.executableDirective}`
+    : '';
+
+  const voiceClause = characterSpeechNotes
+    ? `\n\n【角色说话声纹与知情边界】\n${characterSpeechNotes}`
+    : '';
+
+  return [
+    {
+      role: 'system',
+      content: `你是精通网文去AI味的老练编辑。你的任务是针对给出的几句“因命中 AI 套套句式（如‘不是…而是…’、‘声音不大却透着…’、‘嘴角勾起一抹’、‘瞳孔微缩’等）而超标”的孤立句子，提供【接地气的口语化、纯动作白描】的人类作家替换句。
+
+【改写铁律】：
+1. 坚决杜绝二元否定：“不是A而是B”直接删去否定词，改为真实发生的动作（如把“他不是怕死，而是放心不下妹妹”改为“他握紧了兜里给妹妹买的糖，没往后退半步”）。
+2. 坚决杜绝评价声音：“声音不大却威严”改为“他把茶杯重重一磕：‘坐下。’”
+3. 坚决杜绝五官体操：“嘴角勾起一抹冷笑，瞳孔骤缩”改为人物与环境的具体器物互动（如“他扯了下领口，盯着对方手里的刀”）。
+4. 语言要极简、带生活质感与毛边，严禁写成文艺抒情散文，严禁加入“空气中弥漫着……”等二手词。${styleClause}${voiceClause}
+
+请严格输出 JSON 数组，格式如下（不要包裹任何多余解释）：
+[
+  {
+    "original": "原句文本",
+    "replacement": "改写后接地气的真人句子"
+  }
+]`,
+    },
+    {
+      role: 'user',
+      content: `章节：《${chapterTitle}》
+待手术的 ${dirtySentences.length} 处具体病灶句子清单：
+
+${sentencePrompts}`,
+    },
+  ];
+}
+
+export function parseSurgicalDeslopResponse(
+  raw: string
+): Array<{ original: string; replacement: string }> {
+  try {
+    const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+    const start = cleaned.indexOf('[');
+    const end = cleaned.lastIndexOf(']');
+    if (start === -1 || end === -1) return [];
+    const parsed = JSON.parse(cleaned.slice(start, end + 1));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item: any) => item && typeof item.original === 'string' && typeof item.replacement === 'string')
+      .map((item: any) => ({
+        original: String(item.original).trim(),
+        replacement: String(item.replacement).trim(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Safely applies surgical sentence replacements into original text.
+ */
+export function applySurgicalReplacements(
+  originalText: string,
+  replacements: Array<{ original: string; replacement: string }>
+): string {
+  let updated = originalText;
+  for (const { original, replacement } of replacements) {
+    if (!original || !replacement) continue;
+    if (updated.includes(original)) {
+      updated = updated.replace(original, replacement);
+    } else {
+      // Fuzzy whitespace match
+      const cleanOrig = original.replace(/\s+/g, '');
+      const sents = splitSentences(updated);
+      for (const sent of sents) {
+        if (sent.replace(/\s+/g, '') === cleanOrig) {
+          updated = updated.replace(sent, replacement);
+          break;
+        }
+      }
+    }
+  }
+  return updated;
+}
+
+/**
+ * Builds the `story-deslop` + Tencent Zhuque Humanization Prompt for full-chapter rewriting.
+ * Overhauled to prevent LLM meta-overcompensation (low temperature 0.35 + concrete negative/positive contrast).
  */
 export function buildZhuqueDeslopMessages(params: {
   chapterTitle: string;
@@ -314,17 +481,17 @@ export function buildZhuqueDeslopMessages(params: {
       ? auditReport.findings
           .map(
             (f, i) =>
-              `${i + 1}. [${f.severity === 'blocking' ? '阻断级红线' : '优化项'}] ${f.categoryLabel}：${f.matchedText}\n   修正方案：${f.fixHint}`
+              `${i + 1}. [${f.severity === 'blocking' ? '阻断级红线' : '优化项'}] ${f.categoryLabel}：${f.matchedText}\n   替换方向：${f.fixHint}`
           )
           .join('\n')
-      : '当前无明显词汇套话，重点拉大句长错落度（Burstiness σ≥13.5）并增强独句留白呼吸感。';
+      : '重点拉大句长错落度（避免均匀每句20字），多用真实具体的生活器物动作替代心理抽象评价。';
 
   const styleBlock = distilledStyle
-    ? `\n\n【必须同步贯彻的蒸馏文风 DNA：《${distilledStyle.name}》】\n${distilledStyle.executableDirective}`
+    ? `\n\n【文风DNA：《${distilledStyle.name}》】\n${distilledStyle.executableDirective}`
     : '';
 
   const voiceBlock = characterSpeechNotes
-    ? `\n\n【角色声纹与知情边界锁死（严禁改出上帝视角或腔调趋同）】\n${characterSpeechNotes}`
+    ? `\n\n【角色说话声纹与知情边界隔离】\n${characterSpeechNotes}`
     : '';
 
   const targetLen = Math.max(800, chapterText.replace(/\s+/g, '').length);
@@ -332,27 +499,34 @@ export function buildZhuqueDeslopMessages(params: {
   return [
     {
       role: 'system',
-      content: `你是精通【story-deslop 去AI味协议】与【腾讯朱雀AIGC检测对抗重构】的顶级中文文学责编。
-你的唯一任务：在不改变任何剧情走向、人物知情权边界、关键道具状态与伏笔细节的前提下，对正文进行深度“去AI味人类化重铸”，使重构后文本达到真人作家手写质感（朱雀AIGC风险值 < 18%）。
+      content: `你是一位崇尚【老舍、汪曾祺式生活化白描】的中文小说责编。
+你的唯一任务：将以下章节中的“大模型翻译腔与AI套话”全部剔除，换成接地气、有现场呼吸感的生活大白话。保持原剧情走向、人物生死与道具细节 100% 不变。
 
-【朱雀过审五大硬核手术准则】
-1. 彻底清零套路骨架：严禁出现任何“不是…而是… / 并非…而是… / 不仅没有…反而… / 声音不大却… / 没有A没有B只有C”句式；严禁使用“瞳孔微缩、嘴角勾起一抹、眼中闪过一丝、指节泛白、空气仿佛凝固、不容置疑、不易察觉、莫名的情绪、取而代之的是、与此同时、这意味着”等AI高频词。
-2. 制造人类句长熵值（高 Burstiness σ≥13.5）：打破每句18~22字的匀速机器节拍！将具象环境动作长句（28~42字）与冷峻干脆的极短句（2~9字，如“灯灭了。”“他没接话。”“差半寸。”）交错咬合。
-3. 打破豆腐块分段：全章保持约 25%~40% 的独句自然段，在动作定格、沉默对视或冷淡回应处果断换行留白；每千字破折号“——”不超过 1 个。
-4. 具象五感替代心理说明书：删掉替角色总结心情的旁白，改成手边器物声响、温度、视线错位与口语潜台词（允许半截话、答非所问、动作打断对话）。
-5. 斩断预告片尾巴：章末严禁出现“没人知道、才刚刚开始、命运的齿轮、这一夜注定”等升华腔，必须停在最后一个具体动作、器物特写或悬而未决的半句对话上。${styleBlock}${voiceBlock}
+【必须严格执行的降温去味红线】：
+1. 绝对不要写文艺抒情腔或哲学感慨！严禁出现“属于他的风暴才刚刚拉开序幕”、“这一夜注定无眠”、“命运的齿轮”等宏大旁白。
+2. 绝对不要写二元纠偏对比句！
+   - ❌ 禁用：“他不是不想走，而是根本走不了。”
+   - ✅ 正确：他脚下一绊，险些摔在台阶上。
+3. 绝对不要评价人物声音！
+   - ❌ 禁用：“声音不大，却透着不容置疑的威严/冷冽。”
+   - ✅ 正确：他眼皮都没抬一下：“坐回去。”
+4. 绝对不要写五官微表情清单！
+   - ❌ 禁用：“瞳孔微缩/骤缩”、“嘴角勾起一抹冷笑”、“眼中闪过一丝精光”、“指节泛白”。
+   - ✅ 正确：具体的日常物理动作（如把烟头按灭在窗台上、拎起桌上的水壶倒水、拉开椅子坐下）。
+5. 破折号“——”全文不超过 2 处，严禁把一个字单独成段（如“静。”、“冷。”）。
+6. 让人物像活人一样说话：允许口语停顿、半截话、答非所问、带语气助词，不要写成工整的书面辩论稿。${styleBlock}${voiceBlock}
 
-请直接输出重构后的完整章节正文（约 ${targetLen} 字左右，严禁缩水删减情节，不要输出章节标题以外的任何解释说明或前缀后缀）。`,
+请直接输出降温重铸后的完整章节正文（约 ${targetLen} 字左右，绝不减少情节，不要输出任何解释说明）。`,
     },
     {
       role: 'user',
       content: `章节：《${chapterTitle}》
-当前朱雀预检风险分：${auditReport.aiRiskScore}%（句长标准差 σ=${auditReport.burstinessStdDev}，独句段占比 ${auditReport.singleParaPct}%）
+当前本地预检 AI 痕迹分：${auditReport.aiRiskScore}%
 
-【本次扫描命中的全部 AI 痕迹病灶清单】：
+【原稿中被标记的 AI 病灶】：
 ${findingsDigest}
 
-【待去味重铸的原章节正文】：
+【待去味降温的原正文】：
 ${chapterText}`,
     },
   ];

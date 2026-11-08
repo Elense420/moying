@@ -20,7 +20,12 @@ import {
   analyzeTextForZhuque,
   buildAdversarialStoryReviewMessages,
   buildZhuqueDeslopMessages,
+  buildSurgicalDeslopMessages,
+  findSurgicalSentences,
+  parseSurgicalDeslopResponse,
+  applySurgicalReplacements,
   parseAdversarialStoryReviewResponse,
+  ZHUQUE_AUDIT_TRANSPARENCY_NOTE,
 } from '../services/zhuqueAudit';
 import {
   applyPostChapterMemoryWriteback,
@@ -80,7 +85,71 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
     return { cfg, model };
   };
 
-  const handleRunDeslop = async () => {
+  const [deslopMode, setDeslopMode] = useState<'surgical' | 'full'>('surgical');
+
+  // Mode A: Surgical Targeted Replacement (Zero New AI Contamination)
+  const handleRunSurgicalDeslop = async () => {
+    if (!chapterText.trim()) return;
+    const dirtySentences = findSurgicalSentences(chapterText);
+    if (dirtySentences.length === 0) {
+      setStatusFeedback({
+        type: 'ok',
+        text: '当前章节未检出阻断级 AI 套话句子，正文极为纯净！如需进一步增强突发度，可选用「全章白描降温重铸」。',
+      });
+      return;
+    }
+
+    setIsDeslopping(true);
+    setRewrittenDraft('');
+    setStatusFeedback(null);
+    try {
+      const { cfg, model } = getActiveApi();
+      const charVoiceNotes = (settings.characterGraph || [])
+        .map(
+          (c) =>
+            `${c.name}(${c.roleType})：声纹「${c.speechStyle || '自然贴合'}」 | 知情权隔离「${
+              c.epistemicBoundary || '仅知亲历'
+            }」`
+        )
+        .join('\n');
+
+      const messages = buildSurgicalDeslopMessages({
+        chapterTitle,
+        dirtySentences,
+        distilledStyle: settings.activeDistilledStyle,
+        characterSpeechNotes: charVoiceNotes,
+      });
+
+      const res = await chatCompletion({
+        provider: cfg?.provider,
+        baseUrl: cfg?.baseUrl,
+        apiKey: cfg?.apiKey,
+        model,
+        messages,
+        temperature: 0.35, // Low temperature to prevent hallucinated purple prose
+      });
+
+      const replacements = parseSurgicalDeslopResponse(res.content);
+      if (replacements.length === 0) {
+        throw new Error('模型未返回有效替换项，建议重试或切换为全章重铸');
+      }
+
+      const cleanProse = applySurgicalReplacements(chapterText, replacements);
+      setRewrittenDraft(cleanProse);
+      const newScore = analyzeTextForZhuque(cleanProse).aiRiskScore;
+      setStatusFeedback({
+        type: 'ok',
+        text: `靶向手术刀精准成功替换了 ${replacements.length} 处 AI 套话原句！其余 98% 原文保持原汁原味，AI痕迹从 ${originalReport.aiRiskScore}% 直降至 ${newScore}%！`,
+      });
+    } catch (err: any) {
+      setStatusFeedback({ type: 'err', text: `靶向去味失败：${err.message}` });
+    } finally {
+      setIsDeslopping(false);
+    }
+  };
+
+  // Mode B: Full-chapter Grounded Whitewash Deslop (Low Temp 0.35)
+  const handleRunFullDeslop = async () => {
     if (!chapterText.trim()) return;
     setIsDeslopping(true);
     setRewrittenDraft('');
@@ -111,7 +180,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
         apiKey: cfg?.apiKey,
         model,
         messages,
-        temperature: 0.78,
+        temperature: 0.35, // Drastically reduced from 0.78 to prevent hallucinated AI flourishes!
         onChunk: (chunk) => {
           acc += chunk;
           setRewrittenDraft(acc);
@@ -120,7 +189,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
       const finalOut = (res.content || acc).trim();
       setRewrittenDraft(finalOut);
     } catch (err: any) {
-      setStatusFeedback({ type: 'err', text: `去味重构失败：${err.message}` });
+      setStatusFeedback({ type: 'err', text: `全章白描重铸失败：${err.message}` });
     } finally {
       setIsDeslopping(false);
     }
@@ -298,12 +367,21 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
             {/* TAB 1: ZHUQUE FORENSIC & STORY-DESLOP */}
             {activeTab === 'zhuque' && (
               <div className="space-y-4">
+                {/* Genuine Forensic Transparency Callout */}
+                <div className="p-3.5 rounded-xl border border-blue-500/25 bg-blue-500/10 text-xs text-blue-900 dark:text-blue-200 leading-relaxed space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-blue-800 dark:text-blue-300">
+                    <ShieldCheck className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                    <span>启发式 AI 痕迹排查与语感体检 (本地算法引擎)</span>
+                  </div>
+                  <p className="text-[11px] opacity-90">{ZHUQUE_AUDIT_TRANSPARENCY_NOTE}</p>
+                </div>
+
                 {/* Metrics Dashboard */}
                 <div className="p-4 studio-muted space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-bold text-[var(--text-primary)]">
-                        当前章节朱雀 AIGC 浓度预检：
+                        章节 AI 痕迹浓度预检：
                       </span>
                       {verdictBadge(originalReport.verdict, originalReport.aiRiskScore)}
                       {rewrittenReport && (
@@ -314,23 +392,35 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
                       )}
                     </div>
 
-                    <MotionButton
-                      type="button"
-                      disabled={isDeslopping || !chapterText.trim()}
-                      onClick={handleRunDeslop}
-                      className="btn-primary min-h-[38px] px-4 py-1.5 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                    >
-                      {isDeslopping ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
-                      )}
-                      <span>
-                        {isDeslopping
-                          ? '正在执行朱雀过审级人类化重铸...'
-                          : '一键执行 story-deslop 过朱雀去味重构'}
-                      </span>
-                    </MotionButton>
+                    {/* Dual Action Controls: Surgical (Zero Contamination) vs Full Chapter (Low-Temp) */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <MotionButton
+                        type="button"
+                        disabled={isDeslopping || !chapterText.trim()}
+                        onClick={handleRunSurgicalDeslop}
+                        className="btn-primary min-h-[38px] px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                        title="仅精准替换命中的几处 AI 套话原句，其余 98% 原文保持原汁原味，杜绝全文重铸引入新的 AI 痕迹"
+                      >
+                        {isDeslopping ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isDeslopping ? '正在手术替换...' : '靶向手术刀替换 (推荐 · 零新增AI味)'}
+                        </span>
+                      </MotionButton>
+
+                      <MotionButton
+                        type="button"
+                        disabled={isDeslopping || !chapterText.trim()}
+                        onClick={handleRunFullDeslop}
+                        className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                        title="采用老舍/汪曾祺生活大白话白描，低温0.35全章降温重铸"
+                      >
+                        <span>全章白描重铸 (低温0.35)</span>
+                      </MotionButton>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">

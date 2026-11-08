@@ -83,8 +83,14 @@ import {
   NovelSigningSubmissionHub,
 } from './NovelSystemMatrixPanel';
 import { FourLayerOutlineWorkspace } from './FourLayerOutlineWorkspace';
+import {
+  parseImproveOutlineResponse,
+  repairAndParseJson,
+  parseChapterOutlinesResponse,
+} from '../services/outlineJsonParser';
 import { StyleDistillationPanel } from './StyleDistillationPanel';
 import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
+import { NovelIdeaConsultant } from './NovelIdeaConsultant';
 import { MotionButton, StaggerCard, ModalPortal } from './MotionPrimitives';
 import { useContextMenu } from './ContextMenu';
 
@@ -238,6 +244,49 @@ export const SetupView: React.FC<SetupViewProps> = ({
 
   const notify = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
     setStatusMessage({ type, text });
+  };
+
+  const [isIdeaConsultantOpen, setIsIdeaConsultantOpen] = useState(false);
+
+  const handleConfirmConsultantOption = (
+    novelData: {
+      title: string;
+      genre: string;
+      outline: string;
+      characters: string;
+      world: string;
+      targetPlatform: string;
+      commercialBlurb: string;
+      alternateTitles: string[];
+      volumePlan: NovelVolumePlanItem[];
+      ultimateEnding: string;
+    },
+    unselectedArchives: any[]
+  ) => {
+    setTitle(novelData.title);
+    setGenre(novelData.genre);
+    setOutline(novelData.outline);
+    if (novelData.characters) setCharacters(novelData.characters);
+    if (novelData.world) setWorld(novelData.world);
+    if (novelData.targetPlatform) setTargetPlatform(novelData.targetPlatform);
+    if (novelData.commercialBlurb) setCommercialBlurb(novelData.commercialBlurb);
+    if (novelData.alternateTitles && novelData.alternateTitles.length > 0) {
+      setAlternateTitles(novelData.alternateTitles);
+    }
+    if (novelData.volumePlan && novelData.volumePlan.length > 0) {
+      setVolumePlan(novelData.volumePlan);
+    }
+    if (novelData.ultimateEnding) {
+      setMasterOutlineSpec((prev) => ({
+        ...prev,
+        ultimateEnding: novelData.ultimateEnding,
+      }));
+    }
+    setIsIdeaConsultantOpen(false);
+    notify(
+      `已成功选用《${novelData.title}》立项！另外 ${unselectedArchives.length} 个备选方案已自动归档至【灵感工坊】→【大纲档案库】，可随时调用。`,
+      'success'
+    );
   };
 
   useEffect(() => {
@@ -742,7 +791,9 @@ export const SetupView: React.FC<SetupViewProps> = ({
 【11大系统设定模块字段字典（键名格式为 moduleId.fieldId）】
 ${compactSchemaGuide}
 
-请严格输出合法的纯 JSON 对象（不要包裹 markdown 代码块）：
+【输出格式绝对要求】
+必须直接输出纯合法的标准 JSON 字符串，严禁输出任何 markdown 格式代码块标记（不要写反引号或 json 标签），严禁在 JSON 外输出任何前缀闲聊或后缀总结。首字符必须为 { ，尾字符必须为 } 。
+JSON 内的所有字符串值严禁直接使用英文半角双引号，如需在人设、大纲或简介中引用对话，请一律使用中文双引号“……”或单引号'……'，绝对避免破坏 JSON 结构语法：
 {
   "suggestedGenre": "精准题材标签（若原题材为空可补全）",
   "suggestedStyle": "精准文风基调描述",
@@ -796,23 +847,12 @@ ${compactSchemaGuide}
           { role: 'system', content: audit.systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.78,
+        temperature: 0.45,
       });
 
       const rawContent = (res.content || '').trim();
-      let parsedData: any = null;
-      try {
-        const cleanJson = rawContent.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
-        const firstBrace = cleanJson.indexOf('{');
-        const lastBrace = cleanJson.lastIndexOf('}');
-        parsedData = JSON.parse(
-          firstBrace >= 0 && lastBrace > firstBrace
-            ? cleanJson.slice(firstBrace, lastBrace + 1)
-            : cleanJson
-        );
-      } catch {
-        parsedData = null;
-      }
+      const parseResult = parseImproveOutlineResponse(rawContent);
+      const parsedData = parseResult.data;
 
       if (parsedData && parsedData.improvedOutline) {
         setOutline(parsedData.improvedOutline);
@@ -889,8 +929,8 @@ ${compactSchemaGuide}
             .map((e: any) => ({
               id: generateUUID(),
               name: e.name || '核心设定档案',
-              entryType: validTypes.includes(e.entryType) ? e.entryType : 'character',
-              activationMode: e.activationMode === 'keyword' ? 'keyword' : 'constant',
+              entryType: validTypes.includes(e.entryType as any) ? (e.entryType as LorebookEntryType) : 'character',
+              activationMode: e.activationMode === 'keyword' ? ('keyword' as const) : ('constant' as const),
               keywords: Array.isArray(e.keywords) ? e.keywords.filter(Boolean) : [],
               appearance: e.appearance || '',
               personality: e.personality || '',
@@ -910,17 +950,26 @@ ${compactSchemaGuide}
         await loadHistories();
 
         const statsCount = countConfiguredSystemFields(mergedSystemSettings).configuredFields;
-        notify(
-          `大纲完善完成！已同步自动勾选 11 大模块共 ${statsCount} 项精细设定、${
-            Array.isArray(parsedData.volumePlan) ? parsedData.volumePlan.length : 0
-          } 卷蓝图与世界书档案（可切换至「11大系统设定矩阵」查阅微调，再去「章节细纲台」一键生成分章细纲）`,
-          'success'
-        );
+        if (parseResult.mode === 'heuristic_markdown') {
+          notify(
+            `大纲已扩充更新！已通过启发式智能解析器自动提取并同步勾选 11 大模块共 ${statsCount} 项精细设定、${
+              Array.isArray(parsedData.volumePlan) ? parsedData.volumePlan.length : 0
+            } 卷蓝图与角色档案！`,
+            'success'
+          );
+        } else {
+          notify(
+            `大纲完善完成！已同步自动勾选 11 大模块共 ${statsCount} 项精细设定、${
+              Array.isArray(parsedData.volumePlan) ? parsedData.volumePlan.length : 0
+            } 卷蓝图与世界书档案（可切换至「11大系统设定矩阵」查阅微调，再去「章节细纲台」一键生成分章细纲）`,
+            'success'
+          );
+        }
       } else {
         setOutline(rawContent);
         await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: rawContent });
         await loadHistories();
-        notify('大纲已扩充更新（模型返回了纯文本结构）', 'success');
+        notify('大纲已扩充更新', 'success');
       }
     } catch (err: any) {
       notify(`完善大纲失败：${err.message || '请检查 API 线路配置'}`, 'error');
@@ -1023,14 +1072,13 @@ ${world || '（待同步校准）'}
       });
 
       const raw = (res.content || '').trim();
-      const cleanJson = raw.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
-      const fb = cleanJson.indexOf('{');
-      const lb = cleanJson.lastIndexOf('}');
-      const parsed = JSON.parse(fb >= 0 && lb > fb ? cleanJson.slice(fb, lb + 1) : cleanJson);
+      const parseResult = parseImproveOutlineResponse(raw);
+      const parsed = parseResult.data;
 
-      if (parsed.realignedOutline) {
-        setOutline(parsed.realignedOutline);
-        await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: parsed.realignedOutline });
+      const targetOutline = parsed.improvedOutline || parsed.realignedOutline;
+      if (targetOutline) {
+        setOutline(targetOutline);
+        await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: targetOutline });
         await loadHistories();
       }
       if (parsed.characters) setCharacters(parsed.characters);
@@ -1165,12 +1213,10 @@ ${batchDirection.trim() ? `【作者对本批次章节的特别剧情侧重指�
       });
 
       const raw = (res.content || '').trim();
-      const cleanJson = raw.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
-      const fb = cleanJson.indexOf('{');
-      const lb = cleanJson.lastIndexOf('}');
-      const parsed = JSON.parse(fb >= 0 && lb > fb ? cleanJson.slice(fb, lb + 1) : cleanJson);
+      const parsed = repairAndParseJson<any>(raw);
+      const rawChapters = parseChapterOutlinesResponse(raw, startChap);
 
-      const generatedList: NovelChapterOutlineItem[] = (parsed.chapters || []).map(
+      const generatedList: NovelChapterOutlineItem[] = rawChapters.map(
         (c: any, idx: number) => {
           const chapNum = Number(c.chapterIndex) || startChap + idx;
           const cleanTitle = String(c.title || `章节 ${chapNum}`)
@@ -1199,7 +1245,7 @@ ${batchDirection.trim() ? `【作者对本批次章节的特别剧情侧重指�
         return [...kept, ...generatedList].sort((a, b) => a.chapterIndex - b.chapterIndex);
       });
 
-      if (Array.isArray(parsed.newForeshadows) && parsed.newForeshadows.length > 0) {
+      if (parsed && Array.isArray(parsed.newForeshadows) && parsed.newForeshadows.length > 0) {
         const addedHooks: NovelForeshadowItem[] = parsed.newForeshadows
           .filter((h: any) => h && h.name)
           .map((h: any) => ({
@@ -1285,10 +1331,8 @@ ${batchDirection.trim() ? `【作者对本批次章节的特别剧情侧重指�
         temperature: 0.82,
       });
 
-      const clean = (res.content || '').trim().replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
-      const fb = clean.indexOf('{');
-      const lb = clean.lastIndexOf('}');
-      const parsed = JSON.parse(fb >= 0 && lb > fb ? clean.slice(fb, lb + 1) : clean);
+      const clean = (res.content || '').trim();
+      const parsed = repairAndParseJson<any>(clean) || {};
       if (Array.isArray(parsed.alternateTitles)) {
         setAlternateTitles(parsed.alternateTitles.filter(Boolean));
       }
@@ -1458,8 +1502,8 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
         temperature: 0.75,
       });
 
-      const cleanJson = (res.content || '').trim().replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
-      const entries = JSON.parse(cleanJson);
+      const cleanJson = (res.content || '').trim();
+      const entries = repairAndParseJson<any[]>(cleanJson) || [];
 
       if (Array.isArray(entries) && entries.length > 0) {
         const validTypes: LorebookEntryType[] = xpSystemEnabled
@@ -1699,7 +1743,7 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
   );
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6 pb-8">
+    <div className="max-w-6xl mx-auto space-y-6 pb-24 sm:pb-8 px-2 sm:px-0">
       {/* Top Editorial Header & Book Title */}
       <section className="studio-card p-5 sm:p-7 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
@@ -1717,8 +1761,18 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
+              onClick={() => setIsIdeaConsultantOpen(true)}
+              className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[var(--accent)]/50 bg-[var(--accent)]/10 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer shadow-sm"
+              title="有模糊构思想法？让 AI 帮您深度研判市场并推演 3 套完整小说立项案"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>模糊想法 AI 构思</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setIsAuditModalOpen(true)}
-              className="min-h-[42px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)] hover:opacity-90 text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)] hover:opacity-90 text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Eye className="w-3.5 h-3.5" />
               <span>
@@ -1729,7 +1783,7 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
             <button
               type="button"
               onClick={handleSaveAllSettings}
-              className="min-h-[42px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Save className="w-3.5 h-3.5" />
               <span>{currentBook ? '保存全部设定' : '保存立项至书架'}</span>
@@ -1738,7 +1792,7 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
             <button
               type="button"
               onClick={handleStartWriting}
-              className="btn-primary min-h-[42px] px-4 py-2 text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              className="btn-primary min-h-[44px] px-4 py-2 text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Feather className="w-3.5 h-3.5" />
               <span>
@@ -3088,6 +3142,53 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
           }}
         />
       )}
+
+      {/* Fuzzy Idea AI Brainstorming Modal (Req 4) */}
+      {isIdeaConsultantOpen && (
+        <ModalPortal onEscape={() => setIsIdeaConsultantOpen(false)}>
+          <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+            <div className="w-full max-w-4xl max-h-[92dvh] rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 sm:p-7 shadow-2xl overflow-y-auto">
+              <NovelIdeaConsultant
+                configs={configs}
+                uiSettings={uiSettings}
+                xpPreferences={xpPreferences}
+                onConfirmOption={handleConfirmConsultantOption}
+                onClose={() => setIsIdeaConsultantOpen(false)}
+              />
+            </div>
+          </div>
+        </ModalPortal>
+      )}
+
+      {/* Mobile Sticky Bottom Action Bar (Req 5) */}
+      <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--bg-surface)]/95 backdrop-blur-md px-3.5 py-2.5 border-t border-[var(--border-subtle)] flex items-center justify-between gap-2 shadow-2xl">
+        <button
+          type="button"
+          onClick={() => setIsIdeaConsultantOpen(true)}
+          className="min-h-[44px] px-3 py-2 rounded-xl border border-[var(--accent)]/50 bg-[var(--accent)]/10 text-xs font-semibold text-[var(--accent)] flex items-center gap-1 shrink-0"
+        >
+          <Sparkles className="w-4 h-4" />
+          <span>AI 构思</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={handleSaveAllSettings}
+          className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1 shrink-0"
+        >
+          <Save className="w-4 h-4" />
+          <span>保存设定</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={handleStartWriting}
+          className="btn-primary min-h-[44px] px-4 py-2 text-xs font-semibold flex items-center gap-1.5 shrink-0"
+        >
+          <Feather className="w-4 h-4" />
+          <span>开始写作</span>
+        </button>
+      </div>
     </div>
   );
 };

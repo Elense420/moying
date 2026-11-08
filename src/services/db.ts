@@ -808,9 +808,11 @@ export async function getGlobalSkills(): Promise<NovelSkill[]> {
 
   for (const item of survivingList) {
     const presetRef = presetMap.get(item.id);
-    if (presetRef && (!migratedV3 || !item.references || item.references.length === 0)) {
+    if (presetRef && (!item.githubRepo || !migratedV3 || !item.references || item.references.length === 0)) {
       const upgraded: NovelSkill = {
         ...presetRef,
+        ...item,
+        githubRepo: presetRef.githubRepo,
         enabled: item.enabled !== undefined ? item.enabled : presetRef.enabled,
       };
       await dbPut(STORE_NAMES.NOVEL_SKILLS, upgraded);

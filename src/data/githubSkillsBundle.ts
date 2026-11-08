@@ -51,6 +51,14 @@ export const GITHUB_IMPLANTED_SKILLS: NovelSkill[] = [
     enabled: true,
     isPreset: true,
     packageType: 'zip-package',
+    githubRepo: {
+      owner: 'leenbj',
+      repo: 'novel-creator-skill',
+      branch: 'main',
+      skillPath: 'SKILL.md',
+      installedCommitSha: 'a327428',
+      installedCommitDate: '2026-03-10',
+    },
     qualityTargets: [
       { metric: '单章重大配额上限', medianTarget: '≤ 1项/章', note: '防长篇中期失速写崩' },
       { metric: '单元破局重复率', medianTarget: '0% 相邻雷同', note: '相邻剧情单元须切换破局机制' },
@@ -124,6 +132,14 @@ enabled: true
     enabled: true,
     isPreset: true,
     packageType: 'zip-package',
+    githubRepo: {
+      owner: 'zenstory-ai',
+      repo: 'oh-story-claudecode',
+      branch: 'main',
+      skillPath: 'skills/story-setup/references/templates/agents/character-designer.md',
+      installedCommitSha: 'c4a2c3e',
+      installedCommitDate: '2026-11-06',
+    },
     qualityTargets: [
       { metric: '台词遮名辨识度', medianTarget: '100% 区分核心角色', note: '句长、用词语域与潜台词分层' },
       { metric: '上帝视角穿帮率', medianTarget: '0 次越界', note: '严格隔离读者全知与角色限知' },
@@ -197,6 +213,14 @@ enabled: true
     enabled: true,
     isPreset: true,
     packageType: 'zip-package',
+    githubRepo: {
+      owner: 'zenstory-ai',
+      repo: 'oh-story-claudecode',
+      branch: 'main',
+      skillPath: 'skills/story-long-write/SKILL.md',
+      installedCommitSha: 'c4a2c3e',
+      installedCommitDate: '2026-11-06',
+    },
     qualityTargets: [
       { metric: '句长标准差 (Burstiness)', medianTarget: 'σ ≥ 12.5 字', note: '长短句自然错落，高困惑度人类语感' },
       { metric: '单行镜头断段占比', medianTarget: '12% ~ 28%', note: '避免工整四行豆腐块段落' },
@@ -270,6 +294,14 @@ enabled: true
     enabled: true,
     isPreset: true,
     packageType: 'zip-package',
+    githubRepo: {
+      owner: 'lingfengqaq',
+      repo: 'webnovel-writer',
+      branch: 'master',
+      skillPath: 'webnovel-writer/skills/webnovel-write/SKILL.md',
+      installedCommitSha: 'b38056e',
+      installedCommitDate: '2026-10-22',
+    },
     qualityTargets: [
       { metric: '跨章时空/伤势断层', medianTarget: '0 处吃书', note: '严丝合缝衔接上章停笔现场' },
       { metric: '道具持有链准确率', medianTarget: '100% 守恒', note: '禁止调用已损毁或他人持有道具' },
@@ -343,6 +375,14 @@ enabled: true
     enabled: true,
     isPreset: true,
     packageType: 'zip-package',
+    githubRepo: {
+      owner: 'zenstory-ai',
+      repo: 'oh-story-claudecode',
+      branch: 'main',
+      skillPath: 'skills/story-deslop/SKILL.md',
+      installedCommitSha: 'c4a2c3e',
+      installedCommitDate: '2026-11-06',
+    },
     qualityTargets: [
       { metric: '朱雀模拟 AIGC 风险率', medianTarget: '< 20%（人类安全区）', note: '困惑度与句长方差达标' },
       { metric: '“不是…而是”否定翻转句', medianTarget: '0 处/章', note: 'AI 第一号句式指纹清零' },
@@ -419,6 +459,14 @@ enabled: true
     enabled: true,
     isPreset: true,
     packageType: 'zip-package',
+    githubRepo: {
+      owner: 'zenstory-ai',
+      repo: 'oh-story-claudecode',
+      branch: 'main',
+      skillPath: 'skills/story-review/SKILL.md',
+      installedCommitSha: 'c4a2c3e',
+      installedCommitDate: '2026-11-06',
+    },
     qualityTargets: [
       { metric: '逻辑与知情权穿帮', medianTarget: '0 处遗漏', note: '严查跨场瞬移与未卜先知' },
       { metric: '四层大纲对齐度', medianTarget: '100% 紧扣卷/单元锚点', note: '杜绝中期支线跑偏' },

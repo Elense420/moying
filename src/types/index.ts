@@ -71,6 +71,21 @@ export interface NovelSkill {
   scriptsMeta?: SkillScriptMeta[]; // Auxiliary scripts metadata from scripts/
   qualityTargets?: SkillQualityTarget[]; // Measurable prose targets parsed from SKILL.md
   rawSkillMd?: string; // Original lossless SKILL.md for faithful round-trip export
+  githubRepo?: {
+    owner: string;
+    repo: string;
+    branch?: string;
+    skillPath?: string;
+    installedCommitSha?: string;
+    installedCommitDate?: string;
+  };
+  latestRemoteUpdate?: {
+    hasUpdate: boolean;
+    remoteSha: string;
+    remoteDate: string;
+    remoteMessage: string;
+    checkedAt: number;
+  };
 }
 
 export interface DomesticApiPreset {
