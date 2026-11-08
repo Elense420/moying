@@ -9,12 +9,19 @@ import {
   Scale,
   Database,
   ArrowRight,
+  ExternalLink,
+  Copy,
+  Flame,
+  BookOpen,
+  Scissors,
+  HelpCircle,
 } from 'lucide-react';
 import {
   AdversarialStoryReviewReport,
   ApiConfig,
   BookSettings,
   UiSettings,
+  ZhuqueOnlineDetectResult,
 } from '../types';
 import {
   analyzeTextForZhuque,
@@ -26,6 +33,8 @@ import {
   applySurgicalReplacements,
   parseAdversarialStoryReviewResponse,
   ZHUQUE_AUDIT_TRANSPARENCY_NOTE,
+  callZhuqueOnlineDetect,
+  ZhuqueDeslopMode,
 } from '../services/zhuqueAudit';
 import {
   applyPostChapterMemoryWriteback,
@@ -63,6 +72,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'zhuque' | 'review' | 'memory'>('zhuque');
   const [isDeslopping, setIsDeslopping] = useState(false);
+  const [selectedDeslopMode, setSelectedDeslopMode] = useState<ZhuqueDeslopMode>('anti-zhuque-high-entropy');
   const [rewrittenDraft, setRewrittenDraft] = useState<string>('');
   const [isReviewing, setIsReviewing] = useState(false);
   const [reviewReport, setReviewReport] = useState<AdversarialStoryReviewReport | null>(null);
@@ -71,30 +81,33 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
     null
   );
 
+  // Real Remote Official Zhuque Verification State
+  const [onlineResult, setOnlineResult] = useState<ZhuqueOnlineDetectResult | null>(null);
+  const [isDetectingOnline, setIsDetectingOnline] = useState(false);
+  const [copiedForZhuque, setCopiedForZhuque] = useState(false);
+
   const originalReport = useMemo(() => analyzeTextForZhuque(chapterText), [chapterText]);
   const rewrittenReport = useMemo(
     () => (rewrittenDraft.trim() ? analyzeTextForZhuque(rewrittenDraft) : null),
     [rewrittenDraft]
   );
 
-  if (!isOpen) return null;
+  const safeSettings = settings || ({} as BookSettings);
 
   const getActiveApi = () => {
-    const cfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
-    const model = uiSettings.writerApiModel || cfg?.modelsCache?.[0]?.id || 'gemini-3.6-flash';
+    const cfg = (configs || []).find((c) => c?.id === uiSettings?.writerApiCfgId) || configs?.[0];
+    const model = uiSettings?.writerApiModel || cfg?.modelsCache?.[0]?.id || 'gemini-3.6-flash';
     return { cfg, model };
   };
 
-  const [deslopMode, setDeslopMode] = useState<'surgical' | 'full'>('surgical');
-
-  // Mode A: Surgical Targeted Replacement (Zero New AI Contamination)
+  // Mode 1: Surgical Targeted Replacement (Zero New AI Contamination)
   const handleRunSurgicalDeslop = async () => {
     if (!chapterText.trim()) return;
     const dirtySentences = findSurgicalSentences(chapterText);
     if (dirtySentences.length === 0) {
       setStatusFeedback({
         type: 'ok',
-        text: '当前章节未检出阻断级 AI 套话句子，正文极为纯净！如需进一步增强突发度，可选用「全章白描降温重铸」。',
+        text: '当前章节未检出阻断级 AI 套话句子，正文极为纯净！如需进一步增强突发度，可选用「破壁级·反朱雀高熵重铸」。',
       });
       return;
     }
@@ -104,7 +117,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
     setStatusFeedback(null);
     try {
       const { cfg, model } = getActiveApi();
-      const charVoiceNotes = (settings.characterGraph || [])
+      const charVoiceNotes = (safeSettings.characterGraph || [])
         .map(
           (c) =>
             `${c.name}(${c.roleType})：声纹「${c.speechStyle || '自然贴合'}」 | 知情权隔离「${
@@ -116,7 +129,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
       const messages = buildSurgicalDeslopMessages({
         chapterTitle,
         dirtySentences,
-        distilledStyle: settings.activeDistilledStyle,
+        distilledStyle: safeSettings.activeDistilledStyle,
         characterSpeechNotes: charVoiceNotes,
       });
 
@@ -148,15 +161,15 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
     }
   };
 
-  // Mode B: Full-chapter Grounded Whitewash Deslop (Low Temp 0.35)
-  const handleRunFullDeslop = async () => {
+  // Mode 2 & 3: Full-chapter Rewriting (Anti-Zhuque High-Entropy vs Beijing Vernacular)
+  const handleRunFullDeslop = async (modeToRun: ZhuqueDeslopMode = selectedDeslopMode) => {
     if (!chapterText.trim()) return;
     setIsDeslopping(true);
     setRewrittenDraft('');
     setStatusFeedback(null);
     try {
       const { cfg, model } = getActiveApi();
-      const charVoiceNotes = (settings.characterGraph || [])
+      const charVoiceNotes = (safeSettings.characterGraph || [])
         .map(
           (c) =>
             `${c.name}(${c.roleType})：声纹「${c.speechStyle || '自然贴合'}」 | 知情权隔离「${
@@ -169,9 +182,14 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
         chapterTitle,
         chapterText,
         auditReport: originalReport,
-        distilledStyle: settings.activeDistilledStyle,
+        distilledStyle: safeSettings.activeDistilledStyle,
         characterSpeechNotes: charVoiceNotes,
+        mode: modeToRun,
       });
+
+      // High-entropy mode uses temp 0.75 to break token probability distribution;
+      // Beijing vernacular uses temp 0.35 to maintain grounded calmness.
+      const temp = modeToRun === 'anti-zhuque-high-entropy' ? 0.75 : 0.35;
 
       let acc = '';
       const res = await streamChatCompletion({
@@ -180,7 +198,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
         apiKey: cfg?.apiKey,
         model,
         messages,
-        temperature: 0.35, // Drastically reduced from 0.78 to prevent hallucinated AI flourishes!
+        temperature: temp,
         onChunk: (chunk) => {
           acc += chunk;
           setRewrittenDraft(acc);
@@ -188,10 +206,59 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
       });
       const finalOut = (res.content || acc).trim();
       setRewrittenDraft(finalOut);
+      setStatusFeedback({
+        type: 'ok',
+        text:
+          modeToRun === 'anti-zhuque-high-entropy'
+            ? '已完成【⚡ 破壁级·反朱雀高熵重铸】！已强制注入倒装句法、粗糙生活触感与口语爆破词，打破词频均匀预测。建议点击下方「直达腾讯朱雀官网」直接进行实机验证对比！'
+            : '已完成【📖 文学级·京白市井白描】重铸！语言已全面降温为市井生活质感。',
+      });
     } catch (err: any) {
-      setStatusFeedback({ type: 'err', text: `全章白描重铸失败：${err.message}` });
+      setStatusFeedback({ type: 'err', text: `全章重铸失败：${err.message}` });
     } finally {
       setIsDeslopping(false);
+    }
+  };
+
+  // 1-Click Copy and Open Tencent Zhuque Official Detection Webpage
+  const handleCopyAndOpenZhuqueWeb = () => {
+    const textToTest = rewrittenDraft.trim() || chapterText;
+    if (!textToTest) return;
+    navigator.clipboard?.writeText(textToTest);
+    setCopiedForZhuque(true);
+    setTimeout(() => setCopiedForZhuque(false), 4000);
+    window.open('https://matrix.tencent.com/ai-detect', '_blank', 'noopener,noreferrer');
+    setStatusFeedback({
+      type: 'ok',
+      text: '已将当前章节文本复制到剪贴板，并在新标签页打开腾讯朱雀官方检测！进入朱雀页面后直接按 Ctrl+V 粘贴即可立即实机检验。',
+    });
+  };
+
+  // Call Real Remote Tencent Zhuque API (if configured)
+  const handleCallOnlineZhuqueDetect = async () => {
+    const textToTest = rewrittenDraft.trim() || chapterText;
+    if (!textToTest) return;
+    setIsDetectingOnline(true);
+    setStatusFeedback(null);
+    try {
+      const res = await callZhuqueOnlineDetect({
+        text: textToTest,
+        gatewayUrl: uiSettings.zhuqueApiGatewayUrl,
+        apiKey: uiSettings.zhuqueApiKey,
+      });
+      setOnlineResult(res);
+      if (res.error) {
+        setStatusFeedback({ type: 'err', text: `腾讯云朱雀检测提示：${res.error}` });
+      } else {
+        setStatusFeedback({
+          type: 'ok',
+          text: `腾讯云朱雀官方检测完成：疑似AI ${res.suspectedAiPct}%，AI特征 ${res.aiFeaturePct}%，人工特征 ${res.humanFeaturePct}%（结论：${res.conclusionText}）`,
+        });
+      }
+    } catch (err: any) {
+      setStatusFeedback({ type: 'err', text: `请求腾讯云朱雀接口出错：${err.message}` });
+    } finally {
+      setIsDetectingOnline(false);
     }
   };
 
@@ -206,7 +273,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
         chapterIndex,
         chapterTitle,
         chapterText: rewrittenDraft.trim() || chapterText,
-        settings,
+        settings: safeSettings,
         localZhuqueReport: rewrittenReport || originalReport,
       });
       const res = await chatCompletion({
@@ -238,7 +305,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
         chapterIndex,
         chapterTitle,
         chapterText: targetText,
-        settings,
+        settings: safeSettings,
       });
       const res = await chatCompletion({
         provider: cfg?.provider,
@@ -251,7 +318,7 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
       const { nextSettings, summaryToast } = applyPostChapterMemoryWriteback({
         rawJson: res.content,
         chapterIndex,
-        settings,
+        settings: safeSettings,
       });
       await onApplyMemoryWritebackSettings(nextSettings, summaryToast);
       setStatusFeedback({ type: 'ok', text: summaryToast });
@@ -266,23 +333,25 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
     if (verdict === 'pass') {
       return (
         <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-bold tabular-nums">
-          朱雀过审安全区 ({score}%)
+          本地启发式安全 ({score}%)
         </span>
       );
     }
     if (verdict === 'borderline') {
       return (
         <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-bold tabular-nums">
-          临界观察区 ({score}% · 建议去味)
+          本地套话观察区 ({score}%)
         </span>
       );
     }
     return (
       <span className="px-2.5 py-1 rounded-lg bg-rose-500/15 text-rose-700 dark:text-rose-300 text-xs font-bold tabular-nums">
-        高危 AIGC 拦截区 ({score}%)
+        本地套话高危区 ({score}%)
       </span>
     );
   };
+
+  if (!isOpen) return null;
 
   return (
     <ModalPortal onEscape={onClose}>
@@ -367,21 +436,265 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
             {/* TAB 1: ZHUQUE FORENSIC & STORY-DESLOP */}
             {activeTab === 'zhuque' && (
               <div className="space-y-4">
-                {/* Genuine Forensic Transparency Callout */}
-                <div className="p-3.5 rounded-xl border border-blue-500/25 bg-blue-500/10 text-xs text-blue-900 dark:text-blue-200 leading-relaxed space-y-1">
-                  <div className="font-bold flex items-center gap-1.5 text-blue-800 dark:text-blue-300">
-                    <ShieldCheck className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
-                    <span>启发式 AI 痕迹排查与语感体检 (本地算法引擎)</span>
+                {/* 1. Technical Reality & Zhuque Deep-Dive Alert Card */}
+                <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-xs text-amber-900 dark:text-amber-200 leading-relaxed space-y-2">
+                  <div className="font-bold flex items-center justify-between gap-2 text-amber-800 dark:text-amber-300">
+                    <div className="flex items-center gap-1.5">
+                      <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <span className="text-sm">为什么在腾讯朱雀官网 (matrix.tencent.com) 检测会显示「疑似AI 80%、AI特征 20%」？</span>
+                    </div>
                   </div>
-                  <p className="text-[11px] opacity-90">{ZHUQUE_AUDIT_TRANSPARENCY_NOTE}</p>
+                  <div className="space-y-1.5 text-[11px] opacity-95">
+                    <p>
+                      <strong>① 腾讯朱雀的核心底层是神经网络分类器（混元/RoBERTa 微调）：</strong>它不仅扫描“瞳孔骤缩”等关键词，更核心的是实时计算每个 Token 的<strong>预测困惑度 (Perplexity, PPL)</strong> 与<strong>生成概率平滑度 (Burstiness)</strong>。
+                    </p>
+                    <p>
+                      <strong>② 常规 AI 改写的致命硬伤：</strong>即使要求 AI “去味”，只要模型采用书面工整句式（每句18~25字、标点匀称、主谓宾齐全、词汇高概率），朱雀模型在神经网络计算后依然会毫不留情地判定为 80%~100% AIGC！
+                    </p>
+                    <p>
+                      <strong>③ 破局利器（双轨实测）：</strong>请选用下方专门定制的<strong>【⚡ 破壁级·反朱雀高熵重铸】</strong>（强制口语倒装、叹词俚语、破碎短句、粗糙生活触感）打翻大模型先验，或选用<strong>【🎯 靶向手术刀】</strong>仅修病灶原句，绝不全文重新生成引入新 AI 味！
+                    </p>
+                  </div>
                 </div>
 
-                {/* Metrics Dashboard */}
-                <div className="p-4 studio-muted space-y-3">
+                {/* 2. Official Dual-Track Verification Action Bar */}
+                <div className="p-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                        <h3 className="text-xs font-bold text-[var(--text-primary)]">
+                          腾讯朱雀官方实机检验通道（拒绝自欺欺人 · 实打实可测）
+                        </h3>
+                      </div>
+                      <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                        支持直达腾讯朱雀公网官方检测控制台，或调用您的腾讯云 API 网关进行云端检验。
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <MotionButton
+                        type="button"
+                        onClick={handleCopyAndOpenZhuqueWeb}
+                        className="btn-primary min-h-[38px] px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                        title="复制当前章节正文并直接在新标签页打开腾讯朱雀官方检测网页"
+                      >
+                        {copiedForZhuque ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedForZhuque ? '已复制！正在打开朱雀官网...' : '复制全文 + 直达腾讯朱雀官网检测'}</span>
+                        <ExternalLink className="w-3.5 h-3.5 ml-0.5 opacity-80" />
+                      </MotionButton>
+
+                      <MotionButton
+                        type="button"
+                        disabled={isDetectingOnline || (!rewrittenDraft.trim() && !chapterText.trim())}
+                        onClick={handleCallOnlineZhuqueDetect}
+                        className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        title="直接通过后端调用配置的腾讯云 API 网关获取朱雀实测数据"
+                      >
+                        {isDetectingOnline ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5 text-[var(--accent)]" />
+                        )}
+                        <span>{isDetectingOnline ? '官方云端检测中...' : '调用腾讯云官方接口检测'}</span>
+                      </MotionButton>
+                    </div>
+                  </div>
+
+                  {/* Remote Detection Result Display (If any) */}
+                  {onlineResult && (
+                    <div
+                      className={`p-3.5 rounded-xl border text-xs space-y-2 ${
+                        onlineResult.error
+                          ? 'border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-200'
+                          : onlineResult.verdict === 'pass'
+                          ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200'
+                          : 'border-rose-500/35 bg-rose-500/10 text-rose-900 dark:text-rose-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 font-bold">
+                        <span>
+                          腾讯云朱雀官方云端返回结论：{onlineResult.conclusionText || '已完成检测'}
+                        </span>
+                        {onlineResult.score !== undefined && (
+                          <span className="tabular-nums">
+                            综合 AI 偏向分：{onlineResult.score}%
+                          </span>
+                        )}
+                      </div>
+                      {!onlineResult.error && (
+                        <div className="grid grid-cols-3 gap-2 text-center pt-1">
+                          <div className="p-2 rounded-lg bg-[var(--bg-surface)]/70">
+                            <div className="text-[10px] opacity-75">疑似 AI 比例</div>
+                            <div className="text-sm font-bold tabular-nums text-rose-600">
+                              {onlineResult.suspectedAiPct}%
+                            </div>
+                          </div>
+                          <div className="p-2 rounded-lg bg-[var(--bg-surface)]/70">
+                            <div className="text-[10px] opacity-75">AI 特征比例</div>
+                            <div className="text-sm font-bold tabular-nums text-amber-600">
+                              {onlineResult.aiFeaturePct}%
+                            </div>
+                          </div>
+                          <div className="p-2 rounded-lg bg-[var(--bg-surface)]/70">
+                            <div className="text-[10px] opacity-75">人工创作特征</div>
+                            <div className="text-sm font-bold tabular-nums text-emerald-600">
+                              {onlineResult.humanFeaturePct}%
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {onlineResult.error && (
+                        <p className="text-[11px] leading-relaxed">
+                          {onlineResult.error}
+                          {!uiSettings.zhuqueApiKey && (
+                            <span className="block mt-1 font-semibold text-[var(--accent)]">
+                              💡 提示：您可前往「设置」配置腾讯云 API 密钥；未配置时，点击上方「复制全文 + 直达腾讯朱雀官网检测」按钮即可在官方网页免费即开即测！
+                            </span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Three-Engine De-slop Selection & Execution */}
+                <div className="p-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] space-y-3.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-xs font-bold text-[var(--text-primary)]">
+                        三大去味重铸引擎（专攻不同过审与行文需求）
+                      </h3>
+                      <p className="text-[11px] text-[var(--text-muted)]">
+                        请根据期望的行文风格与质检目标，选择对应的去味引擎执行重写：
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {/* Engine 1: High-Entropy Anti-Zhuque */}
+                    <div
+                      onClick={() => setSelectedDeslopMode('anti-zhuque-high-entropy')}
+                      className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between space-y-2.5 ${
+                        selectedDeslopMode === 'anti-zhuque-high-entropy'
+                          ? 'border-[var(--accent)] bg-[var(--accent-soft)]/20 shadow-sm'
+                          : 'border-[var(--border-subtle)] hover:border-[var(--accent)]/50'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                            <Flame className="w-3.5 h-3.5 text-amber-500" />
+                            ⚡ 破壁级·反朱雀高熵重铸
+                          </span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 font-semibold">
+                            专攻官网80%AI
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                          采用 0.75 高温高熵采样，强制注入口语倒装句、生活俚语、碎嘴叹词、污渍微观触感与 2 字极短句骤停，彻底瓦解神经网络平滑度！
+                        </p>
+                      </div>
+                      <MotionButton
+                        type="button"
+                        disabled={isDeslopping || !chapterText.trim()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedDeslopMode('anti-zhuque-high-entropy');
+                          handleRunFullDeslop('anti-zhuque-high-entropy');
+                        }}
+                        className="btn-primary w-full min-h-[34px] px-3 py-1.5 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {isDeslopping && selectedDeslopMode === 'anti-zhuque-high-entropy' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        <span>执行反朱雀高熵重铸</span>
+                      </MotionButton>
+                    </div>
+
+                    {/* Engine 2: Beijing Vernacular Whitewash */}
+                    <div
+                      onClick={() => setSelectedDeslopMode('beijing-vernacular')}
+                      className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between space-y-2.5 ${
+                        selectedDeslopMode === 'beijing-vernacular'
+                          ? 'border-[var(--accent)] bg-[var(--accent-soft)]/20 shadow-sm'
+                          : 'border-[var(--border-subtle)] hover:border-[var(--accent)]/50'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                            <BookOpen className="w-3.5 h-3.5 text-blue-500" />
+                            📖 文学级·京白市井白描
+                          </span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400 font-semibold">
+                            老舍/汪曾祺
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                          采用 0.35 低温，彻底砍掉一切宏大叙事、装腔作势与抽象心理，纯靠市井生活白描与现场人物动作推动剧情。
+                        </p>
+                      </div>
+                      <MotionButton
+                        type="button"
+                        disabled={isDeslopping || !chapterText.trim()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedDeslopMode('beijing-vernacular');
+                          handleRunFullDeslop('beijing-vernacular');
+                        }}
+                        className="min-h-[34px] w-full px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {isDeslopping && selectedDeslopMode === 'beijing-vernacular' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <BookOpen className="w-3.5 h-3.5" />
+                        )}
+                        <span>执行生活流白描重铸</span>
+                      </MotionButton>
+                    </div>
+
+                    {/* Engine 3: Surgical Targeted Replacement */}
+                    <div className="p-3.5 rounded-xl border border-[var(--border-subtle)] hover:border-[var(--accent)]/50 transition-all flex flex-col justify-between space-y-2.5">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                            <Scissors className="w-3.5 h-3.5 text-emerald-500" />
+                            🎯 靶向手术刀精准替换
+                          </span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold">
+                            零新增AI污染
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                          仅精准定位并手术替换 22 类套话原句，其余 98% 原文保持原汁原味不动，杜绝整篇重写产生新的 AI 套路！
+                        </p>
+                      </div>
+                      <MotionButton
+                        type="button"
+                        disabled={isDeslopping || !chapterText.trim()}
+                        onClick={handleRunSurgicalDeslop}
+                        className="min-h-[34px] w-full px-3 py-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-xs font-semibold text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {isDeslopping ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Scissors className="w-3.5 h-3.5" />
+                        )}
+                        <span>手术替换病灶原句</span>
+                      </MotionButton>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Local Heuristic Pre-Check & Statistical Metrics */}
+                <div className="p-4 studio-muted space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-bold text-[var(--text-primary)]">
-                        章节 AI 痕迹浓度预检：
+                        本地启发式套话体检（辅助参考 · 22类规则）：
                       </span>
                       {verdictBadge(originalReport.verdict, originalReport.aiRiskScore)}
                       {rewrittenReport && (
@@ -391,36 +704,9 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
                         </>
                       )}
                     </div>
-
-                    {/* Dual Action Controls: Surgical (Zero Contamination) vs Full Chapter (Low-Temp) */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <MotionButton
-                        type="button"
-                        disabled={isDeslopping || !chapterText.trim()}
-                        onClick={handleRunSurgicalDeslop}
-                        className="btn-primary min-h-[38px] px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                        title="仅精准替换命中的几处 AI 套话原句，其余 98% 原文保持原汁原味，杜绝全文重铸引入新的 AI 痕迹"
-                      >
-                        {isDeslopping ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Sparkles className="w-3.5 h-3.5" />
-                        )}
-                        <span>
-                          {isDeslopping ? '正在手术替换...' : '靶向手术刀替换 (推荐 · 零新增AI味)'}
-                        </span>
-                      </MotionButton>
-
-                      <MotionButton
-                        type="button"
-                        disabled={isDeslopping || !chapterText.trim()}
-                        onClick={handleRunFullDeslop}
-                        className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                        title="采用老舍/汪曾祺生活大白话白描，低温0.35全章降温重铸"
-                      >
-                        <span>全章白描重铸 (低温0.35)</span>
-                      </MotionButton>
-                    </div>
+                    <span className="text-[11px] text-[var(--text-muted)]">
+                      非腾讯官方服务器结论 · 用于本地排查词汇病灶
+                    </span>
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
@@ -477,23 +763,40 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
                   <div className="p-4 rounded-xl border border-[var(--accent)]/40 bg-[var(--bg-surface)] space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-bold text-[var(--accent)]">
-                        story-deslop 人类化重铸新稿（{rewrittenDraft.replace(/\s+/g, '').length} 字）：
+                        去味重铸新稿（{rewrittenDraft.replace(/\s+/g, '').length} 字）：
                       </span>
                       {!isDeslopping && (
-                        <MotionButton
-                          type="button"
-                          onClick={async () => {
-                            await onApplyRewrittenText(rewrittenDraft);
-                            setStatusFeedback({
-                              type: 'ok',
-                              text: '已将去味重铸后的朱雀过审稿正式写入当前章节！',
-                            });
-                          }}
-                          className="btn-primary min-h-[36px] px-4 py-1.5 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>采用此去味稿覆盖本章正文</span>
-                        </MotionButton>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(rewrittenDraft);
+                              setStatusFeedback({
+                                type: 'ok',
+                                text: '已复制去味重铸后的新稿至剪贴板！可直接粘贴至腾讯朱雀官网验证。',
+                              });
+                            }}
+                            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)] hover:bg-[var(--bg-surface)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>复制去味新稿</span>
+                          </button>
+
+                          <MotionButton
+                            type="button"
+                            onClick={async () => {
+                              await onApplyRewrittenText(rewrittenDraft);
+                              setStatusFeedback({
+                                type: 'ok',
+                                text: '已将去味重铸后的新稿正式写入当前章节！',
+                              });
+                            }}
+                            className="btn-primary min-h-[36px] px-4 py-1.5 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>采用此去味稿覆盖本章正文</span>
+                          </MotionButton>
+                        </div>
                       )}
                     </div>
                     <textarea
@@ -661,19 +964,19 @@ export const ZhuqueAuditModal: React.FC<ZhuqueAuditModalProps> = ({
                     <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
                       <div className="text-[11px] text-[var(--text-muted)]">已建档角色图谱</div>
                       <div className="text-sm font-bold tabular-nums text-[var(--text-primary)]">
-                        {(settings.characterGraph || []).length} 人
+                        {(safeSettings.characterGraph || []).length} 人
                       </div>
                     </div>
                     <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
                       <div className="text-[11px] text-[var(--text-muted)]">追踪中关键道具</div>
                       <div className="text-sm font-bold tabular-nums text-[var(--text-primary)]">
-                        {(settings.keyItemRegistry || []).length} 件
+                        {(safeSettings.keyItemRegistry || []).length} 件
                       </div>
                     </div>
                     <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
                       <div className="text-[11px] text-[var(--text-muted)]">未闭合长线伏笔</div>
                       <div className="text-sm font-bold tabular-nums text-[var(--text-primary)]">
-                        {(settings.foreshadowLedger || []).filter((f) => f.status !== 'resolved').length} 条
+                        {(safeSettings.foreshadowLedger || []).filter((f) => f.status !== 'resolved').length} 条
                       </div>
                     </div>
                   </div>

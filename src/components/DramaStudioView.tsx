@@ -1060,7 +1060,7 @@ export const DramaSetupView: React.FC<DramaSetupViewProps> = ({
           id: generateUUID(),
           anchorEpisode: nextAnchor,
           episodeRange: `第${nextAnchor}集`,
-          rhythmTier: nextAnchor === paywallEpisodeIndex ? '付费大卡点' : '爽点小高潮',
+          rhythmTier: (nextAnchor === paywallEpisodeIndex ? '付费大卡点' : '爽点小高潮') as DramaRhythmTier,
           tensionScore: nextAnchor === paywallEpisodeIndex ? 96 : 82,
           beatGoal: '',
         },
@@ -3913,9 +3913,9 @@ ${charContext}
           episodeIndex: targetEp,
           title: `第${targetEp}集筹备节点`,
           beatSummary: cleanDirective,
-          foreshadowingOrProps: cleanDirective,
-          hookType:
-            targetEp === currentProject.paywallEpisodeIndex ? '核心付费卡点' : '免费强留存',
+          hookType: (targetEp === currentProject.paywallEpisodeIndex
+            ? '核心付费卡点'
+            : '免费强留存') as DramaEpisodePlanItem['hookType'],
         },
       ].sort((a, b) => a.episodeIndex - b.episodeIndex);
     }

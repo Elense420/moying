@@ -189,3 +189,45 @@ export async function handleChatCompletionRequest(req: Request, res: Response) {
     }
   }
 }
+
+export async function handleZhuqueDetectRequest(req: Request, res: Response) {
+  try {
+    const { text, gatewayUrl, apiKey } = req.body;
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ error: '待检测文本内容不能为空' });
+    }
+
+    if (!gatewayUrl || !apiKey) {
+      return res.status(400).json({
+        error: '未配置腾讯云朱雀 API 密钥或网关地址。请在「API 与模型设置」中填入腾讯云 EdgeOne / 朱雀网关与 Key，或直接点击上方按钮直达朱雀官方网页端检测。',
+        unconfigured: true,
+      });
+    }
+
+    const cleanUrl = String(gatewayUrl).trim().replace(/\/+$/, '');
+    const upstreamRes = await fetch(cleanUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        text: String(text).slice(0, 8000),
+        model: 'zhuque-text',
+      }),
+    });
+
+    if (!upstreamRes.ok) {
+      const errText = await upstreamRes.text();
+      return res.status(upstreamRes.status).json({
+        error: `腾讯云朱雀网关响应异常 (${upstreamRes.status}): ${errText.slice(0, 300)}`,
+      });
+    }
+
+    const data = await upstreamRes.json();
+    return res.json({ success: true, data });
+  } catch (err: any) {
+    console.error('Error in handleZhuqueDetectRequest:', err);
+    return res.status(500).json({ error: err.message || '朱雀检测服务处理失败' });
+  }
+}

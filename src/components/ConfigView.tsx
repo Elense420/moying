@@ -16,6 +16,8 @@ import {
   Loader2,
   Globe,
   ShieldCheck,
+  ShieldAlert,
+  ExternalLink,
   Copy,
   FolderTree,
 } from 'lucide-react';
@@ -1166,6 +1168,71 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
               </div>
             ))}
           </section>
+
+          {/* Tencent Cloud Zhuque API Configuration Card */}
+          <section className="studio-card p-5 sm:p-7 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="w-5 h-5 text-amber-500 shrink-0" />
+                  <h2 className="text-base font-bold text-[var(--text-primary)]">
+                    腾讯云朱雀 AIGC 内容检测接口配置（官方直连）
+                  </h2>
+                </div>
+                <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                  腾讯朱雀为腾讯企业级 AIGC 安全检测器（matrix.tencent.com）。若您开通了腾讯云文本内容安全或边缘网关，可填入网关地址与密钥；如未开通，在小说正文质检弹窗中点击「直达朱雀官网」即可免密免费在网页端即测即核。
+                </p>
+              </div>
+
+              <a
+                href="https://matrix.tencent.com/ai-detect"
+                target="_blank"
+                rel="noreferrer"
+                className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 shrink-0 self-start sm:self-auto cursor-pointer"
+              >
+                <span>腾讯朱雀官网控制台</span>
+                <ExternalLink className="w-3.5 h-3.5 opacity-70" />
+              </a>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                  腾讯云朱雀检测网关 URL（或反向代理网关）
+                </label>
+                <input
+                  type="text"
+                  value={uiSettings.zhuqueApiGatewayUrl || ''}
+                  onChange={(e) => updateUiSettingsPartial({ zhuqueApiGatewayUrl: e.target.value.trim() })}
+                  placeholder="https://tms.tencentcloudapi.com 或自建网关"
+                  className="studio-input w-full px-3.5 py-2.5 text-xs font-mono min-h-[42px]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                  腾讯云 API SecretKey / 访问密钥
+                </label>
+                <input
+                  type="password"
+                  value={uiSettings.zhuqueApiKey || ''}
+                  onChange={(e) => updateUiSettingsPartial({ zhuqueApiKey: e.target.value.trim() })}
+                  placeholder="填入对应腾讯云 SecretKey"
+                  className="studio-input w-full px-3.5 py-2.5 text-xs font-mono min-h-[42px]"
+                />
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl border border-blue-500/20 bg-blue-500/10 text-xs text-blue-900 dark:text-blue-200 leading-relaxed space-y-1">
+              <span className="font-bold flex items-center gap-1">
+                <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span>实机检验双轨制说明</span>
+              </span>
+              <p className="text-[11px] opacity-90">
+                本程序坚持真实可信原则：本地算法仅作为写作阶段的 22 项高频套话启发式扫描；正文弹窗内提供「复制全文 + 直达腾讯朱雀官方检测网页」与「调用腾讯云官方接口」双通道，确保每一章过审去味效果均可经受腾讯云官方真实机器分类器的实打实检验。
+              </p>
+            </div>
+          </section>
         </div>
       )}
 
@@ -1480,7 +1547,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
 
                     {/* GitHub Repository Tracking & Update Actions */}
                     {Boolean(skill.githubRepo || GITHUB_SKILL_REPOSITORIES[skill.slug || skill.name]) && (() => {
-                      const origin = skill.githubRepo || GITHUB_SKILL_REPOSITORIES[skill.slug || skill.name];
+                      const origin: any = skill.githubRepo || GITHUB_SKILL_REPOSITORIES[skill.slug || skill.name];
                       const updateInfo = skillUpdateMap[skill.id];
                       const isUpdating = updatingSkillId === skill.id;
 

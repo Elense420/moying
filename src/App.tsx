@@ -24,6 +24,7 @@ import { DramaLibraryView, DramaRadarView } from './components/DramaLibraryAndRa
 import { DramaSetupView, DramaWriterView } from './components/DramaStudioView';
 import { convertCandidateToDramaProject } from './components/DramaCandidateVaultView';
 import { DramaBackupRestoreModal } from './components/DramaBackupRestoreModal';
+import { SafeErrorBoundary } from './components/SafeErrorBoundary';
 import {
   PageTransition,
   SNAPPY_EASE,
@@ -813,7 +814,8 @@ function StudioWorkspace() {
             </PageTransition>
           ) : (
             <PageTransition key={`tab-${activeTab}`} viewKey={activeTab}>
-              {activeTab === 'novels' && (
+              <SafeErrorBoundary fallbackTitle={`「${activeTab}」页面加载异常`}>
+                {activeTab === 'novels' && (
                 <LibraryView
                   books={books}
                   onOpenBookDetail={handleOpenBookDetail}
@@ -945,6 +947,7 @@ function StudioWorkspace() {
                   onRefreshGlobalSkills={refreshGlobalSkills}
                 />
               )}
+              </SafeErrorBoundary>
             </PageTransition>
           )}
         </AnimatePresence>

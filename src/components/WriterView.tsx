@@ -37,6 +37,7 @@ import { analyzeTextForZhuque, buildZhuqueDeslopMessages } from '../services/zhu
 import { generateUUID } from '../utils/uuid';
 import { MotionButton, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
 import { ZhuqueAuditModal } from './ZhuqueAuditModal';
+import { SafeErrorBoundary } from './SafeErrorBoundary';
 import { useContextMenu } from './ContextMenu';
 
 interface WriterViewProps {
@@ -2694,43 +2695,48 @@ ${chapterTail}
       )}
 
       {/* Tencent Zhuque Audit + story-deslop + story-review + webnovel-write Memory Modal */}
-      {currentBook && (
-        <ZhuqueAuditModal
-          isOpen={isZhuqueModalOpen}
-          onClose={() => setIsZhuqueModalOpen(false)}
-          bookTitle={currentBook.title}
-          chapterIndex={activeChapter?.index || currentChapterIndex + 1}
-          chapterTitle={chapterTitle || activeChapter?.title || `第 ${currentChapterIndex + 1} 章`}
-          chapterText={chapterText}
-          settings={currentBook.settings}
-          configs={configs}
-          uiSettings={uiSettings}
-          onApplyRewrittenText={async (newText: string) => {
-            setChapterText(newText);
-            if (currentChapterIndex >= 0 && currentBook.chapters[currentChapterIndex]) {
-              const postReport = analyzeTextForZhuque(newText);
-              const nextChapters = [...currentBook.chapters];
-              nextChapters[currentChapterIndex] = {
-                ...nextChapters[currentChapterIndex],
-                text: newText,
-                meta: `story-deslop 朱雀过审重铸 (AI痕 ${postReport.aiRiskScore}% · σ=${postReport.burstinessStdDev}) · ${new Date().toLocaleTimeString()}`,
-              };
+      {currentBook && isZhuqueModalOpen && (
+        <SafeErrorBoundary
+          fallbackTitle="朱雀质检弹窗加载异常"
+          onReset={() => setIsZhuqueModalOpen(false)}
+        >
+          <ZhuqueAuditModal
+            isOpen={isZhuqueModalOpen}
+            onClose={() => setIsZhuqueModalOpen(false)}
+            bookTitle={currentBook.title}
+            chapterIndex={activeChapter?.index || currentChapterIndex + 1}
+            chapterTitle={chapterTitle || activeChapter?.title || `第 ${currentChapterIndex + 1} 章`}
+            chapterText={chapterText}
+            settings={currentBook.settings}
+            configs={configs}
+            uiSettings={uiSettings}
+            onApplyRewrittenText={async (newText: string) => {
+              setChapterText(newText);
+              if (currentChapterIndex >= 0 && currentBook.chapters[currentChapterIndex]) {
+                const postReport = analyzeTextForZhuque(newText);
+                const nextChapters = [...currentBook.chapters];
+                nextChapters[currentChapterIndex] = {
+                  ...nextChapters[currentChapterIndex],
+                  text: newText,
+                  meta: `story-deslop 朱雀过审重铸 (AI痕 ${postReport.aiRiskScore}% · σ=${postReport.burstinessStdDev}) · ${new Date().toLocaleTimeString()}`,
+                };
+                await onSaveBook({
+                  ...currentBook,
+                  chapters: nextChapters,
+                  lastModifiedAt: Date.now(),
+                });
+              }
+            }}
+            onApplyMemoryWritebackSettings={async (nextSettings: BookSettings, toastMsg: string) => {
               await onSaveBook({
                 ...currentBook,
-                chapters: nextChapters,
+                settings: nextSettings,
                 lastModifiedAt: Date.now(),
               });
-            }
-          }}
-          onApplyMemoryWritebackSettings={async (nextSettings: BookSettings, toastMsg: string) => {
-            await onSaveBook({
-              ...currentBook,
-              settings: nextSettings,
-              lastModifiedAt: Date.now(),
-            });
-            triggerQuickToast(toastMsg);
-          }}
-        />
+              triggerQuickToast(toastMsg);
+            }}
+          />
+        </SafeErrorBoundary>
       )}
     </div>
   );

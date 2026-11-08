@@ -256,7 +256,7 @@ export const SkillPackageInspectorModal: React.FC<SkillPackageInspectorModalProp
                       >
                         <span className="font-semibold text-[var(--text-primary)]">{qt.metric}</span>
                         <div className="flex items-center gap-3 text-[var(--text-secondary)] tabular-nums">
-                          <span className="font-mono font-semibold text-[var(--accent)]">{qt.target}</span>
+                          <span className="font-mono font-semibold text-[var(--accent)]">{qt.medianTarget}</span>
                           {qt.note && <span className="text-[var(--text-muted)]">({qt.note})</span>}
                         </div>
                       </div>

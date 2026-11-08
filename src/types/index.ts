@@ -533,8 +533,24 @@ export interface UiSettings {
   writerApiModel: string | null;
   rerollApiCfgId: string | null;
   rerollApiModel: string | null;
-  inspirationApiCfgId: string | null;
-  inspirationApiModel: string | null;
+  inspirationApiCfgId?: string | null;
+  inspirationApiModel?: string | null;
+  // Tencent Zhuque (腾讯朱雀 AIGC 内容检测)
+  zhuqueApiGatewayUrl?: string;
+  zhuqueApiKey?: string;
+}
+
+export interface ZhuqueOnlineDetectResult {
+  isConfigured: boolean;
+  score?: number; // 0-100%
+  suspectedAiPct?: number; // 疑似AI比例
+  aiFeaturePct?: number; // AI特征比例
+  humanFeaturePct?: number; // 人工创作特征比例
+  verdict?: 'pass' | 'borderline' | 'high_risk';
+  conclusionText?: string;
+  rawResponse?: any;
+  error?: string;
+  checkedAt?: number;
 }
 
 export interface HistoryItem {

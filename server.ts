@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
-import { handleChatCompletionRequest, handleModelsRequest } from './src/server/aiRouter';
+import { handleChatCompletionRequest, handleModelsRequest, handleZhuqueDetectRequest } from './src/server/aiRouter';
 
 dotenv.config();
 
@@ -18,6 +18,7 @@ async function startServer() {
 
   app.get('/api/ai/models', handleModelsRequest as any);
   app.post('/api/ai/chat', handleChatCompletionRequest as any);
+  app.post('/api/zhuque/detect', handleZhuqueDetectRequest as any);
 
   const isProd = process.env.NODE_ENV === 'production';
 

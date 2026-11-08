@@ -4,6 +4,7 @@ import {
   DistilledStyleProfile,
   ZhuqueAuditReport,
   ZhuqueFinding,
+  ZhuqueOnlineDetectResult,
 } from '../types';
 import { Message } from './apiClient';
 import { generateUUID } from '../utils/uuid';
@@ -98,13 +99,33 @@ const TRAILER_ENDING_REGEX =
  * Splits Chinese prose into natural sentences while preserving punctuation context.
  */
 function splitSentences(text: string): string[] {
-  const cleaned = text.replace(/\r\n/g, '\n').trim();
+  const cleaned = (text || '').replace(/\r\n/g, '\n').trim();
   if (!cleaned) return [];
-  const rawParts = cleaned
-    .split(/(?<=[。！？!?…]+['"”’）)]*|\n+)/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && /[\u4e00-\u9fa5a-zA-Z0-9]/.test(s));
-  return rawParts;
+  const result: string[] = [];
+  const paras = cleaned.split('\n');
+  for (const para of paras) {
+    const trimmed = para.trim();
+    if (!trimmed) continue;
+    let curr = '';
+    for (let i = 0; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      curr += ch;
+      if (['。', '！', '？', '!', '?'].includes(ch) || (ch === '…' && curr.endsWith('……'))) {
+        while (i + 1 < trimmed.length && ['"', "'", '”', '’', '」', '）', ')', '》'].includes(trimmed[i + 1])) {
+          i++;
+          curr += trimmed[i];
+        }
+        if (curr.trim()) {
+          result.push(curr.trim());
+        }
+        curr = '';
+      }
+    }
+    if (curr.trim()) {
+      result.push(curr.trim());
+    }
+  }
+  return result.filter((s) => s.length > 0 && /[\u4e00-\u9fa5a-zA-Z0-9]/.test(s));
 }
 
 /**
@@ -463,9 +484,13 @@ export function applySurgicalReplacements(
   return updated;
 }
 
+export type ZhuqueDeslopMode = 'anti-zhuque-high-entropy' | 'beijing-vernacular';
+
 /**
  * Builds the `story-deslop` + Tencent Zhuque Humanization Prompt for full-chapter rewriting.
- * Overhauled to prevent LLM meta-overcompensation (low temperature 0.35 + concrete negative/positive contrast).
+ * Contains both:
+ * 1. 'anti-zhuque-high-entropy': specifically targets neural AIGC detectors (disrupting PPL, token prior distributions, and syntax).
+ * 2. 'beijing-vernacular': grounded literary humanization (Lao She / Wang Zengqi).
  */
 export function buildZhuqueDeslopMessages(params: {
   chapterTitle: string;
@@ -473,8 +498,9 @@ export function buildZhuqueDeslopMessages(params: {
   auditReport: ZhuqueAuditReport;
   distilledStyle?: DistilledStyleProfile | null;
   characterSpeechNotes?: string;
+  mode?: ZhuqueDeslopMode;
 }): Message[] {
-  const { chapterTitle, chapterText, auditReport, distilledStyle, characterSpeechNotes } = params;
+  const { chapterTitle, chapterText, auditReport, distilledStyle, characterSpeechNotes, mode = 'anti-zhuque-high-entropy' } = params;
 
   const findingsDigest =
     auditReport.findings.length > 0
@@ -496,10 +522,44 @@ export function buildZhuqueDeslopMessages(params: {
 
   const targetLen = Math.max(800, chapterText.replace(/\s+/g, '').length);
 
-  return [
-    {
-      role: 'system',
-      content: `你是一位崇尚【老舍、汪曾祺式生活化白描】的中文小说责编。
+  const isAntiZhuque = mode === 'anti-zhuque-high-entropy';
+
+  const systemContent = isAntiZhuque
+    ? `你是一位专门对抗【腾讯朱雀大模型 AIGC 检测器】与各大网文平台过审算法的顶级小说总编。
+【朱雀检测器的核心致命死穴】：
+腾讯朱雀检测器依赖神经网络测算“词语预测困惑度 (Perplexity)”与“句法平滑均匀度 (Burstiness)”。AI 写的小说之所以在朱雀官网会被直接判定为“疑似AI 80%、AI特征 20%、未发现明显人工创作特征”，正是因为 AI 词汇太安全、句式太工整、缺乏人话的语法倒装、碎嘴子和生活瑕疵！
+
+请你以【极端真实的人类手笔】重写本章，强制执行以下 6 大【人工创作特征破壁铁律】，彻底打翻朱雀神经网络的判定先验：
+
+1. 【打碎语法结构 · 严禁机器书面连词】
+   - 彻底删除“只见”、“随后”、“紧接着”、“下一刻”、“与此同时”、“不得不说”、“这意味着”、“仿佛一般”。
+   - 绝不使用“因为……所以……”、“不仅……而且……”等完整规范并列句。
+   - 强制使用意合断句、宾语前置与口语倒装（例：“烟头掐了，他。”“走不走？随你。”“没影儿的事。”“抬手就是一巴掌。”）。
+
+2. 【注入高困惑度口语语气词与俚语 (朱雀克星)】
+   - 每 2-3 段必须自然穿插真实人类常用的口头叹词与语气词：“操”、“得嘞”、“好家伙”、“横竖”、“扯淡”、“没跑了”、“瞅着”、“估摸着”、“保齐”、“哎哟喂”、“拉倒吧”、“真叫一个绝”。
+   - 说话要有呼吸气：允许吞字、半截话、答非所问、自嘲、插科打诨。
+
+3. 【粗糙微观触感取代宏观心理描写】
+   - 严禁写任何心理抽象总结（如“心中五味杂陈”、“感到前所未有的危机”、“脑海中轰然作响”）。
+   - 全部替换为带着污渍、气味和温度的粗糙现实物理细节：
+     不是“桌上的茶凉了”，而是“破条案上那半碗高碎早凉透了，水面上结了层灰白的茶锈，碗沿崩了个黄豆大的豁口”。
+     不是“他很紧张”，而是“喉咙眼里直冒火，后槽牙咬得生疼，后背被冷汗沤得黏腻发痒”。
+
+4. 【极端长短句交错 · 破坏机器匀速节拍】
+   - 强制插入 2~5 字极短单句独立成段或在句群中骤停：“风紧。”“没动静。”“呛得慌。”“手抖了。”“去他娘的。”
+   - 紧接着跟随充满琐碎具体动作与视线的长句（40-60字），制造极高的人类心跳脉冲。
+
+5. 【绝对红线禁令】
+   - 严禁成对四字成语（如“杀意凛然、面无表情、目光如炬”等成语连用是一眼AI假货）；
+   - 严禁章末预告片腔（如“谁也不知道等待他们的将是什么”、“一切才刚刚拉开序幕”）；
+   - 严禁五官微表情（瞳孔骤缩、嘴角勾起一抹、眼中闪过一丝、指节泛白全部砍掉）。
+
+6. 【剧情与人物生死保全】
+   - 本章原有剧情推进、战斗胜负、生死因果、关键道具与伏笔必须 100% 完整保留，不可遗漏情节。${styleBlock}${voiceBlock}
+
+请直接输出重铸后的章节正文（约 ${targetLen} 字左右，绝不输出任何前缀、废话或解释说明）。`
+    : `你是一位崇尚【老舍、汪曾祺式生活化白描】的中文小说责编。
 你的唯一任务：将以下章节中的“大模型翻译腔与AI套话”全部剔除，换成接地气、有现场呼吸感的生活大白话。保持原剧情走向、人物生死与道具细节 100% 不变。
 
 【必须严格执行的降温去味红线】：
@@ -516,7 +576,12 @@ export function buildZhuqueDeslopMessages(params: {
 5. 破折号“——”全文不超过 2 处，严禁把一个字单独成段（如“静。”、“冷。”）。
 6. 让人物像活人一样说话：允许口语停顿、半截话、答非所问、带语气助词，不要写成工整的书面辩论稿。${styleBlock}${voiceBlock}
 
-请直接输出降温重铸后的完整章节正文（约 ${targetLen} 字左右，绝不减少情节，不要输出任何解释说明）。`,
+请直接输出降温重铸后的完整章节正文（约 ${targetLen} 字左右，绝不减少情节，不要输出任何解释说明）。`;
+
+  return [
+    {
+      role: 'system',
+      content: systemContent,
     },
     {
       role: 'user',
@@ -526,10 +591,77 @@ export function buildZhuqueDeslopMessages(params: {
 【原稿中被标记的 AI 病灶】：
 ${findingsDigest}
 
-【待去味降温的原正文】：
+【待去味重铸的原正文】：
 ${chapterText}`,
     },
   ];
+}
+
+/**
+ * Invokes real remote Tencent Zhuque AIGC detection API via backend proxy
+ */
+export async function callZhuqueOnlineDetect(params: {
+  text: string;
+  gatewayUrl?: string;
+  apiKey?: string;
+}): Promise<ZhuqueOnlineDetectResult> {
+  if (!params.gatewayUrl || !params.apiKey) {
+    return {
+      isConfigured: false,
+      error: '未配置腾讯云朱雀网关地址或 API Key。请在「设置」中完成配置，或直接点击下方按钮直达朱雀官方网页端检测。',
+    };
+  }
+
+  try {
+    const res = await fetch('/api/zhuque/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: params.text,
+        gatewayUrl: params.gatewayUrl,
+        apiKey: params.apiKey,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return {
+        isConfigured: true,
+        error: err.error || `请求失败 (${res.status})`,
+        checkedAt: Date.now(),
+      };
+    }
+
+    const json = await res.json();
+    const data = json.data || {};
+
+    const rawSuspected = data.suspected_ai_pct ?? data.suspected_ai ?? data.ai_prob ?? 0;
+    const rawFeature = data.ai_feature_pct ?? data.ai_feature ?? 0;
+    const suspectedAiPct = Math.round(Number(rawSuspected) * (rawSuspected <= 1 ? 100 : 1));
+    const aiFeaturePct = Math.round(Number(rawFeature) * (rawFeature <= 1 ? 100 : 1));
+    const humanFeaturePct = Math.max(0, 100 - suspectedAiPct - aiFeaturePct);
+
+    const verdict: ZhuqueOnlineDetectResult['verdict'] =
+      suspectedAiPct + aiFeaturePct >= 60 ? 'high_risk' : suspectedAiPct + aiFeaturePct >= 30 ? 'borderline' : 'pass';
+
+    return {
+      isConfigured: true,
+      score: suspectedAiPct + aiFeaturePct,
+      suspectedAiPct,
+      aiFeaturePct,
+      humanFeaturePct,
+      verdict,
+      conclusionText: data.conclusion || (humanFeaturePct > 50 ? '发现明显的人工创作特征' : '未发现明显的人工创作特征'),
+      rawResponse: data,
+      checkedAt: Date.now(),
+    };
+  } catch (err: any) {
+    return {
+      isConfigured: true,
+      error: err.message || '网络请求异常',
+      checkedAt: Date.now(),
+    };
+  }
 }
 
 /**

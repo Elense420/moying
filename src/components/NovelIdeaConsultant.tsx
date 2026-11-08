@@ -257,6 +257,7 @@ ${xpSystemPref && xpPreferences.trim() ? `【创作者底层 XP 审美宪法参�
           volumeIndex: v.volumeIndex || i + 1,
           title: v.title,
           chapterSpan: v.chapterSpan || `第${i * 30 + 1}-${(i + 1) * 30}章`,
+          coreConflict: (v as any).coreConflict || '主线矛盾推进',
           climaxGoal: v.climaxGoal,
         })),
         ultimateEnding: selectedOpt.l1UltimateEnding,
