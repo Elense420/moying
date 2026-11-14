@@ -176,6 +176,115 @@ export function repairAndParseJson<T = any>(raw: string): T | null {
   }
 }
 
+const WORD_COUNT_SCALE_REGEX = /(?:万字|短篇|中篇|长篇|连载|盐选)/;
+
+export function hasWordCountScaleTag(tags?: string[]): boolean {
+  if (!Array.isArray(tags)) return false;
+  return tags.some((t) => WORD_COUNT_SCALE_REGEX.test(t));
+}
+
+export function extractScaleRequirementHint(
+  outlineText: string,
+  systemSettings?: Record<string, string[]>,
+  chapterWords?: number | string
+): {
+  lockedScaleTags: string[];
+  estimatedChapterRange: string;
+  estimatedVolumeCount: string;
+  promptConstraint: string;
+} {
+  const userScaleTags = (systemSettings?.['foundation.scale_structure'] || [])
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const wordsPerCh = Math.max(800, Number(chapterWords) || 3000);
+
+  // Check if user already explicitly chose a scale
+  if (userScaleTags.length > 0 && hasWordCountScaleTag(userScaleTags)) {
+    const joined = userScaleTags.join('、');
+    let estimatedChapterRange = '按设定匹配';
+    let estimatedVolumeCount = '3~4卷';
+    if (/三万字|短篇/.test(joined)) {
+      estimatedChapterRange = `约 8~15 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '1 卷（或直接以 2~3 个单元完成起承转合）';
+    } else if (/八万字|盐选|中篇/.test(joined)) {
+      estimatedChapterRange = `约 20~35 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '2 卷（上/下卷或三幕紧凑结构）';
+    } else if (/十五万字|轻长篇/.test(joined)) {
+      estimatedChapterRange = `约 45~65 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '2~3 卷';
+    } else if (/三十万字/.test(joined)) {
+      estimatedChapterRange = `约 90~120 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '3~4 卷';
+    } else if (/五十万字/.test(joined)) {
+      estimatedChapterRange = `约 150~200 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '4~5 卷';
+    } else if (/八十万字/.test(joined)) {
+      estimatedChapterRange = `约 240~320 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '4~6 卷';
+    } else if (/百万字/.test(joined)) {
+      estimatedChapterRange = `约 300~450 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '5~8 卷';
+    } else if (/两百万|三百万/.test(joined)) {
+      estimatedChapterRange = `约 600~1000+ 章（单章约 ${wordsPerCh} 字）`;
+      estimatedVolumeCount = '6~12 卷';
+    }
+    return {
+      lockedScaleTags: userScaleTags,
+      estimatedChapterRange,
+      estimatedVolumeCount,
+      promptConstraint: `【篇幅规模已由作者明确锁定】：${joined}（预计全书总跨度 ${estimatedChapterRange}，分卷建议 ${estimatedVolumeCount}）。严禁擅自更改为“百万字长篇”或偏离该体量的分卷章节数！`,
+    };
+  }
+
+  // Otherwise inspect outline text for explicit scale clues (ignoring negated phrases)
+  const cleanOutline = (outlineText || '').replace(/(?:并非|不是|非|不写|不用)[^，。！？\n]{0,8}(?:百万字|长篇|短篇|中篇)/g, '');
+  let inferredHint = '';
+  let estimatedChapterRange = '根据大纲事件自然容量决定';
+  let estimatedVolumeCount = '2~4卷（视体量定）';
+
+  if (/三万字|3万字|微小说|极短篇/.test(cleanOutline)) {
+    inferredHint = '三万字精悍短篇';
+    estimatedChapterRange = `约 8~15 章`;
+    estimatedVolumeCount = '1~2 卷';
+  } else if (/八万字|8万字|十万字|10万字|盐选|短中篇|中篇/.test(cleanOutline)) {
+    inferredHint = '八万字盐选中篇';
+    estimatedChapterRange = `约 20~35 章`;
+    estimatedVolumeCount = '2 卷';
+  } else if (/十五万字|15万字|二十万字|20万字|轻长篇/.test(cleanOutline)) {
+    inferredHint = '十五万字轻长篇';
+    estimatedChapterRange = `约 45~70 章`;
+    estimatedVolumeCount = '2~3 卷';
+  } else if (/三十万字|30万字/.test(cleanOutline)) {
+    inferredHint = '三十万字紧凑长篇';
+    estimatedChapterRange = `约 90~120 章`;
+    estimatedVolumeCount = '3~4 卷';
+  } else if (/五十万字|50万字/.test(cleanOutline)) {
+    inferredHint = '五十万字中长篇';
+    estimatedChapterRange = `约 150~200 章`;
+    estimatedVolumeCount = '4~5 卷';
+  } else if (/两百万|200万|三百万|300万/.test(cleanOutline)) {
+    inferredHint = /三百万|300万/.test(cleanOutline) ? '三百万字超长篇连载' : '两百万字大长篇';
+    estimatedChapterRange = `约 600~1000 章`;
+    estimatedVolumeCount = '6~10 卷';
+  }
+
+  if (inferredHint) {
+    return {
+      lockedScaleTags: [inferredHint],
+      estimatedChapterRange,
+      estimatedVolumeCount,
+      promptConstraint: `【从大纲中识别到的体量倾向】：${inferredHint}（预计 ${estimatedChapterRange}，分卷建议 ${estimatedVolumeCount}）。请严格按此真实体量规划篇幅与分卷章节跨度，严禁盲目强行按百万字长篇处理！`,
+    };
+  }
+
+  return {
+    lockedScaleTags: userScaleTags,
+    estimatedChapterRange: '严禁盲目默认百万字，须按当前大纲矛盾容量客观判定',
+    estimatedVolumeCount: '根据真实故事体量规划 2~6 卷',
+    promptConstraint: `【篇幅规模判定铁律】：严禁盲目默认判定为“百万字商业标准长篇”！必须先根据当前大纲的事件数量、势力层级、核心矛盾跨度客观评估真实体量：若是单一事件/短线情感拉扯应选「八万字盐选中篇」或「十五万字轻长篇」；若是紧凑多卷成长应选「三十万字紧凑长篇」或「五十万字中长篇」；只有具备多地图大世界观长线史诗铺垫时才选「百万字商业标准长篇」以上。且后续分卷 chapterSpan 必须与所选篇幅真实匹配！`,
+  };
+}
+
 /**
  * Scans markdown or plain text against all 11 modules and 220 preset fields,
  * automatically detecting and checking matched options.
@@ -184,19 +293,21 @@ export function extract11SettingsFromText(text: string): Record<string, string[]
   const result: Record<string, string[]> = {};
   if (!text || text.trim().length === 0) return result;
 
-  const normalizedText = text.toLowerCase();
+  // Strip negated statements like "不是百万字" / "非长篇" before scanning
+  const sanitizedForScan = text.replace(/(?:并非|不是|非|不写|不用)[^，。！？\n]{0,8}(?:百万字|长篇|短篇|中篇)/g, '');
+  const normalizedText = sanitizedForScan.toLowerCase();
 
   for (const mod of NOVEL_SETTING_MODULES) {
     for (const field of mod.fields) {
       const fieldKey = `${mod.id}.${field.id}`;
       const matchedOptions: string[] = [];
 
-      // Check explicit mention like: "题材类型: 都市异能, 悬疑" or "**篇幅规模**: 百万字"
+      // Check explicit mention like: "题材类型: 都市异能, 悬疑" or "**篇幅规模**: 三十万字"
       const fieldHeaderPattern = new RegExp(
         `(?:${field.label.slice(0, 4)}|${field.id})[：:\\s]*([^\\n\\r]+)`,
         'i'
       );
-      const headerMatch = text.match(fieldHeaderPattern);
+      const headerMatch = sanitizedForScan.match(fieldHeaderPattern);
       const headerText = headerMatch ? headerMatch[1].toLowerCase() : '';
 
       for (const opt of field.options) {
@@ -205,7 +316,11 @@ export function extract11SettingsFromText(text: string): Record<string, string[]
         const cleanOptLower = cleanOpt.toLowerCase();
 
         // 1. Direct match in explicit field line
-        if (headerText && (headerText.includes(cleanOptLower) || (cleanOpt.length >= 2 && headerText.includes(cleanOpt.slice(0, 3))))) {
+        if (
+          headerText &&
+          (headerText.includes(cleanOptLower) ||
+            (cleanOpt.length >= 3 && headerText.includes(cleanOpt.slice(0, 3))))
+        ) {
           if (!matchedOptions.includes(opt)) matchedOptions.push(opt);
           continue;
         }
@@ -213,15 +328,26 @@ export function extract11SettingsFromText(text: string): Record<string, string[]
         // 2. High-precision fulltext scan for distinctive options (length >= 3 or unique)
         if (cleanOptLower.length >= 3 && normalizedText.includes(cleanOptLower)) {
           if (!matchedOptions.includes(opt)) matchedOptions.push(opt);
-        } else if (cleanOptLower.length === 2 && ['仙侠', '古言', '末世', '玄幻', '悬疑', '短篇', '长篇'].includes(cleanOptLower)) {
+        } else if (
+          cleanOptLower.length === 2 &&
+          ['仙侠', '古言', '末世', '玄幻', '悬疑'].includes(cleanOptLower)
+        ) {
           if (normalizedText.includes(cleanOptLower) && !matchedOptions.includes(opt)) {
             matchedOptions.push(opt);
           }
         }
       }
 
-      // Limit options per field to top 3 to keep prompt focused
-      if (matchedOptions.length > 0) {
+      // Prevent scale_structure from having multiple conflicting word-count options
+      if (fieldKey === 'foundation.scale_structure' && matchedOptions.length > 1) {
+        const wordCountOpts = matchedOptions.filter((o) => /万字|短篇|中篇|长篇/.test(o));
+        const structOpts = matchedOptions.filter((o) => !/万字|短篇|中篇|长篇/.test(o));
+        result[fieldKey] = [
+          ...(wordCountOpts.length > 0 ? [wordCountOpts[wordCountOpts.length - 1]] : []),
+          ...structOpts,
+        ].slice(0, 3);
+      } else if (matchedOptions.length > 0) {
+        // Limit options per field to top 3 to keep prompt focused
         result[fieldKey] = matchedOptions.slice(0, 3);
       }
     }
@@ -357,13 +483,35 @@ export function parseMarkdownOutlineFallback(rawText: string): ParsedImproveOutl
   const finalWorld = worldLines.join('\n').trim();
   const finalBlurb = blurbLines.join('\n').trim();
 
-  // If no volume plans detected, create default 3-volume skeleton from outline
+  // If no volume plans detected, create scale-adapted default skeleton from outline
   if (volumePlans.length === 0) {
-    volumePlans.push(
-      { volumeIndex: 1, title: '初入危局·锋芒初试', chapterSpan: '第1章 - 第30章', coreConflict: '生存受困与金手指觉醒', climaxGoal: '打破开局死局，建立初步立足点' },
-      { volumeIndex: 2, title: '名动四方·惊澜再起', chapterSpan: '第31章 - 第70章', coreConflict: '宗门/势力间权力倾轧与利益争夺', climaxGoal: '卷末大战力挽狂澜，名声大噪' },
-      { volumeIndex: 3, title: '登临绝顶·终局收束', chapterSpan: '第71章 - 第120章', coreConflict: '揭开终极真相与终极反派决战', climaxGoal: '宿命对决完结，达成全书最高追求' }
-    );
+    const scaleStr = (detectedSettings['foundation.scale_structure'] || []).join(' ');
+    if (/三万字|短篇/.test(scaleStr)) {
+      volumePlans.push({
+        volumeIndex: 1,
+        title: '全篇·起承转合',
+        chapterSpan: '第1章 - 第12章',
+        coreConflict: '核心危机爆发与情感/局势反转',
+        climaxGoal: '干脆利落收束主线结局',
+      });
+    } else if (/八万字|盐选|中篇/.test(scaleStr)) {
+      volumePlans.push(
+        { volumeIndex: 1, title: '上卷·入局拉扯', chapterSpan: '第1章 - 第15章', coreConflict: '开局破冰与矛盾升温', climaxGoal: '身份/关系重大转折' },
+        { volumeIndex: 2, title: '下卷·破局收官', chapterSpan: '第16章 - 第30章', coreConflict: '终极真相揭露与反击', climaxGoal: '闭合主线达成终局' }
+      );
+    } else if (/十五万字|轻长篇/.test(scaleStr)) {
+      volumePlans.push(
+        { volumeIndex: 1, title: '第一卷·初露锋芒', chapterSpan: '第1章 - 第20章', coreConflict: '立足破局与初遇交锋', climaxGoal: '完成初期阶段逆袭' },
+        { volumeIndex: 2, title: '第二卷·暗流涌动', chapterSpan: '第21章 - 第40章', coreConflict: '多方势力角逐与伏笔兑现', climaxGoal: '核心危机大爆发' },
+        { volumeIndex: 3, title: '第三卷·终局收束', chapterSpan: '第41章 - 第60章', coreConflict: '揭开真相与终极对决', climaxGoal: '完结主线与关系归宿' }
+      );
+    } else {
+      volumePlans.push(
+        { volumeIndex: 1, title: '第一卷·入局起势', chapterSpan: '第1章 - 第30章', coreConflict: '开局危机受困与核心优势觉醒', climaxGoal: '打破初期死局，建立立足点' },
+        { volumeIndex: 2, title: '第二卷·风起云涌', chapterSpan: '第31章 - 第65章', coreConflict: '多方势力冲突升级与暗线推进', climaxGoal: '卷末大战或重大反转跃迁' },
+        { volumeIndex: 3, title: '第三卷·终局收束', chapterSpan: '第66章 - 第100章', coreConflict: '揭开终极真相与最终决战', climaxGoal: '宿命对决完结，闭合全书锚点' }
+      );
+    }
   }
 
   return {

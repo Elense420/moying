@@ -47,6 +47,7 @@ import {
   NovelForeshadowItem,
   MasterOutlineSpec,
   DistilledStyleProfile,
+  FourLayerCascadeSyncMeta,
 } from '../types';
 import {
   dbPut,
@@ -87,7 +88,22 @@ import {
   parseImproveOutlineResponse,
   repairAndParseJson,
   parseChapterOutlinesResponse,
+  extractScaleRequirementHint,
+  hasWordCountScaleTag,
 } from '../services/outlineJsonParser';
+import {
+  buildApplySigningReviewCoreMessages,
+  parseApplySigningReviewCoreResponse,
+  buildApplySigningReviewL2L3Messages,
+  parseApplySigningReviewL2L3Response,
+  buildApplySigningReviewL4AndGraphMessages,
+  parseApplySigningReviewL4AndGraphResponse,
+  computeOutlineAndScaleSignature,
+  computeL1Signature,
+  computeL2Signature,
+  computeL3Signature,
+  computeGraphSignature,
+} from '../services/fourLayerOutlineEngine';
 import { StyleDistillationPanel } from './StyleDistillationPanel';
 import { SkillPackageInspectorModal } from './SkillPackageInspectorModal';
 import { NovelIdeaConsultant } from './NovelIdeaConsultant';
@@ -230,10 +246,13 @@ export const SetupView: React.FC<SetupViewProps> = ({
   const [commercialBlurb, setCommercialBlurb] = useState<string>('');
   const [alternateTitles, setAlternateTitles] = useState<string[]>([]);
   const [signingReviewReport, setSigningReviewReport] = useState<string>('');
+  const [cascadeSyncMeta, setCascadeSyncMeta] = useState<FourLayerCascadeSyncMeta>({});
 
   const [isGeneratingChapterOutlines, setIsGeneratingChapterOutlines] = useState<boolean>(false);
   const [isGeneratingPackaging, setIsGeneratingPackaging] = useState<boolean>(false);
   const [isRunningSigningReview, setIsRunningSigningReview] = useState<boolean>(false);
+  const [isExecutingSigningRevisions, setIsExecutingSigningRevisions] = useState<boolean>(false);
+  const [signingRevisionProgress, setSigningRevisionProgress] = useState<string>('');
 
   // Feedback & Audit Inspector
   const [statusMessage, setStatusMessage] = useState<{ type: 'info' | 'success' | 'error'; text: string } | null>(null);
@@ -329,6 +348,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
       setCommercialBlurb(s.commercialBlurb || '');
       setAlternateTitles(s.alternateTitles || []);
       setSigningReviewReport(s.signingReviewReport || '');
+      setCascadeSyncMeta(s.cascadeSyncMeta || {});
     } else {
       setTitle('');
       setGenre('');
@@ -364,6 +384,7 @@ export const SetupView: React.FC<SetupViewProps> = ({
       setCommercialBlurb('');
       setAlternateTitles([]);
       setSigningReviewReport('');
+      setCascadeSyncMeta({});
     }
   }, [currentBook?.id, globalSkills]);
 
@@ -775,13 +796,17 @@ export const SetupView: React.FC<SetupViewProps> = ({
       });
 
       const compactSchemaGuide = buildCompactSchemaGuideForAI();
+      const scaleHint = extractScaleRequirementHint(outline, systemSettings, chapterWords);
 
       const userPrompt = `请深度完善当前小说大纲（目标投稿平台：${targetPlatform || '主流商业网文平台'}），并同步完成以下商业签约级结构化设定：
-1. 扩充完整连载大纲（含核心卖点、前三章黄金开局、阶段冲突升级、核心关系拉扯与终局收束）；
+【★ 篇幅体量刚性要求（必须严格遵守，严禁随意拉长成百万字长篇！）】：
+${scaleHint.promptConstraint}
+
+1. 扩充完整连载大纲（含核心卖点、前三章黄金开局、阶段冲突升级、核心关系拉扯与终局收束，体量节奏必须契合上述篇幅规模）；
 2. 提炼【主要角色设定表】与【世界观与力量/社会规则】；
 3. 撰写 250~350 字高点击率【黄金商业简介 (commercialBlurb)】以及 4 个备选高吸量书名 (alternateTitles)；
-4. 规划 3~5 卷【分卷结构蓝图 (volumePlan)】与 3~5 条【长线伏笔台账 (foreshadowLedger)】；
-5. **重点联动**：对照下方【11大系统设定模块字典】，在 "systemSettings" 对象中为至少 35~65 个关键字段（尤其是基础设定、人物设定、世界观、情节、剧情、风格、推进、物品、感情线、商业与场景氛围中的核心项）自动勾选 1~3 个最契合本书大纲的预设值（也可补充精准自定义词）！
+4. 规划符合上述真实体量的【分卷结构蓝图 (volumePlan)】（建议 ${scaleHint.estimatedVolumeCount}，总跨度 ${scaleHint.estimatedChapterRange}）与 3~5 条【长线伏笔台账 (foreshadowLedger)】；
+5. **重点联动**：对照下方【11大系统设定模块字典】，在 "systemSettings" 对象中为至少 35~65 个关键字段（尤其是基础设定、人物设定、世界观、情节、剧情、风格、推进、物品、感情线、商业与场景氛围中的核心项）自动勾选 1~3 个最契合本书大纲的预设值（也可补充精准自定义词）！其中 foundation.scale_structure 必须真实对应本书实际篇幅（严禁默认填百万字长篇）！
 6. 提炼 3~5 条结构化【Lorebook 2.0 世界书档案】（${
         xpSystemEnabled
           ? '核心主角设为 constant；特定情境张力锚点可设为 xp_trope 或 scene_pack 并配 keyword 触发词'
@@ -803,15 +828,19 @@ JSON 内的所有字符串值严禁直接使用英文半角双引号，如需在
   "commercialBlurb": "极具读者点击欲的商业买量简介（250-350字）",
   "alternateTitles": ["备选书名1", "备选书名2", "备选书名3", "备选书名4"],
   "systemSettings": {
-    "foundation.genre_types": ["都市异能", "悬疑脑洞"],
-    "foundation.scale_structure": ["百万字长篇", "三幕剧结构"],
+    "foundation.genre_types": ["与大纲匹配的题材标签"],
+    "foundation.scale_structure": ${JSON.stringify(
+      scaleHint.lockedScaleTags.length > 0
+        ? scaleHint.lockedScaleTags
+        : ['请依大纲事件真实容量选择如:八万字盐选中篇/十五万字轻长篇/三十万字紧凑长篇等']
+    )},
     "foundation.narrative_pov": ["第三人称限知(主角视角)"]
   },
   "volumePlan": [
     {
       "volumeIndex": 1,
       "title": "第一卷卷名",
-      "chapterSpan": "第1章 - 第30章",
+      "chapterSpan": "按真实篇幅切分的起止章节区间",
       "coreConflict": "本卷核心外部阻力与内部矛盾",
       "climaxGoal": "本卷终局大高潮爽点兑现"
     }
@@ -820,7 +849,7 @@ JSON 内的所有字符串值严禁直接使用英文半角双引号，如需在
     {
       "name": "伏笔简述",
       "plantedChapter": 1,
-      "expectedResolveChapter": "第28章",
+      "expectedResolveChapter": "预计回收章号",
       "note": "回收方式与真相反转说明"
     }
   ],
@@ -865,15 +894,35 @@ JSON 内的所有字符串值严禁直接使用英文半角双引号，如需在
           setAlternateTitles(parsedData.alternateTitles.filter(Boolean));
         }
 
-        // Merge AI-selected 11-module system settings
-        let mergedSystemSettings: Record<string, string[]> = { ...systemSettings };
+        // Merge AI-selected 11-module system settings (protect user's explicit word-count scale selection!)
+        const mergedSystemSettings: Record<string, string[]> = { ...systemSettings };
         if (parsedData.systemSettings && typeof parsedData.systemSettings === 'object') {
           Object.entries(parsedData.systemSettings).forEach(([k, val]) => {
             if (Array.isArray(val)) {
-              const cleaned = val.map((x) => String(x || '').trim()).filter(Boolean);
+              const cleaned = val
+                .map((x) => String(x || '').trim())
+                .filter((x) => Boolean(x) && !x.includes('请依大纲事件'));
               if (cleaned.length > 0) {
                 const existing = mergedSystemSettings[k] || [];
-                mergedSystemSettings[k] = Array.from(new Set([...existing, ...cleaned]));
+                if (k === 'foundation.scale_structure') {
+                  if (hasWordCountScaleTag(existing)) {
+                    // Preserve user's chosen word-count scale tag; only merge non-word-count structure tags
+                    const aiStructOnly = cleaned.filter((x) => !/(?:万字|短篇|中篇|长篇|连载|盐选)/.test(x));
+                    mergedSystemSettings[k] = Array.from(new Set([...existing, ...aiStructOnly]));
+                  } else {
+                    const aiWordTags = cleaned.filter((x) => /(?:万字|短篇|中篇|长篇|连载|盐选)/.test(x));
+                    const aiStructOnly = cleaned.filter((x) => !/(?:万字|短篇|中篇|长篇|连载|盐选)/.test(x));
+                    mergedSystemSettings[k] = Array.from(
+                      new Set([
+                        ...existing,
+                        ...(aiWordTags.length > 0 ? [aiWordTags[0]] : []),
+                        ...aiStructOnly,
+                      ])
+                    );
+                  }
+                } else {
+                  mergedSystemSettings[k] = Array.from(new Set([...existing, ...cleaned]));
+                }
               }
             }
           });
@@ -1428,6 +1477,189 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
     }
   };
 
+  // One-Click Execution of Editorial Signing Review Recommendations (3-Stage Full Cascade Pipeline)
+  const handleExecuteSigningReviewRevisions = async (supplementNote?: string) => {
+    if (!signingReviewReport.trim()) {
+      notify('请先执行「签约过稿审读评估」后再一键按建议重构全案', 'error');
+      return;
+    }
+
+    setIsExecutingSigningRevisions(true);
+    setSigningRevisionProgress('正在备份当前版本并准备第 1/3 阶段：重构商业简介、大纲、人设、11大设定与 L1 总纲...');
+    if (outline.trim()) {
+      await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: outline.trim() });
+      await loadHistories();
+    }
+
+    try {
+      const activeCfg = configs.find((c) => c.id === uiSettings.writerApiCfgId) || configs[0];
+      const modelToUse = uiSettings.writerApiModel || 'gemini-3.6-flash';
+      const xpSummaryText = `${xpPreferences || ''}\n${bookXpNote || ''}`.trim();
+
+      // Stage 1: Core Outline, Blurb, Titles, Characters, World, 11-Module Patches, L1 Spec
+      const coreMsgs = buildApplySigningReviewCoreMessages({
+        bookTitle: title || '未命名企划',
+        targetPlatform: targetPlatform || '番茄小说',
+        signingReviewReport,
+        userSupplement: supplementNote,
+        outline,
+        characters,
+        world,
+        commercialBlurb,
+        systemSettings,
+        masterOutlineSpec,
+        chapterWords,
+        xpEnabled: xpSystemEnabled,
+        xpSummary: xpSummaryText,
+      });
+      const coreRes = await chatCompletion({
+        provider: activeCfg?.provider,
+        baseUrl: activeCfg?.baseUrl,
+        apiKey: activeCfg?.apiKey,
+        model: modelToUse,
+        messages: coreMsgs,
+        temperature: 0.55,
+      });
+      const coreParsed = parseApplySigningReviewCoreResponse(coreRes.content);
+
+      const nextTitle = coreParsed.suggestedTitle || title;
+      const nextOutline = coreParsed.improvedOutline || outline;
+      const nextCharacters = coreParsed.characters || characters;
+      const nextWorld = coreParsed.worldView || world;
+      const nextL1 = coreParsed.masterOutlineSpec || masterOutlineSpec;
+
+      if (coreParsed.suggestedTitle) setTitle(coreParsed.suggestedTitle);
+      if (coreParsed.alternateTitles.length > 0) setAlternateTitles(coreParsed.alternateTitles);
+      if (coreParsed.commercialBlurb) setCommercialBlurb(coreParsed.commercialBlurb);
+      if (coreParsed.improvedOutline) {
+        setOutline(coreParsed.improvedOutline);
+        await dbPut(STORE_NAMES.OUTLINE_HISTORY, { ts: Date.now(), text: coreParsed.improvedOutline });
+        await loadHistories();
+      }
+      if (coreParsed.characters) setCharacters(coreParsed.characters);
+      if (coreParsed.worldView) setWorld(coreParsed.worldView);
+      if (coreParsed.masterOutlineSpec) setMasterOutlineSpec(coreParsed.masterOutlineSpec);
+
+      // Safely merge systemSettingsPatches without breaking locked word-count scale
+      const nextSysSettings: Record<string, string[]> = { ...systemSettings };
+      Object.entries(coreParsed.systemSettingsPatches).forEach(([k, vals]) => {
+        if (k === 'foundation.scale_structure' && hasWordCountScaleTag(nextSysSettings[k])) {
+          const structOnly = vals.filter((x) => !/(?:万字|短篇|中篇|长篇|连载|盐选)/.test(x));
+          nextSysSettings[k] = Array.from(new Set([...(nextSysSettings[k] || []), ...structOnly]));
+        } else {
+          nextSysSettings[k] = Array.from(new Set([...(nextSysSettings[k] || []), ...vals]));
+        }
+      });
+      setSystemSettings(nextSysSettings);
+      const nextSettingsHash = computeCriticalSettingsSignature(nextSysSettings);
+      setLastSyncedSettingsHash(nextSettingsHash);
+      setSystemSettingsDirty(false);
+
+      // Stage 2: L2 Volumes & L3 Story Units
+      setSigningRevisionProgress('第 2/3 阶段：正在按新版大纲与 L1 总纲重建完整 L2 分卷纲与 L3 剧情单元...');
+      const l2l3Msgs = buildApplySigningReviewL2L3Messages({
+        bookTitle: nextTitle || '未命名企划',
+        targetPlatform: targetPlatform || '番茄小说',
+        signingReviewReport,
+        userSupplement: supplementNote,
+        improvedOutline: nextOutline,
+        masterOutlineSpec: nextL1,
+        systemSettings: nextSysSettings,
+        chapterWords,
+      });
+      const l2l3Res = await chatCompletion({
+        provider: activeCfg?.provider,
+        baseUrl: activeCfg?.baseUrl,
+        apiKey: activeCfg?.apiKey,
+        model: modelToUse,
+        messages: l2l3Msgs,
+        temperature: 0.6,
+      });
+      const { volumePlan: nextVols, storyUnits: nextUnits } = parseApplySigningReviewL2L3Response(l2l3Res.content);
+      setVolumePlan(nextVols);
+      setStoryUnits(nextUnits);
+
+      // Stage 3: Planned L4 Chapter Outlines + Entity Graph + Lorebook (Preserving drafted chapters)
+      const draftedCount = currentBook?.chapters.length || 0;
+      const draftedChapters = chapterOutlines.filter(
+        (c) => c.status === 'drafted' || c.chapterIndex <= draftedCount
+      );
+      const targetPlannedCount = Math.max(8, Math.min(16, chapterOutlines.length - draftedChapters.length || 10));
+
+      setSigningRevisionProgress('第 3/3 阶段：正在重构待写 L4 单章细纲，并联动更新角色/道具/伏笔关联图谱与世界书...');
+      const l4Msgs = buildApplySigningReviewL4AndGraphMessages({
+        bookTitle: nextTitle || '未命名企划',
+        targetPlatform: targetPlatform || '番茄小说',
+        signingReviewReport,
+        userSupplement: supplementNote,
+        improvedOutline: nextOutline,
+        improvedCharacters: nextCharacters,
+        volumePlan: nextVols,
+        storyUnits: nextUnits,
+        draftedChapters,
+        plannedChapterCountToGenerate: targetPlannedCount,
+      });
+      const l4Res = await chatCompletion({
+        provider: activeCfg?.provider,
+        baseUrl: activeCfg?.baseUrl,
+        apiKey: activeCfg?.apiKey,
+        model: modelToUse,
+        messages: l4Msgs,
+        temperature: 0.65,
+      });
+      const l4Parsed = parseApplySigningReviewL4AndGraphResponse({
+        raw: l4Res.content,
+        volumePlan: nextVols,
+        storyUnits: nextUnits,
+        draftedChapters,
+        existingLorebook: lorebook,
+      });
+
+      setChapterOutlines(l4Parsed.chapterOutlines);
+      setStoryUnits(l4Parsed.storyUnits);
+      setCharacterGraph(l4Parsed.characterGraph);
+      setKeyItemRegistry(l4Parsed.keyItemRegistry);
+      setForeshadowLedger(l4Parsed.foreshadowLedger);
+      setLorebook(l4Parsed.lorebook);
+
+      setCascadeSyncMeta({
+        l1Confirmed: true,
+        l2Confirmed: true,
+        l3Confirmed: true,
+        l4Confirmed: true,
+        graphSynced: true,
+        lastOutlineAndScaleSig: computeOutlineAndScaleSignature(
+          nextOutline,
+          nextCharacters,
+          nextWorld,
+          nextSysSettings
+        ),
+        lastL1Sig: computeL1Signature(nextL1),
+        lastL2Sig: computeL2Signature(nextVols),
+        lastL3Sig: computeL3Signature(l4Parsed.storyUnits),
+        lastGraphSig: computeGraphSignature(
+          l4Parsed.characterGraph,
+          l4Parsed.keyItemRegistry,
+          l4Parsed.foreshadowLedger
+        ),
+        staleVolumeIds: [],
+        staleUnitIds: [],
+        staleChapterIds: [],
+        lastChangeNote: '已按主编签约审稿意见完成全案三阶段重构',
+      });
+
+      notify(
+        `已按主编审稿意见完成全案重构：大纲/简介/L1总纲、${nextVols.length}卷、${l4Parsed.storyUnits.length}个单元、${l4Parsed.chapterOutlines.length}章细纲及 ${l4Parsed.characterGraph.length}名角色/${l4Parsed.keyItemRegistry.length}件道具/${l4Parsed.foreshadowLedger.length}条伏笔已全链路同步完毕（请记得点击保存作品设定）！`,
+        'success'
+      );
+    } catch (err: any) {
+      notify(`按审稿意见重构全案失败：${err.message || '请检查模型输出或网络'}`, 'error');
+    } finally {
+      setIsExecutingSigningRevisions(false);
+      setSigningRevisionProgress('');
+    }
+  };
+
   // Extract Lorebook 2.0 entries independently (strictly respects xpSystemEnabled)
   const handleExtractLorebookFromOutline = async () => {
     if (!outline.trim() && !characters.trim()) {
@@ -1607,6 +1839,7 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
       commercialBlurb: commercialBlurb.trim(),
       alternateTitles,
       signingReviewReport,
+      cascadeSyncMeta,
     };
   };
 
@@ -1739,6 +1972,7 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
       commercialBlurb,
       alternateTitles,
       signingReviewReport,
+      cascadeSyncMeta,
     ]
   );
 
@@ -2190,6 +2424,8 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
           outline={outline}
           characters={characters}
           world={world}
+          systemSettings={systemSettings}
+          chapterWords={chapterWords}
           xpEnabled={xpSystemEnabled}
           xpSummary={`${xpPreferences || ''}\n${bookXpNote || ''}`.trim()}
           draftedChapterCount={currentBook?.chapters.length || 0}
@@ -2209,6 +2445,8 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
           onChangeForeshadowLedger={setForeshadowLedger}
           lorebook={lorebook}
           onChangeLorebook={setLorebook}
+          cascadeSyncMeta={cascadeSyncMeta}
+          onChangeCascadeSyncMeta={setCascadeSyncMeta}
           configs={configs}
           uiSettings={uiSettings}
           onJumpToWriter={handleProceedFromOutlinesToWriter}
@@ -2233,8 +2471,11 @@ ${firstFiveOutlines || '（尚未生成分章细纲）'}${sampleChapExcerpt}
           signingReviewReport={signingReviewReport}
           isGeneratingPackaging={isGeneratingPackaging}
           isRunningSigningReview={isRunningSigningReview}
+          isExecutingSigningRevisions={isExecutingSigningRevisions}
+          signingRevisionProgress={signingRevisionProgress}
           onGenerateCommercialPackaging={handleGenerateCommercialPackaging}
           onRunEditorialSigningReview={handleRunEditorialSigningReview}
+          onExecuteSigningReviewRevisions={handleExecuteSigningReviewRevisions}
           onNotify={notify}
         />
       )}

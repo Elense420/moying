@@ -13,11 +13,34 @@ import {
 } from '../types';
 import { Message } from './apiClient';
 import { generateUUID } from '../utils/uuid';
+import { extractScaleRequirementHint, repairAndParseJson } from './outlineJsonParser';
+import {
+  buildCompactSchemaGuideForAI,
+  formatNovelSystemSettingsForPrompt,
+} from '../data/novelArchitectureSchema';
 
-function extractChapterNumbers(spanText: string | undefined): number[] {
+export function extractChapterNumbers(spanText: string | undefined): number[] {
   if (!spanText) return [];
   const nums = (spanText.match(/\d+/g) || []).map((n) => parseInt(n, 10)).filter((n) => !isNaN(n));
   return nums;
+}
+
+export function parseChapterSpanRange(
+  spanText: string | undefined,
+  fallbackStart: number = 1,
+  fallbackCount: number = 6
+): { start: number; end: number; count: number } {
+  const nums = extractChapterNumbers(spanText);
+  if (nums.length >= 2) {
+    const start = Math.max(1, nums[0]);
+    const end = Math.max(start, nums[1]);
+    return { start, end, count: Math.max(1, Math.min(20, end - start + 1)) };
+  }
+  if (nums.length === 1) {
+    const start = Math.max(1, nums[0]);
+    return { start, end: start + fallbackCount - 1, count: fallbackCount };
+  }
+  return { start: fallbackStart, end: fallbackStart + fallbackCount - 1, count: fallbackCount };
 }
 
 /**
@@ -1315,3 +1338,1544 @@ export function formatFourLayerAndEntityContextForPrompt(
 
   return block;
 }
+
+// ============================================================================
+// 四层拆纲 · 签名指纹、级联失效追踪与确定性双向拓扑关联引擎
+// ============================================================================
+
+function stableStringHash(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+export function computeOutlineAndScaleSignature(
+  outline: string,
+  characters: string,
+  world: string,
+  systemSettings?: Record<string, string[]>
+): string {
+  const scale = (systemSettings?.['foundation.scale_structure'] || []).join('|');
+  const genres = (systemSettings?.['foundation.genre_types'] || []).join('|');
+  return stableStringHash(`${outline.trim()}##${characters.trim()}##${world.trim()}##${scale}##${genres}`);
+}
+
+export function computeL1Signature(spec: MasterOutlineSpec): string {
+  return stableStringHash(
+    [
+      spec.corePromise,
+      spec.ultimateEnding,
+      spec.worldCeiling,
+      spec.mainPlotline,
+      spec.emotionalOrSubPlotline,
+      spec.darkPlotline,
+    ]
+      .map((s) => (s || '').trim())
+      .join('||')
+  );
+}
+
+export function computeL2Signature(volumes: NovelVolumePlanItem[]): string {
+  return stableStringHash(
+    volumes
+      .map((v) =>
+        [v.id, v.volumeIndex, v.title, v.chapterSpan, v.stageGoal, v.entryState, v.exitState, v.coreConflict, v.climaxGoal]
+          .map((s) => String(s || '').trim())
+          .join('|')
+      )
+      .join('##')
+  );
+}
+
+export function computeL3Signature(units: NovelStoryUnitItem[]): string {
+  return stableStringHash(
+    units
+      .map((u) =>
+        [u.id, u.volumeId, u.unitIndex, u.title, u.chapterSpan, u.volumeAlignment, u.coreConflict, u.payoffEvent, u.breakthroughMethod]
+          .map((s) => String(s || '').trim())
+          .join('|')
+      )
+      .join('##')
+  );
+}
+
+export function computeGraphSignature(
+  chars: NovelCharacterRelationNode[],
+  items: NovelKeyItem[],
+  foreshadows: NovelForeshadowItem[]
+): string {
+  const cStr = chars
+    .map((c) => `${c.id}:${c.name}:${c.roleType}:${c.epistemicBoundary}:${c.currentStatus}`)
+    .join('|');
+  const iStr = items
+    .map((it) => `${it.id}:${it.name}:${it.holderName}:${it.status}:${it.rulesAndCost}`)
+    .join('|');
+  const fStr = foreshadows
+    .map((f) => `${f.id}:${f.name}:${f.status}:${f.expectedResolveChapter || ''}:${f.note}`)
+    .join('|');
+  return stableStringHash(`${cStr}##${iStr}##${fStr}`);
+}
+
+/**
+ * Deterministic bidirectional topology & text auto-linker:
+ * 1. Prunes orphan character/item/foreshadow IDs from units/chapters/foreshadows/items.
+ * 2. Cascades volume title -> chapter `volumeTag`, and unit's `volumeId` -> child chapter `volumeId`.
+ * 3. Re-assigns unlinked chapters to matching L3 units / L2 volumes by chapter index & span.
+ * 4. Scans L3 unit & L4 chapter texts to auto-match and bind mentioned character/item/foreshadow IDs.
+ * 5. Keeps Lorebook character cards in sync with characterGraph.
+ */
+export function autoLinkEntitiesAndCascadeTopology(params: {
+  volumePlan: NovelVolumePlanItem[];
+  storyUnits: NovelStoryUnitItem[];
+  chapterOutlines: NovelChapterOutlineItem[];
+  characterGraph: NovelCharacterRelationNode[];
+  keyItemRegistry: NovelKeyItem[];
+  foreshadowLedger: NovelForeshadowItem[];
+  lorebook: LorebookEntry[];
+  renamedCharacter?: { oldName: string; newName: string; id: string };
+}): {
+  storyUnits: NovelStoryUnitItem[];
+  chapterOutlines: NovelChapterOutlineItem[];
+  characterGraph: NovelCharacterRelationNode[];
+  keyItemRegistry: NovelKeyItem[];
+  foreshadowLedger: NovelForeshadowItem[];
+  lorebook: LorebookEntry[];
+  stats: { autoBoundLinks: number; topologyFixes: number };
+} {
+  let autoBoundLinks = 0;
+  let topologyFixes = 0;
+
+  const { volumePlan, renamedCharacter } = params;
+  const volMap = new Map(volumePlan.map((v) => [v.id, v]));
+
+  // 1. Cascade character rename inside relations + items + lorebook
+  let nextChars = params.characterGraph.map((c) => ({
+    ...c,
+    relations: c.relations
+      ? c.relations.map((r) =>
+          renamedCharacter && r.targetName.trim() === renamedCharacter.oldName.trim()
+            ? { ...r, targetName: renamedCharacter.newName }
+            : r
+        )
+      : [],
+  }));
+  const validCharIds = new Set(nextChars.map((c) => c.id));
+  const charById = new Map(nextChars.map((c) => [c.id, c]));
+
+  let nextItems = params.keyItemRegistry.map((it) => {
+    let holderCharacterId = it.holderCharacterId;
+    let holderName = it.holderName;
+    if (holderCharacterId && !validCharIds.has(holderCharacterId)) {
+      holderCharacterId = undefined;
+      topologyFixes++;
+    }
+    if (renamedCharacter && holderCharacterId === renamedCharacter.id) {
+      holderName = renamedCharacter.newName;
+      topologyFixes++;
+    } else if (!holderCharacterId && holderName) {
+      const matched = nextChars.find((c) => c.name.trim() === holderName.trim());
+      if (matched) {
+        holderCharacterId = matched.id;
+        autoBoundLinks++;
+      }
+    } else if (holderCharacterId && charById.has(holderCharacterId)) {
+      const owner = charById.get(holderCharacterId)!;
+      if (owner.name.trim() && owner.name.trim() !== holderName.trim()) {
+        holderName = owner.name;
+        topologyFixes++;
+      }
+    }
+    return { ...it, holderCharacterId, holderName };
+  });
+  const validItemIds = new Set(nextItems.map((i) => i.id));
+
+  let nextForeshadows = params.foreshadowLedger.map((fs) => {
+    const linkedCharIds = (fs.linkedCharacterIds || []).filter((id) => validCharIds.has(id));
+    const linkedItemIds = (fs.linkedItemIds || []).filter((id) => validItemIds.has(id));
+    const fsText = `${fs.name} ${fs.note}`;
+    for (const c of nextChars) {
+      if (c.name.trim().length >= 2 && fsText.includes(c.name.trim()) && !linkedCharIds.includes(c.id)) {
+        linkedCharIds.push(c.id);
+        autoBoundLinks++;
+      }
+    }
+    for (const it of nextItems) {
+      if (it.name.trim().length >= 2 && fsText.includes(it.name.trim()) && !linkedItemIds.includes(it.id)) {
+        linkedItemIds.push(it.id);
+        autoBoundLinks++;
+      }
+    }
+    return { ...fs, linkedCharacterIds: linkedCharIds, linkedItemIds: linkedItemIds };
+  });
+  const validFsIds = new Set(nextForeshadows.map((f) => f.id));
+
+  // Build span ranges for volumes & units for automatic index matching
+  const volRanges = volumePlan.map((v) => ({
+    vol: v,
+    range: parseChapterSpanRange(v.chapterSpan, (v.volumeIndex - 1) * 20 + 1, 20),
+  }));
+
+  // 2. Clean & auto-link L3 Units
+  const nextUnits = params.storyUnits.map((u) => {
+    let volumeId = u.volumeId;
+    if (volumeId && !volMap.has(volumeId)) {
+      // Try matching by chapterSpan
+      const uRange = parseChapterSpanRange(u.chapterSpan, 1, 6);
+      const foundVol = volRanges.find((vr) => uRange.start >= vr.range.start && uRange.start <= vr.range.end);
+      volumeId = foundVol?.vol.id || volumePlan[0]?.id || '';
+      topologyFixes++;
+    } else if (!volumeId && volumePlan.length > 0) {
+      const uRange = parseChapterSpanRange(u.chapterSpan, 1, 6);
+      const foundVol = volRanges.find((vr) => uRange.start >= vr.range.start && uRange.start <= vr.range.end);
+      if (foundVol) {
+        volumeId = foundVol.vol.id;
+        topologyFixes++;
+      }
+    }
+
+    const uChars = (u.linkedCharacterIds || []).filter((id) => validCharIds.has(id));
+    const uItems = (u.linkedItemIds || []).filter((id) => validItemIds.has(id));
+    const uFs = (u.linkedForeshadowIds || []).filter((id) => validFsIds.has(id));
+    const unitText = `${u.title} ${u.volumeAlignment} ${u.coreConflict} ${u.payoffEvent} ${u.breakthroughMethod}`;
+
+    for (const c of nextChars) {
+      if (c.name.trim().length >= 2 && unitText.includes(c.name.trim()) && !uChars.includes(c.id)) {
+        uChars.push(c.id);
+        autoBoundLinks++;
+      }
+    }
+    for (const it of nextItems) {
+      if (it.name.trim().length >= 2 && unitText.includes(it.name.trim()) && !uItems.includes(it.id)) {
+        uItems.push(it.id);
+        autoBoundLinks++;
+      }
+    }
+    for (const fs of nextForeshadows) {
+      if (fs.name.trim().length >= 2 && unitText.includes(fs.name.trim()) && !uFs.includes(fs.id)) {
+        uFs.push(fs.id);
+        autoBoundLinks++;
+      }
+    }
+
+    return {
+      ...u,
+      volumeId,
+      linkedCharacterIds: uChars,
+      linkedItemIds: uItems,
+      linkedForeshadowIds: uFs,
+    };
+  });
+
+  const unitMap = new Map(nextUnits.map((u) => [u.id, u]));
+  const unitRanges = nextUnits.map((u) => ({
+    unit: u,
+    range: parseChapterSpanRange(u.chapterSpan, 1, 6),
+  }));
+
+  // 3. Clean & auto-link L4 Chapters + cascade volumeId / volumeTag
+  const nextChapters = params.chapterOutlines.map((ch) => {
+    let unitId = ch.unitId;
+    if (unitId && !unitMap.has(unitId)) {
+      unitId = undefined;
+      topologyFixes++;
+    }
+    if (!unitId && unitRanges.length > 0) {
+      const matchedUnit = unitRanges.find(
+        (ur) => ch.chapterIndex >= ur.range.start && ch.chapterIndex <= ur.range.end
+      );
+      if (matchedUnit) {
+        unitId = matchedUnit.unit.id;
+        autoBoundLinks++;
+      }
+    }
+
+    const parentUnit = unitId ? unitMap.get(unitId) : undefined;
+    let volumeId = parentUnit?.volumeId || ch.volumeId;
+    if (volumeId && !volMap.has(volumeId)) {
+      volumeId = undefined;
+      topologyFixes++;
+    }
+    if (!volumeId && volRanges.length > 0) {
+      const matchedVol = volRanges.find(
+        (vr) => ch.chapterIndex >= vr.range.start && ch.chapterIndex <= vr.range.end
+      );
+      if (matchedVol) {
+        volumeId = matchedVol.vol.id;
+        autoBoundLinks++;
+      }
+    }
+
+    const parentVol = volumeId ? volMap.get(volumeId) : undefined;
+    const expectedVolTag = parentVol ? `第${parentVol.volumeIndex}卷 · ${parentVol.title}` : ch.volumeTag;
+    if (parentVol && expectedVolTag !== ch.volumeTag) {
+      topologyFixes++;
+    }
+
+    const chChars = (ch.linkedCharacterIds || []).filter((id) => validCharIds.has(id));
+    const chItems = (ch.linkedItemIds || []).filter((id) => validItemIds.has(id));
+    const chFs = (ch.linkedForeshadowIds || []).filter((id) => validFsIds.has(id));
+    const chText = `${ch.title} ${ch.protagonistGoal || ''} ${ch.coreObstacle || ''} ${ch.stateDelta || ''} ${ch.summary} ${ch.hookNote || ''}`;
+
+    for (const c of nextChars) {
+      if (c.name.trim().length >= 2 && chText.includes(c.name.trim()) && !chChars.includes(c.id)) {
+        chChars.push(c.id);
+        autoBoundLinks++;
+      }
+    }
+    for (const it of nextItems) {
+      if (it.name.trim().length >= 2 && chText.includes(it.name.trim()) && !chItems.includes(it.id)) {
+        chItems.push(it.id);
+        autoBoundLinks++;
+      }
+    }
+    for (const fs of nextForeshadows) {
+      if (fs.name.trim().length >= 2 && chText.includes(fs.name.trim()) && !chFs.includes(fs.id)) {
+        chFs.push(fs.id);
+        autoBoundLinks++;
+      }
+    }
+
+    return {
+      ...ch,
+      unitId,
+      volumeId,
+      volumeTag: expectedVolTag,
+      linkedCharacterIds: chChars,
+      linkedItemIds: chItems,
+      linkedForeshadowIds: chFs,
+    };
+  });
+
+  // Also backfill unit links from its child chapters
+  const finalUnits = nextUnits.map((u) => {
+    const childChs = nextChapters.filter((c) => c.unitId === u.id);
+    if (childChs.length === 0) return u;
+    const charSet = new Set(u.linkedCharacterIds || []);
+    const itemSet = new Set(u.linkedItemIds || []);
+    const fsSet = new Set(u.linkedForeshadowIds || []);
+    for (const ch of childChs) {
+      (ch.linkedCharacterIds || []).forEach((id) => charSet.add(id));
+      (ch.linkedItemIds || []).forEach((id) => itemSet.add(id));
+      (ch.linkedForeshadowIds || []).forEach((id) => fsSet.add(id));
+    }
+    return {
+      ...u,
+      linkedCharacterIds: Array.from(charSet),
+      linkedItemIds: Array.from(itemSet),
+      linkedForeshadowIds: Array.from(fsSet),
+    };
+  });
+
+  // Ensure keyItems with holderCharacterId have clean lorebook sync
+  let nextLorebook = syncCharacterGraphToLorebook(nextChars, params.lorebook);
+  if (renamedCharacter) {
+    nextLorebook = nextLorebook.map((entry) =>
+      entry.entryType === 'character' && entry.name.trim() === renamedCharacter.oldName.trim()
+        ? {
+            ...entry,
+            name: renamedCharacter.newName,
+            keywords: Array.from(
+              new Set([...(entry.keywords || []).filter((k) => k !== renamedCharacter.oldName), renamedCharacter.newName])
+            ),
+          }
+        : entry
+    );
+  }
+
+  return {
+    storyUnits: finalUnits,
+    chapterOutlines: nextChapters,
+    characterGraph: nextChars,
+    keyItemRegistry: nextItems,
+    foreshadowLedger: nextForeshadows,
+    lorebook: nextLorebook,
+    stats: { autoBoundLinks, topologyFixes },
+  };
+}
+
+// ============================================================================
+// 严格分步推演引擎：L1 总纲 -> L2 全书分卷 -> L3 剧情单元(按卷) -> L4 单章细纲 -> 关联图谱
+// ============================================================================
+
+export function buildGenerateL1MasterMessages(params: {
+  bookTitle: string;
+  genre: string;
+  style: string;
+  outline: string;
+  characters: string;
+  world: string;
+  chapterWords?: number | string;
+  systemSettings?: Record<string, string[]>;
+  xpEnabled: boolean;
+  xpSummary?: string;
+}): Message[] {
+  const { bookTitle, genre, style, outline, characters, world, chapterWords, systemSettings, xpEnabled, xpSummary } = params;
+  const scaleHint = extractScaleRequirementHint(outline, systemSettings, chapterWords);
+
+  return [
+    {
+      role: 'system',
+      content: `你是精通【四层滚动拆纲法 · 第1步：L1 总纲定最终结局】的小说总架构师。
+你的唯一任务是凝练、锁死全书的【L1 总纲与最终结局锚点】，绝不要在这一步拆解分卷、单元或单章。
+
+【核心规则】
+1. 必须依据当前大纲与设定中的真实篇幅规模合理设计总纲格局：${scaleHint.promptConstraint}
+2. 明确锁死：核心读者契约 (corePromise)、最终结局锚点 (ultimateEnding)、顶层战力/社会秩序天花板 (worldCeiling)、主线脉络 (mainPlotline)、感情/副线脉络 (emotionalOrSubPlotline)、幕后暗线 (darkPlotline)。${
+        xpEnabled && xpSummary
+          ? `\n3. 本书已开启 XP 审美基底，人物与核心张力线须契合该偏好：${xpSummary.slice(0, 400)}`
+          : '\n3. 本书已关闭个人 XP 系统，请纯粹聚焦大众商业逻辑与高潮反转。'
+      }
+
+严格输出纯 JSON 对象：
+{
+  "corePromise": "核心读者契约与开局承诺",
+  "ultimateEnding": "全书最终结局锚点（必须写明终极闭环形态、关键人物结局与核心矛盾解决方式）",
+  "worldCeiling": "力量/权势/规则顶层天花板及硬代价约束（防止后期战力膨胀）",
+  "mainPlotline": "全书主线核心推进脉络（起→承→转→终局完整路径）",
+  "emotionalOrSubPlotline": "感情线或核心副线拉扯脉络",
+  "darkPlotline": "幕后暗线与认知颠覆悬念"
+}`,
+    },
+    {
+      role: 'user',
+      content: `书名：《${bookTitle || '未命名企划'}》 | 题材：${genre || '未定'} | 文风：${style || '沉浸强张力'}
+${scaleHint.promptConstraint}
+【故事大纲】：
+${outline || '请基于书名与题材构建完整总纲'}
+【核心人物】：
+${characters || '待补充'}
+【世界观规则】：
+${world || '待补充'}`,
+    },
+  ];
+}
+
+export function parseL1MasterResponse(raw: string): MasterOutlineSpec {
+  const parsed = repairAndParseJson<any>(raw);
+  const src = parsed?.masterOutlineSpec || parsed;
+  if (!src || typeof src !== 'object') {
+    throw new Error('L1 总纲生成未返回有效 JSON，请重试');
+  }
+  return {
+    corePromise: String(src.corePromise || '').trim(),
+    ultimateEnding: String(src.ultimateEnding || '').trim(),
+    worldCeiling: String(src.worldCeiling || '').trim(),
+    mainPlotline: String(src.mainPlotline || '').trim(),
+    emotionalOrSubPlotline: String(src.emotionalOrSubPlotline || '').trim(),
+    darkPlotline: String(src.darkPlotline || '').trim(),
+  };
+}
+
+/**
+ * Step 2: Generate COMPLETE L2 Volume Plan strictly anchored to L1 from Chapter 1 all the way to the Ultimate Ending!
+ * Supports 'full' rebuild or 'append_to_ending' to complete missing tail volumes without losing front volumes.
+ */
+export function buildGenerateL2VolumesMessages(params: {
+  bookTitle: string;
+  genre: string;
+  outline: string;
+  characters: string;
+  world: string;
+  chapterWords?: number | string;
+  systemSettings?: Record<string, string[]>;
+  masterOutlineSpec: MasterOutlineSpec;
+  existingVolumes?: NovelVolumePlanItem[];
+  mode?: 'full' | 'append_to_ending';
+  xpEnabled: boolean;
+  xpSummary?: string;
+}): Message[] {
+  const {
+    bookTitle,
+    genre,
+    outline,
+    characters,
+    world,
+    chapterWords,
+    systemSettings,
+    masterOutlineSpec,
+    existingVolumes = [],
+    mode = 'full',
+    xpEnabled,
+    xpSummary,
+  } = params;
+  const scaleHint = extractScaleRequirementHint(outline, systemSettings, chapterWords);
+
+  const isAppend = mode === 'append_to_ending' && existingVolumes.length > 0;
+  const existingVolSummary = existingVolumes
+    .map(
+      (v) =>
+        `第${v.volumeIndex}卷《${v.title}》（${v.chapterSpan}）：阶段目标「${v.stageGoal || v.coreConflict}」 | 出卷状态「${v.exitState || v.climaxGoal}」`
+    )
+    .join('\n');
+
+  return [
+    {
+      role: 'system',
+      content: `你是精通【四层滚动拆纲法 · 第2步：L2 全书分卷纲完整规划】的小说架构师。
+你的任务是**只聚焦 L2 分卷纲**，将【L1 总纲】从开篇第1章一路严谨拆解到【L1 最终结局锚点】，绝不允许出现“只拆了前面几卷、遗漏中后期乃至终局卷”的半截子烂尾规划！
+
+【核心刚性约束】
+1. **体量与卷数精准匹配**：${scaleHint.promptConstraint}
+   - 短篇（约3万字）：通常 1~2 卷收官；
+   - 盐选中篇（约8万字）：通常 2 卷（上/下卷）完结；
+   - 轻长篇（约15万字）：通常 3 卷完结；
+   - 30万~50万字长篇：通常 3~5 卷完结；
+   - 百万字以上超长篇：通常 5~8 卷贯穿至最终终局。
+2. **首尾闭环铁律**：${
+        isAppend
+          ? '请保留既有前序分卷不要重复输出，紧接最后一卷的出卷状态与章号，把中后期直至【L1最终结局锚点】的全部后续分卷完整补齐！最后一卷必须正式落地 L1 ultimateEnding！'
+          : '从第1章出发，各卷 chapterSpan 必须连续衔接、无断档重叠，且【最后一卷的 exitState 与 climaxGoal 必须严丝合缝兑现 L1 的 ultimateEnding（最终结局锚点）】！'
+      }
+3. 每卷必须包含明确且不空洞的：stageGoal（本卷阶段核心目标）、entryState（入卷起点状态）、exitState（出卷终点状态反差）、turningPoints（1/4入局 · 中点惊变 · 3/4反扑）、coreConflict（核心矛盾）、climaxGoal（卷末大高潮落点）。${
+        xpEnabled && xpSummary ? `\n4. 关系推进与阶段爽点可自然融合本书 XP 基调。` : ''
+      }
+
+直接输出纯 JSON 对象：
+{
+  "volumes": [
+    {
+      "volumeIndex": ${isAppend ? existingVolumes.length + 1 : 1},
+      "title": "卷名（勿带第X卷前缀）",
+      "chapterSpan": "第X章 - 第Y章",
+      "stageGoal": "本卷阶段核心目标",
+      "entryState": "主角及局势入卷起点状态",
+      "exitState": "本卷收官时的实质跃迁状态（最后一卷须明确写明达成L1最终结局）",
+      "turningPoints": "1/4入局 · 中点惊变 · 3/4绝境反扑",
+      "coreConflict": "本卷核心冲突矛盾",
+      "climaxGoal": "卷末大高潮与情绪引爆点"
+    }
+  ]
+}`,
+    },
+    {
+      role: 'user',
+      content: `书名：《${bookTitle}》 | 题材：${genre}
+【篇幅硬约束】：${scaleHint.promptConstraint}
+
+【已确认的 L1 总纲（最高上位基准）】：
+- 核心契约：${masterOutlineSpec.corePromise || '见大纲'}
+- ★ 最终结局锚点（最后一卷必须落地）：${masterOutlineSpec.ultimateEnding || '完整收束主线结局'}
+- 战力/规则天花板：${masterOutlineSpec.worldCeiling || '严格受控'}
+- 主线脉络：${masterOutlineSpec.mainPlotline || outline.slice(0, 800)}
+- 感情/副线脉络：${masterOutlineSpec.emotionalOrSubPlotline || '见大纲'}
+- 幕后暗线：${masterOutlineSpec.darkPlotline || '见大纲'}
+
+${isAppend ? `【已有前序分卷（请紧接最后一卷继续拆出直到结局的后续分卷）】：\n${existingVolSummary}\n` : ''}
+【故事大纲原文参考】：
+${outline.slice(0, 1800)}
+【主要角色与世界观】：
+${characters.slice(0, 700)}\n${world.slice(0, 500)}`,
+    },
+  ];
+}
+
+export function parseL2VolumesResponse(
+  raw: string,
+  existingVolumes: NovelVolumePlanItem[] = [],
+  mode: 'full' | 'append_to_ending' = 'full'
+): NovelVolumePlanItem[] {
+  const parsed = repairAndParseJson<any>(raw);
+  const rawList = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.volumes)
+    ? parsed.volumes
+    : Array.isArray(parsed?.volumePlan)
+    ? parsed.volumePlan
+    : [];
+  if (rawList.length === 0) {
+    throw new Error('L2 分卷纲未解析到有效的 volumes 数组，请重试');
+  }
+
+  const startOffset = mode === 'append_to_ending' ? existingVolumes.length : 0;
+  const parsedVols: NovelVolumePlanItem[] = rawList.map((v: any, idx: number) => {
+    const vIdx = startOffset > 0 ? startOffset + idx + 1 : Number(v.volumeIndex) || idx + 1;
+    return {
+      id: generateUUID(),
+      volumeIndex: vIdx,
+      title: String(v.title || `第${vIdx}卷`)
+        .replace(/^第[一二三四五六七八九十百\d]+卷[：:\s·]*/u, '')
+        .trim(),
+      chapterSpan: String(v.chapterSpan || `第${(vIdx - 1) * 20 + 1}章 - 第${vIdx * 20}章`).trim(),
+      stageGoal: String(v.stageGoal || '').trim(),
+      entryState: String(v.entryState || '').trim(),
+      exitState: String(v.exitState || '').trim(),
+      turningPoints: String(v.turningPoints || '').trim(),
+      coreConflict: String(v.coreConflict || '').trim(),
+      climaxGoal: String(v.climaxGoal || '').trim(),
+    };
+  });
+
+  if (mode === 'append_to_ending' && existingVolumes.length > 0) {
+    return [...existingVolumes, ...parsedVols];
+  }
+  return parsedVols;
+}
+
+/**
+ * Step 3: Generate L3 Story Units STRICTLY for ONE target L2 Volume grounded in L1 + L2!
+ * Focusing one volume per call prevents truncation/omission and guarantees full chapterSpan coverage.
+ */
+export function buildGenerateL3UnitsForVolumeMessages(params: {
+  bookTitle: string;
+  outline: string;
+  masterOutlineSpec: MasterOutlineSpec;
+  allVolumes: NovelVolumePlanItem[];
+  targetVolume: NovelVolumePlanItem;
+  existingUnitsInOtherVolumes?: NovelStoryUnitItem[];
+  startingUnitIndex?: number;
+  xpEnabled: boolean;
+}): Message[] {
+  const {
+    bookTitle,
+    outline,
+    masterOutlineSpec,
+    allVolumes,
+    targetVolume,
+    existingUnitsInOtherVolumes = [],
+    startingUnitIndex = 1,
+    xpEnabled,
+  } = params;
+
+  const span = parseChapterSpanRange(targetVolume.chapterSpan, 1, 25);
+  const totalVolChs = Math.max(4, span.end - span.start + 1);
+  const targetUnitCount = totalVolChs <= 10 ? 2 : totalVolChs <= 20 ? 3 : totalVolChs <= 35 ? 4 : 5;
+
+  const volOverview = allVolumes
+    .map(
+      (v) =>
+        `${v.id === targetVolume.id ? '★[当前拆解目标] ' : ''}第${v.volumeIndex}卷《${v.title}》（${v.chapterSpan}）：${v.stageGoal || v.coreConflict}`
+    )
+    .join('\n');
+
+  const usedMethods = Array.from(
+    new Set(existingUnitsInOtherVolumes.map((u) => u.breakthroughMethod).filter(Boolean))
+  ).slice(-8);
+
+  return [
+    {
+      role: 'system',
+      content: `你是精通【四层滚动拆纲法 · 第3步：L3 剧情单元纲精密拆解】的总策划师。
+你必须严格以【L1 总纲】与【L2 全书分卷蓝图】为上位依据，专门为 **第 ${targetVolume.volumeIndex} 卷《${targetVolume.title}》（${targetVolume.chapterSpan}）** 拆解出完整覆盖该卷起止章号（第${span.start}章 ~ 第${span.end}章）的 ${targetUnitCount} 个前后咬合的【L3 剧情单元】。
+
+【L3 防跑偏铁律】
+1. 所有单元的 chapterSpan 必须从 第${span.start}章 严丝合缝衔接到 第${span.end}章，完整覆盖本卷头尾，不得遗漏本卷后半段及卷末大高潮！
+2. 每个单元必须写明【围绕本卷目标不跑偏锚点 (volumeAlignment)】——清晰说明本单元结束后，如何把“入卷起点状态”推向“出卷终点状态”。
+3. **破局手段去同质化**：相邻单元的 breakthroughMethod 必须截然不同（如：情报换位设局 / 利用规则漏洞 / 关键底牌爆发 / 借敌制敌 / 关系破冰联手），避免套路重复。${
+        usedMethods.length > 0 ? `前序单元已用过：${usedMethods.join('、')}，请尽量换新破局法。` : ''
+      }
+4. 仅做 L3 单元拆解，不要擅自改写 L1 或其他分卷；单元内涉及的核心人物/道具名称自然标注即可。${
+        xpEnabled ? '\n5. 保持本书 XP 情感/张力推进基调。' : ''
+      }
+
+直接输出纯 JSON 对象：
+{
+  "units": [
+    {
+      "unitIndex": ${startingUnitIndex},
+      "title": "单元标题（不含第X单元前缀）",
+      "chapterSpan": "第${span.start}章 - 第...",
+      "volumeAlignment": "围绕第${targetVolume.volumeIndex}卷阶段目标不跑偏锚点",
+      "coreConflict": "单元核心危机与反派阻力",
+      "payoffEvent": "单元高潮事件与情绪/爽点兑现",
+      "breakthroughMethod": "独特的破局手段标签",
+      "involvedHints": ["核心涉及角色名或道具/伏笔提示词"]
+    }
+  ]
+}`,
+    },
+    {
+      role: 'user',
+      content: `书名：《${bookTitle}》
+【L1 总纲终局基准】：${masterOutlineSpec.ultimateEnding || '见大纲'} | 主线：${masterOutlineSpec.mainPlotline || outline.slice(0, 400)} | 暗线：${masterOutlineSpec.darkPlotline || ''}
+
+【L2 全书分卷全局位置】：
+${volOverview}
+
+【当前待拆解目标分卷详情 · 第 ${targetVolume.volumeIndex} 卷《${targetVolume.title}》】：
+- 章节跨度：${targetVolume.chapterSpan}（第${span.start}章 至 第${span.end}章）
+- 阶段核心目标：${targetVolume.stageGoal || targetVolume.coreConflict}
+- 入卷起点状态：${targetVolume.entryState || '见前卷收官'}
+- 出卷终点状态：${targetVolume.exitState || targetVolume.climaxGoal}
+- 核心矛盾：${targetVolume.coreConflict}
+- 卷末大高潮落点：${targetVolume.climaxGoal}
+- 节点转折：${targetVolume.turningPoints || '入局→中点惊变→卷末高潮'}`,
+    },
+  ];
+}
+
+export function parseL3UnitsForVolumeResponse(
+  raw: string,
+  targetVolume: NovelVolumePlanItem,
+  startingUnitIndex: number,
+  existingChars: NovelCharacterRelationNode[] = [],
+  existingItems: NovelKeyItem[] = [],
+  existingForeshadows: NovelForeshadowItem[] = []
+): NovelStoryUnitItem[] {
+  const parsed = repairAndParseJson<any>(raw);
+  const rawUnits = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.units)
+    ? parsed.units
+    : Array.isArray(parsed?.storyUnits)
+    ? parsed.storyUnits
+    : [];
+  if (rawUnits.length === 0) {
+    throw new Error(`第${targetVolume.volumeIndex}卷 L3 单元生成未返回有效 JSON 数组，请重试`);
+  }
+
+  return rawUnits.map((u: any, idx: number) => {
+    const title = String(u.title || `第${startingUnitIndex + idx}单元`)
+      .replace(/^第[一二三四五六七八九十百\d]+(?:剧情)?单元[：:\s·]*/u, '')
+      .trim();
+    const bodyText = `${title} ${u.volumeAlignment || ''} ${u.coreConflict || ''} ${u.payoffEvent || ''} ${(u.involvedHints || []).join(' ')}`;
+
+    return {
+      id: generateUUID(),
+      volumeId: targetVolume.id,
+      unitIndex: startingUnitIndex + idx,
+      title,
+      chapterSpan: String(u.chapterSpan || targetVolume.chapterSpan).trim(),
+      volumeAlignment: String(u.volumeAlignment || '').trim(),
+      coreConflict: String(u.coreConflict || '').trim(),
+      payoffEvent: String(u.payoffEvent || '').trim(),
+      breakthroughMethod: String(u.breakthroughMethod || '').trim(),
+      linkedCharacterIds: existingChars
+        .filter((c) => c.name.trim().length >= 2 && bodyText.includes(c.name.trim()))
+        .map((c) => c.id),
+      linkedItemIds: existingItems
+        .filter((it) => it.name.trim().length >= 2 && bodyText.includes(it.name.trim()))
+        .map((it) => it.id),
+      linkedForeshadowIds: existingForeshadows
+        .filter((f) => f.name.trim().length >= 2 && bodyText.includes(f.name.trim()))
+        .map((f) => f.id),
+    };
+  });
+}
+
+/**
+ * Step 5 (Runs automatically AFTER L4 chapters are generated, or manually from Entity Graph tab):
+ * Extracts/updates Characters, Key Items, Foreshadows from L1~L4, binds them directly into L3 Units & L4 Chapters,
+ * and syncs Character Cards to Lorebook 2.0!
+ */
+export function buildSyncEntitiesFromFourLayersMessages(params: {
+  bookTitle: string;
+  charactersText: string;
+  worldText: string;
+  masterOutlineSpec: MasterOutlineSpec;
+  volumePlan: NovelVolumePlanItem[];
+  storyUnits: NovelStoryUnitItem[];
+  chapterOutlines: NovelChapterOutlineItem[];
+  existingCharacters: NovelCharacterRelationNode[];
+  existingItems: NovelKeyItem[];
+  existingForeshadows: NovelForeshadowItem[];
+  xpEnabled: boolean;
+}): Message[] {
+  const {
+    bookTitle,
+    charactersText,
+    worldText,
+    masterOutlineSpec,
+    volumePlan,
+    storyUnits,
+    chapterOutlines,
+    existingCharacters,
+    existingItems,
+    existingForeshadows,
+    xpEnabled,
+  } = params;
+
+  const chSummaries = [...chapterOutlines]
+    .sort((a, b) => a.chapterIndex - b.chapterIndex)
+    .slice(0, 40)
+    .map(
+      (c) =>
+        `第${c.chapterIndex}章《${c.title}》：目标[${c.protagonistGoal || '-'}] 阻力[${c.coreObstacle || '-'}] 梗概[${c.summary}] 钩子[${c.hookNote || '-'}]`
+    )
+    .join('\n');
+
+  const unitSummaries = storyUnits
+    .map((u) => `单元${u.unitIndex}《${u.title}》(${u.chapterSpan})：冲突[${u.coreConflict}] 兑现[${u.payoffEvent}]`)
+    .join('\n');
+
+  return [
+    {
+      role: 'system',
+      content: `你是精通【角色/道具/伏笔全链路关联架构】的小说设定总监。
+现在 L1 总纲、L2 分卷、L3 单元及 L4 单章细纲均已就绪，请你通读上述四层结构与人设档案，自动梳理并输出完整、互斥无重名的【角色知情权图谱】【关键道具流转库】【长线伏笔账本】，并**精确标出每条设定分别关联到哪些 L3 单元编号和 L4 单章章号**！
+
+【梳理要求】
+1. 已有角色/道具/伏笔务必保留核心设定并补全缺失字段（特别是角色知情权隔离边界 epistemicBoundary、声纹口癖 speechStyle、道具规则代价 rulesAndCost），新增在本批 L4 细纲中新登场的关键配角、关键道具与草蛇灰线伏笔。
+2. 严禁虚构不存在的章节号，linkedChapterIndices 必须是实际出现或埋设/回收该要素的真实章号数组。${
+        xpEnabled ? '\n3. 保留角色关系张力与情感纠葛深度。' : ''
+      }
+
+直接输出纯 JSON 对象：
+{
+  "characters": [
+    {
+      "name": "角色名",
+      "roleType": "主角 | 核心主配/CP | 重要配角 | 阶段反派 | 幕后反派",
+      "coreDesire": "核心欲望与行动动机",
+      "speechStyle": "说话口癖、句长节奏与潜台词习惯",
+      "epistemicBoundary": "当前知情权边界（明确知道什么、绝对不知晓什么幕后信息）",
+      "currentStatus": "当前位置/伤势/立场状态",
+      "debutChapter": 1,
+      "relations": [{ "targetName": "另一角色名", "relation": "动态关系描述" }],
+      "linkedChapterIndices": [1, 2, 3],
+      "linkedUnitIndices": [1]
+    }
+  ],
+  "keyItems": [
+    {
+      "name": "关键道具/信物/契约名称",
+      "category": "核心信物 | 杀器 | 功法秘籍 | 关键线索",
+      "holderName": "当前持有者姓名或存放点",
+      "originChapter": 1,
+      "rulesAndCost": "功能机制与硬性使用代价限制",
+      "status": "未现世 | 主角持有 | 他人持有 | 争夺遗失 | 已消耗损毁",
+      "linkedChapterIndices": [1, 4],
+      "linkedUnitIndices": [1]
+    }
+  ],
+  "foreshadows": [
+    {
+      "name": "伏笔名称",
+      "plantedChapter": 1,
+      "expectedResolveChapter": "第18章",
+      "status": "planted | fermenting | resolved",
+      "note": "埋设线索细节与后续反转揭晓设计",
+      "linkedCharacterNames": ["角色名"],
+      "linkedItemNames": ["道具名"],
+      "linkedChapterIndices": [1, 5],
+      "linkedUnitIndices": [1]
+    }
+  ]
+}`,
+    },
+    {
+      role: 'user',
+      content: `书名：《${bookTitle}》
+【L1 终局与暗线】：终局=${masterOutlineSpec.ultimateEnding || '待定'} | 暗线=${masterOutlineSpec.darkPlotline || '见细纲'}
+【L2 分卷】：${volumePlan.map((v) => `第${v.volumeIndex}卷《${v.title}》(${v.chapterSpan})`).join('；')}
+【L3 单元纲】：
+${unitSummaries || '暂无'}
+【L4 单章细纲】：
+${chSummaries || '暂无'}
+【人物与世界观参考】：
+${charactersText.slice(0, 1000)}
+${worldText.slice(0, 600)}
+【已有关联库节点（请继承并补全）】：
+已有角色：${existingCharacters.map((c) => c.name).join('、') || '无'}
+已有道具：${existingItems.map((i) => i.name).join('、') || '无'}
+已有伏笔：${existingForeshadows.map((f) => f.name).join('、') || '无'}`,
+    },
+  ];
+}
+
+export function applySyncedEntitiesToSettings(params: {
+  rawJson: string;
+  volumePlan: NovelVolumePlanItem[];
+  storyUnits: NovelStoryUnitItem[];
+  chapterOutlines: NovelChapterOutlineItem[];
+  existingCharacters: NovelCharacterRelationNode[];
+  existingItems: NovelKeyItem[];
+  existingForeshadows: NovelForeshadowItem[];
+  existingLorebook: LorebookEntry[];
+}): {
+  characterGraph: NovelCharacterRelationNode[];
+  keyItemRegistry: NovelKeyItem[];
+  foreshadowLedger: NovelForeshadowItem[];
+  storyUnits: NovelStoryUnitItem[];
+  chapterOutlines: NovelChapterOutlineItem[];
+  lorebook: LorebookEntry[];
+  summaryText: string;
+} {
+  const parsed = repairAndParseJson<any>(params.rawJson);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('关联图谱提取未返回有效 JSON');
+  }
+
+  // Merge Characters non-destructively (keep existing IDs by name)
+  const charByName = new Map(params.existingCharacters.map((c) => [c.name.trim(), { ...c }]));
+  const charChapterBindings = new Map<string, Set<number>>();
+  const charUnitBindings = new Map<string, Set<number>>();
+
+  if (Array.isArray(parsed.characters)) {
+    for (const rc of parsed.characters) {
+      const name = String(rc?.name || '').trim();
+      if (!name) continue;
+      const prev = charByName.get(name);
+      const id = prev?.id || generateUUID();
+      const validRole = ['主角', '核心主配/CP', '重要配角', '阶段反派', '幕后反派'].includes(rc.roleType)
+        ? rc.roleType
+        : prev?.roleType || '重要配角';
+      charByName.set(name, {
+        id,
+        name,
+        roleType: validRole as NovelCharacterRelationNode['roleType'],
+        coreDesire: String(rc.coreDesire || prev?.coreDesire || '').trim(),
+        speechStyle: String(rc.speechStyle || prev?.speechStyle || '').trim(),
+        epistemicBoundary: String(rc.epistemicBoundary || prev?.epistemicBoundary || '').trim(),
+        currentStatus: String(rc.currentStatus || prev?.currentStatus || '正常').trim(),
+        debutChapter: Number(rc.debutChapter) || prev?.debutChapter || 1,
+        relations: Array.isArray(rc.relations) && rc.relations.length > 0
+          ? rc.relations.map((r: any) => ({
+              targetName: String(r.targetName || ''),
+              relation: String(r.relation || ''),
+            }))
+          : prev?.relations || [],
+        lorebookId: prev?.lorebookId,
+      });
+
+      if (Array.isArray(rc.linkedChapterIndices)) {
+        charChapterBindings.set(id, new Set(rc.linkedChapterIndices.map((n: any) => Number(n)).filter(Boolean)));
+      }
+      if (Array.isArray(rc.linkedUnitIndices)) {
+        charUnitBindings.set(id, new Set(rc.linkedUnitIndices.map((n: any) => Number(n)).filter(Boolean)));
+      }
+    }
+  }
+  const mergedChars = Array.from(charByName.values());
+  const charNameToId = new Map(mergedChars.map((c) => [c.name.trim(), c.id]));
+
+  // Merge Key Items
+  const itemByName = new Map(params.existingItems.map((i) => [i.name.trim(), { ...i }]));
+  const itemChapterBindings = new Map<string, Set<number>>();
+  const itemUnitBindings = new Map<string, Set<number>>();
+
+  if (Array.isArray(parsed.keyItems)) {
+    for (const ri of parsed.keyItems) {
+      const name = String(ri?.name || '').trim();
+      if (!name) continue;
+      const prev = itemByName.get(name);
+      const id = prev?.id || generateUUID();
+      const holderName = String(ri.holderName || prev?.holderName || '未知').trim();
+      itemByName.set(name, {
+        id,
+        name,
+        category: String(ri.category || prev?.category || '关键道具').trim(),
+        holderName,
+        holderCharacterId: charNameToId.get(holderName) || prev?.holderCharacterId,
+        originChapter: Number(ri.originChapter) || prev?.originChapter || 1,
+        rulesAndCost: String(ri.rulesAndCost || prev?.rulesAndCost || '').trim(),
+        status: (['未现世', '主角持有', '他人持有', '争夺遗失', '已消耗损毁'].includes(ri.status)
+          ? ri.status
+          : prev?.status || '主角持有') as NovelKeyItem['status'],
+        milestoneNote: prev?.milestoneNote,
+        linkedForeshadowIds: prev?.linkedForeshadowIds,
+      });
+
+      if (Array.isArray(ri.linkedChapterIndices)) {
+        itemChapterBindings.set(id, new Set(ri.linkedChapterIndices.map((n: any) => Number(n)).filter(Boolean)));
+      }
+      if (Array.isArray(ri.linkedUnitIndices)) {
+        itemUnitBindings.set(id, new Set(ri.linkedUnitIndices.map((n: any) => Number(n)).filter(Boolean)));
+      }
+    }
+  }
+  const mergedItems = Array.from(itemByName.values());
+  const itemNameToId = new Map(mergedItems.map((i) => [i.name.trim(), i.id]));
+
+  // Merge Foreshadows
+  const fsByName = new Map(params.existingForeshadows.map((f) => [f.name.trim(), { ...f }]));
+  const fsChapterBindings = new Map<string, Set<number>>();
+  const fsUnitBindings = new Map<string, Set<number>>();
+
+  if (Array.isArray(parsed.foreshadows)) {
+    for (const rf of parsed.foreshadows) {
+      const name = String(rf?.name || '').trim();
+      if (!name) continue;
+      const prev = fsByName.get(name);
+      const id = prev?.id || generateUUID();
+      const cIds = Array.isArray(rf.linkedCharacterNames)
+        ? (rf.linkedCharacterNames.map((n: string) => charNameToId.get(String(n).trim())).filter(Boolean) as string[])
+        : prev?.linkedCharacterIds || [];
+      const iIds = Array.isArray(rf.linkedItemNames)
+        ? (rf.linkedItemNames.map((n: string) => itemNameToId.get(String(n).trim())).filter(Boolean) as string[])
+        : prev?.linkedItemIds || [];
+
+      fsByName.set(name, {
+        id,
+        name,
+        plantedChapter: Number(rf.plantedChapter) || prev?.plantedChapter || 1,
+        expectedResolveChapter: String(rf.expectedResolveChapter || prev?.expectedResolveChapter || '').trim() || undefined,
+        status: rf.status === 'fermenting' || rf.status === 'resolved' ? rf.status : prev?.status || 'planted',
+        note: String(rf.note || prev?.note || '').trim(),
+        linkedCharacterIds: Array.from(new Set([...(prev?.linkedCharacterIds || []), ...cIds])),
+        linkedItemIds: Array.from(new Set([...(prev?.linkedItemIds || []), ...iIds])),
+      });
+
+      if (Array.isArray(rf.linkedChapterIndices)) {
+        fsChapterBindings.set(id, new Set(rf.linkedChapterIndices.map((n: any) => Number(n)).filter(Boolean)));
+      }
+      if (Array.isArray(rf.linkedUnitIndices)) {
+        fsUnitBindings.set(id, new Set(rf.linkedUnitIndices.map((n: any) => Number(n)).filter(Boolean)));
+      }
+    }
+  }
+  const mergedFs = Array.from(fsByName.values());
+
+  // Apply explicit index bindings onto Units and Chapters before running full deterministic text cascade
+  const preBoundUnits = params.storyUnits.map((u) => {
+    const cSet = new Set(u.linkedCharacterIds || []);
+    const iSet = new Set(u.linkedItemIds || []);
+    const fSet = new Set(u.linkedForeshadowIds || []);
+    charUnitBindings.forEach((set, id) => {
+      if (set.has(u.unitIndex)) cSet.add(id);
+    });
+    itemUnitBindings.forEach((set, id) => {
+      if (set.has(u.unitIndex)) iSet.add(id);
+    });
+    fsUnitBindings.forEach((set, id) => {
+      if (set.has(u.unitIndex)) fSet.add(id);
+    });
+    return {
+      ...u,
+      linkedCharacterIds: Array.from(cSet),
+      linkedItemIds: Array.from(iSet),
+      linkedForeshadowIds: Array.from(fSet),
+    };
+  });
+
+  const preBoundChapters = params.chapterOutlines.map((ch) => {
+    const cSet = new Set(ch.linkedCharacterIds || []);
+    const iSet = new Set(ch.linkedItemIds || []);
+    const fSet = new Set(ch.linkedForeshadowIds || []);
+    charChapterBindings.forEach((set, id) => {
+      if (set.has(ch.chapterIndex)) cSet.add(id);
+    });
+    itemChapterBindings.forEach((set, id) => {
+      if (set.has(ch.chapterIndex)) iSet.add(id);
+    });
+    fsChapterBindings.forEach((set, id) => {
+      if (set.has(ch.chapterIndex)) fSet.add(id);
+    });
+    return {
+      ...ch,
+      linkedCharacterIds: Array.from(cSet),
+      linkedItemIds: Array.from(iSet),
+      linkedForeshadowIds: Array.from(fSet),
+    };
+  });
+
+  const cascaded = autoLinkEntitiesAndCascadeTopology({
+    volumePlan: params.volumePlan,
+    storyUnits: preBoundUnits,
+    chapterOutlines: preBoundChapters,
+    characterGraph: mergedChars,
+    keyItemRegistry: mergedItems,
+    foreshadowLedger: mergedFs,
+    lorebook: params.existingLorebook,
+  });
+
+  return {
+    characterGraph: cascaded.characterGraph,
+    keyItemRegistry: cascaded.keyItemRegistry,
+    foreshadowLedger: cascaded.foreshadowLedger,
+    storyUnits: cascaded.storyUnits,
+    chapterOutlines: cascaded.chapterOutlines,
+    lorebook: cascaded.lorebook,
+    summaryText: `关联库已自动同步并挂载：角色 ${cascaded.characterGraph.length} 名、关键道具 ${cascaded.keyItemRegistry.length} 件、伏笔 ${cascaded.foreshadowLedger.length} 条，世界书与单章/单元锚点全部贯通！`,
+  };
+}
+
+/**
+ * Targeted Cascade AI Sync when user edits upstream (e.g. L1 changed -> sync L2; L2/Entity changed -> sync affected L3/L4).
+ */
+export function buildCascadeSyncTargetChaptersMessages(params: {
+  bookTitle: string;
+  masterOutlineSpec: MasterOutlineSpec;
+  volumePlan: NovelVolumePlanItem[];
+  storyUnits: NovelStoryUnitItem[];
+  targetChapters: NovelChapterOutlineItem[];
+  characterGraph: NovelCharacterRelationNode[];
+  keyItemRegistry: NovelKeyItem[];
+  foreshadowLedger: NovelForeshadowItem[];
+  changeReason: string;
+}): Message[] {
+  const unitMap = new Map(params.storyUnits.map((u) => [u.id, u]));
+  const volMap = new Map(params.volumePlan.map((v) => [v.id, v]));
+
+  const chList = params.targetChapters
+    .slice(0, 16)
+    .map((c) => {
+      const u = c.unitId ? unitMap.get(c.unitId) : undefined;
+      const v = c.volumeId ? volMap.get(c.volumeId) : undefined;
+      return `[id=${c.id}] 第${c.chapterIndex}章《${c.title}》(卷:${v?.title || '-'} / 单元:${u?.title || '-'})
+  当前梗概:${c.summary} | 目标:${c.protagonistGoal || '-'} | 阻力:${c.coreObstacle || '-'} | 钩子:${c.hookNote || '-'}`;
+    })
+    .join('\n');
+
+  return [
+    {
+      role: 'system',
+      content: `你是执行【四层拆纲变更联动校准】的总架构师。
+上游设定发生了变更，请在不推翻核心主线与已写章的前提下，对受影响的未写单章细纲进行针对性协同微调，使【L1终局 ↔ L2分卷 ↔ L3单元 ↔ L4单章 ↔ 角色知情权/道具状态/伏笔】恢复 100% 一致！
+
+严格输出纯 JSON 对象：
+{
+  "syncNote": "1~2句话说明联动修改点",
+  "patchedChapters": [
+    {
+      "id": "原章节id",
+      "title": "校准后章节标题（不带第X章前缀）",
+      "protagonistGoal": "校准后的主角目标",
+      "coreObstacle": "校准后的核心阻力",
+      "stateDelta": "校准后的单章推进增量",
+      "summary": "校准后的2~3句梗概",
+      "hookNote": "校准后的章末钩子"
+    }
+  ]
+}`,
+    },
+    {
+      role: 'user',
+      content: `书名：《${params.bookTitle}》
+【本次上游变更原因】：${params.changeReason}
+【L1 总纲】：终局=${params.masterOutlineSpec.ultimateEnding} | 主线=${params.masterOutlineSpec.mainPlotline}
+【关联角色边界】：${params.characterGraph.map((c) => `${c.name}(状态:${c.currentStatus}|知情:${c.epistemicBoundary})`).join('；')}
+【关联道具状态】：${params.keyItemRegistry.map((i) => `${i.name}(${i.status}|持有:${i.holderName})`).join('；')}
+【待校准受影响 L4 单章】：
+${chList}`,
+    },
+  ];
+}
+
+// ============================================================================
+// 一键执行【AI 平台总编签约过稿诊断审阅】全链路修订流水线（3 阶段稳定不截断）
+// ============================================================================
+
+export function buildApplySigningReviewCoreMessages(params: {
+  bookTitle: string;
+  targetPlatform: string;
+  signingReviewReport: string;
+  userSupplement?: string;
+  outline: string;
+  characters: string;
+  world: string;
+  commercialBlurb: string;
+  systemSettings: Record<string, string[]>;
+  masterOutlineSpec: MasterOutlineSpec;
+  chapterWords?: number | string;
+  xpEnabled: boolean;
+  xpSummary?: string;
+}): Message[] {
+  const scaleHint = extractScaleRequirementHint(params.outline, params.systemSettings, params.chapterWords);
+  const compactSchema = buildCompactSchemaGuideForAI();
+  const formattedMatrix = formatNovelSystemSettingsForPrompt(params.systemSettings);
+
+  return [
+    {
+      role: 'system',
+      content: `你是【${params.targetPlatform}】资深签约主编兼首席网文重修架构师。
+刚刚已对作品出具了【签约过稿诊断审稿意见】，现在作者点击了「一键按主编审稿意见全面重构完善」！
+你的任务是**直接落地执行审稿意见中的每一条核心修改建议**，全面升级第 1 阶段资产：
+1. 书名/备选高点击书名 (alternateTitles) 与 黄金 300 字商业简介 (commercialBlurb)；
+2. 主线故事大纲 (improvedOutline)、主要角色人设 (characters)、世界观规则 (worldView)；
+3. 11 大系统架构设定微调 (systemSettingsPatches，仅输出需要调整或补充的字段)；
+4. 四层拆纲 · L1 总纲与最终结局锚点 (masterOutlineSpec)。
+
+【硬性纪律】
+- ${scaleHint.promptConstraint}
+- 所有字符串内引语务必使用中文引号“……”或单引号，禁止英文半角双引号破坏 JSON。${
+        params.xpEnabled && params.xpSummary
+          ? `\n- 本书已开启 XP 审美基底，保留该张力内核：${params.xpSummary.slice(0, 300)}`
+          : '\n- 本书已关闭个人 XP，严格按纯大众商业过稿标准优化。'
+      }
+
+直接输出纯 JSON 对象：
+{
+  "suggestedTitle": "若原书名吸量度不足可优化建议主书名，否则保留原书名",
+  "alternateTitles": ["高点击备选书名1", "备选书名2", "备选书名3", "备选书名4"],
+  "commercialBlurb": "按审稿意见重构后的黄金商业简介（250-350字）",
+  "improvedOutline": "按审稿意见彻底修复毒点、强化黄金三章与冲突钩子后的完整主线大纲",
+  "characters": "重构强化辨识度与反差动机后的主要角色档案",
+  "worldView": "补全自洽漏洞与代价约束后的世界观法则",
+  "systemSettingsPatches": {
+    "foundation.opening_hook_style": ["..."]
+  },
+  "masterOutlineSpec": {
+    "corePromise": "核心读者契约",
+    "ultimateEnding": "最终结局锚点",
+    "worldCeiling": "战力/规则天花板",
+    "mainPlotline": "主线脉络",
+    "emotionalOrSubPlotline": "感情/副线脉络",
+    "darkPlotline": "幕后暗线"
+  }
+}`,
+    },
+    {
+      role: 'user',
+      content: `原书名：《${params.bookTitle}》 | 目标平台：${params.targetPlatform}
+【★ 主编签约过稿诊断审阅意见（必须逐条落实解决）】：
+${params.signingReviewReport}
+${params.userSupplement?.trim() ? `\n【作者补充修改指令】：\n${params.userSupplement.trim()}\n` : ''}
+【当前商业简介】：${params.commercialBlurb || '无'}
+【当前故事大纲】：
+${params.outline}
+【当前角色设定】：
+${params.characters}
+【当前世界观】：
+${params.world}
+【当前 L1 总纲】：
+终局：${params.masterOutlineSpec.ultimateEnding || '待补充'} | 主线：${params.masterOutlineSpec.mainPlotline || '待补充'}
+【当前已选11大模块核心摘要】：
+${formattedMatrix || '尚无'}
+【11大模块字段参考】：
+${compactSchema}`,
+    },
+  ];
+}
+
+export function buildApplySigningReviewL2L3Messages(params: {
+  bookTitle: string;
+  targetPlatform: string;
+  signingReviewReport: string;
+  userSupplement?: string;
+  improvedOutline: string;
+  masterOutlineSpec: MasterOutlineSpec;
+  systemSettings: Record<string, string[]>;
+  chapterWords?: number | string;
+}): Message[] {
+  const scaleHint = extractScaleRequirementHint(params.improvedOutline, params.systemSettings, params.chapterWords);
+
+  return [
+    {
+      role: 'system',
+      content: `你是签约全案重修架构师（第 2 阶段：重构完整 L2 分卷纲 + L3 剧情单元纲）。
+请根据已经按审稿意见升级的【新版大纲】与【新版 L1 总纲】，重新梳理并输出完整闭环的 L2 全书分卷与配套 L3 防跑偏剧情单元！
+【铁律】：
+1. ${scaleHint.promptConstraint}
+2. L2 分卷必须从第1章完整规划至最后一卷落地 L1 ultimateEnding，严禁半截漏掉后半部。
+3. L3 单元必须通过 volumeIndex 挂载到对应分卷，覆盖前核心开局卷及各卷核心段落，且相邻单元破局手段绝不重复。
+
+输出纯 JSON 对象：
+{
+  "volumes": [
+    {
+      "volumeIndex": 1,
+      "title": "卷名",
+      "chapterSpan": "第1章 - 第25章",
+      "stageGoal": "本卷阶段核心目标",
+      "entryState": "入卷起点状态",
+      "exitState": "出卷终点跃迁状态",
+      "turningPoints": "1/4入局 · 中点惊变 · 3/4反扑",
+      "coreConflict": "核心冲突",
+      "climaxGoal": "卷末高潮落点"
+    }
+  ],
+  "units": [
+    {
+      "volumeIndex": 1,
+      "unitIndex": 1,
+      "title": "单元标题",
+      "chapterSpan": "第1章 - 第6章",
+      "volumeAlignment": "围绕所属分卷目标不跑偏锚点",
+      "coreConflict": "单元核心冲突",
+      "payoffEvent": "高潮爽点兑现",
+      "breakthroughMethod": "独特破局手段"
+    }
+  ]
+}`,
+    },
+    {
+      role: 'user',
+      content: `书名：《${params.bookTitle}》 | 平台：${params.targetPlatform}
+【审稿核心痛点参考】：
+${params.signingReviewReport.slice(0, 1500)}
+${params.userSupplement?.trim() ? `【作者补充指令】：${params.userSupplement.trim()}\n` : ''}
+【已升级版 L1 总纲】：
+- 契约：${params.masterOutlineSpec.corePromise}
+- 终局：${params.masterOutlineSpec.ultimateEnding}
+- 天花板：${params.masterOutlineSpec.worldCeiling}
+- 主线：${params.masterOutlineSpec.mainPlotline}
+- 暗线：${params.masterOutlineSpec.darkPlotline}
+【已升级版大纲】：
+${params.improvedOutline}`,
+    },
+  ];
+}
+
+export function buildApplySigningReviewL4AndGraphMessages(params: {
+  bookTitle: string;
+  targetPlatform: string;
+  signingReviewReport: string;
+  userSupplement?: string;
+  improvedOutline: string;
+  improvedCharacters: string;
+  volumePlan: NovelVolumePlanItem[];
+  storyUnits: NovelStoryUnitItem[];
+  draftedChapters: NovelChapterOutlineItem[];
+  plannedChapterCountToGenerate: number;
+}): Message[] {
+  const startCh =
+    params.draftedChapters.length > 0
+      ? Math.max(...params.draftedChapters.map((c) => c.chapterIndex)) + 1
+      : 1;
+  const count = Math.max(6, Math.min(18, params.plannedChapterCountToGenerate));
+
+  return [
+    {
+      role: 'system',
+      content: `你是签约全案重修架构师（第 3 阶段：重构开局/待写 L4 单章细纲 + 全要素关联图谱）。
+请严格落地主编审稿意见（特别是黄金三章开局、情绪钩子与设定自洽建议）：
+1. 为从第 ${startCh} 章起的 ${count} 章重写/新建高留存 L4 单章细纲（必须包含主角目标、核心阻力、唯一实质增量、章末悬念钩子与松紧档位，并关联对应的 volumeIndex 与 unitIndex）。
+2. 构建完整的【角色知情权图谱】【关键道具库】与【伏笔账本】，通过姓名精确关联到章节！
+
+输出纯 JSON 对象：
+{
+  "chapters": [
+    {
+      "chapterIndex": ${startCh},
+      "volumeIndex": 1,
+      "unitIndex": 1,
+      "title": "标题（不带第X章）",
+      "pacingType": "推进",
+      "protagonistGoal": "主角目标",
+      "coreObstacle": "核心阻力",
+      "stateDelta": "单章唯一实质推进增量",
+      "summary": "2~3句事件梗概",
+      "hookNote": "章末悬念钩子",
+      "linkedCharacterNames": ["角色名"],
+      "linkedItemNames": ["道具名"],
+      "linkedForeshadowNames": ["伏笔名"]
+    }
+  ],
+  "characters": [
+    {
+      "name": "角色名",
+      "roleType": "主角",
+      "coreDesire": "核心欲望",
+      "speechStyle": "声纹口癖",
+      "epistemicBoundary": "知情权边界",
+      "currentStatus": "开局实时状态",
+      "relations": [{ "targetName": "另一角色名", "relation": "关系描述" }]
+    }
+  ],
+  "keyItems": [
+    {
+      "name": "关键道具名",
+      "category": "核心信物",
+      "holderName": "持有者",
+      "originChapter": 1,
+      "rulesAndCost": "功能与限制代价",
+      "status": "主角持有"
+    }
+  ],
+  "foreshadows": [
+    {
+      "name": "伏笔名",
+      "plantedChapter": 1,
+      "expectedResolveChapter": "第20章",
+      "status": "planted",
+      "note": "埋设细节与反转回收方式",
+      "linkedCharacterNames": ["角色名"],
+      "linkedItemNames": ["道具名"]
+    }
+  ]
+}`,
+    },
+    {
+      role: 'user',
+      content: `书名：《${params.bookTitle}》 | 平台：${params.targetPlatform}
+【审稿意见关键改稿清单】：
+${params.signingReviewReport.slice(0, 1600)}
+${params.userSupplement?.trim() ? `【作者补充指令】：${params.userSupplement.trim()}\n` : ''}
+${
+  params.draftedChapters.length > 0
+    ? `【已成稿章节（绝对保留勿覆盖，须从第${startCh}章衔接）】：\n${params.draftedChapters
+        .map((c) => `第${c.chapterIndex}章《${c.title}》:${c.stateDelta || c.summary}`)
+        .join('\n')}\n`
+    : ''
+}
+【新 L2 分卷】：
+${params.volumePlan.map((v) => `第${v.volumeIndex}卷《${v.title}》(${v.chapterSpan}): ${v.stageGoal || v.coreConflict}`).join('\n')}
+【新 L3 剧情单元】：
+${params.storyUnits.map((u) => `单元${u.unitIndex}《${u.title}》(${u.chapterSpan}): 锚点[${u.volumeAlignment}]`).join('\n')}
+【新人物档案】：
+${params.improvedCharacters.slice(0, 1000)}`,
+    },
+  ];
+}
+
+export function parseApplySigningReviewCoreResponse(raw: string): {
+  suggestedTitle?: string;
+  alternateTitles: string[];
+  commercialBlurb?: string;
+  improvedOutline?: string;
+  characters?: string;
+  worldView?: string;
+  systemSettingsPatches: Record<string, string[]>;
+  masterOutlineSpec?: MasterOutlineSpec;
+} {
+  const parsed = repairAndParseJson<any>(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('签约全案第 1 阶段（大纲与总纲重修）返回非合法 JSON，请重试');
+  }
+  const systemSettingsPatches: Record<string, string[]> = {};
+  if (parsed.systemSettingsPatches && typeof parsed.systemSettingsPatches === 'object') {
+    Object.entries(parsed.systemSettingsPatches).forEach(([k, v]) => {
+      if (Array.isArray(v)) {
+        const cleaned = v.map((x) => String(x || '').trim()).filter(Boolean);
+        if (cleaned.length > 0) systemSettingsPatches[k] = cleaned;
+      }
+    });
+  }
+  const spec = parsed.masterOutlineSpec;
+  return {
+    suggestedTitle: parsed.suggestedTitle ? String(parsed.suggestedTitle).replace(/[《》]/g, '').trim() : undefined,
+    alternateTitles: Array.isArray(parsed.alternateTitles)
+      ? parsed.alternateTitles.map((x: any) => String(x || '').replace(/[《》]/g, '').trim()).filter(Boolean)
+      : [],
+    commercialBlurb: parsed.commercialBlurb ? String(parsed.commercialBlurb).trim() : undefined,
+    improvedOutline: parsed.improvedOutline ? String(parsed.improvedOutline).trim() : undefined,
+    characters: parsed.characters ? String(parsed.characters).trim() : undefined,
+    worldView: parsed.worldView ? String(parsed.worldView).trim() : undefined,
+    systemSettingsPatches,
+    masterOutlineSpec:
+      spec && typeof spec === 'object'
+        ? {
+            corePromise: String(spec.corePromise || '').trim(),
+            ultimateEnding: String(spec.ultimateEnding || '').trim(),
+            worldCeiling: String(spec.worldCeiling || '').trim(),
+            mainPlotline: String(spec.mainPlotline || '').trim(),
+            emotionalOrSubPlotline: String(spec.emotionalOrSubPlotline || '').trim(),
+            darkPlotline: String(spec.darkPlotline || '').trim(),
+          }
+        : undefined,
+  };
+}
+
+export function parseApplySigningReviewL2L3Response(raw: string): {
+  volumePlan: NovelVolumePlanItem[];
+  storyUnits: NovelStoryUnitItem[];
+} {
+  const parsed = repairAndParseJson<any>(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('签约全案第 2 阶段（分卷与单元重修）返回非合法 JSON，请重试');
+  }
+  const volIndexToId = new Map<number, string>();
+  const volumePlan: NovelVolumePlanItem[] = (parsed.volumes || []).map((v: any, idx: number) => {
+    const id = generateUUID();
+    const vIdx = Number(v.volumeIndex) || idx + 1;
+    volIndexToId.set(vIdx, id);
+    return {
+      id,
+      volumeIndex: vIdx,
+      title: String(v.title || `第${vIdx}卷`)
+        .replace(/^第[一二三四五六七八九十百\d]+卷[：:\s·]*/u, '')
+        .trim(),
+      chapterSpan: String(v.chapterSpan || `第${(vIdx - 1) * 20 + 1}章 - 第${vIdx * 20}章`).trim(),
+      stageGoal: String(v.stageGoal || '').trim(),
+      entryState: String(v.entryState || '').trim(),
+      exitState: String(v.exitState || '').trim(),
+      turningPoints: String(v.turningPoints || '').trim(),
+      coreConflict: String(v.coreConflict || '').trim(),
+      climaxGoal: String(v.climaxGoal || '').trim(),
+    };
+  });
+
+  const storyUnits: NovelStoryUnitItem[] = (parsed.units || []).map((u: any, idx: number) => {
+    const vIdx = Number(u.volumeIndex) || 1;
+    const uIdx = Number(u.unitIndex) || idx + 1;
+    return {
+      id: generateUUID(),
+      volumeId: volIndexToId.get(vIdx) || volumePlan[0]?.id || '',
+      unitIndex: uIdx,
+      title: String(u.title || `第${uIdx}单元`)
+        .replace(/^第[一二三四五六七八九十百\d]+(?:剧情)?单元[：:\s·]*/u, '')
+        .trim(),
+      chapterSpan: String(u.chapterSpan || '').trim(),
+      volumeAlignment: String(u.volumeAlignment || '').trim(),
+      coreConflict: String(u.coreConflict || '').trim(),
+      payoffEvent: String(u.payoffEvent || '').trim(),
+      breakthroughMethod: String(u.breakthroughMethod || '').trim(),
+      linkedCharacterIds: [],
+      linkedItemIds: [],
+      linkedForeshadowIds: [],
+    };
+  });
+
+  return { volumePlan, storyUnits };
+}
+
+export function parseApplySigningReviewL4AndGraphResponse(params: {
+  raw: string;
+  volumePlan: NovelVolumePlanItem[];
+  storyUnits: NovelStoryUnitItem[];
+  draftedChapters: NovelChapterOutlineItem[];
+  existingLorebook: LorebookEntry[];
+}): {
+  chapterOutlines: NovelChapterOutlineItem[];
+  storyUnits: NovelStoryUnitItem[];
+  characterGraph: NovelCharacterRelationNode[];
+  keyItemRegistry: NovelKeyItem[];
+  foreshadowLedger: NovelForeshadowItem[];
+  lorebook: LorebookEntry[];
+} {
+  const parsed = repairAndParseJson<any>(params.raw);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('签约全案第 3 阶段（细纲与关联库重修）返回非合法 JSON，请重试');
+  }
+
+  const seeded = parseFourLayerCascadeSeedResponse(
+    JSON.stringify({
+      masterOutlineSpec: {},
+      volumes: [],
+      units: [],
+      chapters: parsed.chapters || [],
+      characters: parsed.characters || [],
+      keyItems: parsed.keyItems || [],
+      foreshadows: parsed.foreshadows || [],
+    })
+  );
+
+  // Remap generated chapters to the real new volumePlan & storyUnits IDs by volumeIndex/unitIndex or span
+  const volByIdx = new Map(params.volumePlan.map((v) => [v.volumeIndex, v]));
+  const unitByIdx = new Map(params.storyUnits.map((u) => [u.unitIndex, u]));
+
+  const remappedPlanned: NovelChapterOutlineItem[] = (parsed.chapters || []).map((rawCh: any, i: number) => {
+    const chObj = seeded.chapterOutlines[i];
+    const vIdx = Number(rawCh.volumeIndex) || 1;
+    const uIdx = Number(rawCh.unitIndex) || 1;
+    const vol = volByIdx.get(vIdx) || params.volumePlan[0];
+    const unit = unitByIdx.get(uIdx) || params.storyUnits[0];
+    return {
+      ...chObj,
+      volumeId: vol?.id,
+      unitId: unit?.id,
+      volumeTag: vol ? `第${vol.volumeIndex}卷 · ${vol.title}` : undefined,
+      status: 'planned' as const,
+    };
+  });
+
+  const draftedSet = new Set(params.draftedChapters.map((c) => c.chapterIndex));
+  const combinedChapters = [
+    ...params.draftedChapters,
+    ...remappedPlanned.filter((c) => !draftedSet.has(c.chapterIndex)),
+  ].sort((a, b) => a.chapterIndex - b.chapterIndex);
+
+  const cascaded = autoLinkEntitiesAndCascadeTopology({
+    volumePlan: params.volumePlan,
+    storyUnits: params.storyUnits,
+    chapterOutlines: combinedChapters,
+    characterGraph: seeded.characterGraph,
+    keyItemRegistry: seeded.keyItemRegistry,
+    foreshadowLedger: seeded.foreshadowLedger,
+    lorebook: params.existingLorebook,
+  });
+
+  return {
+    chapterOutlines: cascaded.chapterOutlines,
+    storyUnits: cascaded.storyUnits,
+    characterGraph: cascaded.characterGraph,
+    keyItemRegistry: cascaded.keyItemRegistry,
+    foreshadowLedger: cascaded.foreshadowLedger,
+    lorebook: cascaded.lorebook,
+  };
+}
+
+

@@ -1083,8 +1083,11 @@ interface NovelSigningSubmissionHubProps {
   signingReviewReport: string;
   isGeneratingPackaging: boolean;
   isRunningSigningReview: boolean;
+  isExecutingSigningRevisions?: boolean;
+  signingRevisionProgress?: string;
   onGenerateCommercialPackaging: () => void;
   onRunEditorialSigningReview: () => void;
+  onExecuteSigningReviewRevisions?: (supplementNote?: string) => void;
   onNotify: (msg: string, type?: 'info' | 'success' | 'error') => void;
 }
 
@@ -1101,14 +1104,18 @@ export const NovelSigningSubmissionHub: React.FC<NovelSigningSubmissionHubProps>
   signingReviewReport,
   isGeneratingPackaging,
   isRunningSigningReview,
+  isExecutingSigningRevisions = false,
+  signingRevisionProgress = '',
   onGenerateCommercialPackaging,
   onRunEditorialSigningReview,
+  onExecuteSigningReviewRevisions,
   onNotify,
 }) => {
   const [newHookName, setNewHookName] = useState('');
   const [newHookPlanted, setNewHookPlanted] = useState<number>(1);
   const [newHookResolve, setNewHookResolve] = useState('');
   const [newHookNote, setNewHookNote] = useState('');
+  const [revisionSupplementNote, setRevisionSupplementNote] = useState('');
 
   const handleAddForeshadow = () => {
     if (!newHookName.trim()) return;
@@ -1401,8 +1408,60 @@ export const NovelSigningSubmissionHub: React.FC<NovelSigningSubmissionHubProps>
         </div>
 
         {signingReviewReport ? (
-          <div className="p-4 rounded-xl studio-muted whitespace-pre-wrap text-xs sm:text-sm text-[var(--text-secondary)] leading-relaxed">
-            {signingReviewReport}
+          <div className="space-y-4">
+            <div className="p-4 rounded-xl studio-muted whitespace-pre-wrap text-xs sm:text-sm text-[var(--text-secondary)] leading-relaxed">
+              {signingReviewReport}
+            </div>
+
+            {onExecuteSigningReviewRevisions && (
+              <div className="p-4 rounded-2xl border border-[var(--accent)]/40 bg-[var(--accent-soft)]/50 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                      <RefreshCw className="w-4 h-4 text-[var(--accent)] shrink-0" />
+                      <span>一键按主编审稿意见全面重构与完善全案</span>
+                    </h3>
+                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                      自动依循上述审稿诊断与可落地改稿清单，分 3 阶段连续重修：<strong>① 书名/商业简介/主大纲/人设/11大设定与 L1 总纲</strong> → <strong>② L2 完整分卷与 L3 剧情单元</strong> → <strong>③ 未写 L4 单章细纲与角色/道具/伏笔关联图谱</strong>（已成稿正文与细纲绝对保留）。
+                    </p>
+                  </div>
+
+                  <MotionButton
+                    type="button"
+                    disabled={isExecutingSigningRevisions || isRunningSigningReview}
+                    onClick={() => onExecuteSigningReviewRevisions(revisionSupplementNote)}
+                    className="btn-primary min-h-[42px] px-4 py-2 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    {isExecutingSigningRevisions ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>全链路重修执行中...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>一键按审稿意见全面重构全案</span>
+                      </>
+                    )}
+                  </MotionButton>
+                </div>
+
+                <input
+                  type="text"
+                  value={revisionSupplementNote}
+                  onChange={(e) => setRevisionSupplementNote(e.target.value)}
+                  placeholder="可选补充微调指令（例：保留女主高冷设定，只重点按意见第3、4条强化前三章生死危机与钩子...）"
+                  className="studio-input w-full px-3 py-2 text-xs"
+                />
+
+                {isExecutingSigningRevisions && signingRevisionProgress && (
+                  <div className="p-2.5 rounded-xl bg-[var(--bg-surface)] border border-[var(--accent)]/30 text-xs text-[var(--accent)] font-medium flex items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span>{signingRevisionProgress}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-xs text-[var(--text-muted)] py-6 text-center studio-muted">

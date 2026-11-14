@@ -378,6 +378,23 @@ export interface AdversarialStoryReviewReport {
   dimensions: StoryReviewDimensionResult[];
 }
 
+export interface FourLayerCascadeSyncMeta {
+  l1Confirmed?: boolean;
+  l2Confirmed?: boolean;
+  l3Confirmed?: boolean;
+  l4Confirmed?: boolean;
+  graphSynced?: boolean;
+  lastOutlineAndScaleSig?: string;
+  lastL1Sig?: string;
+  lastL2Sig?: string;
+  lastL3Sig?: string;
+  lastGraphSig?: string;
+  staleVolumeIds?: string[];
+  staleUnitIds?: string[];
+  staleChapterIds?: string[];
+  lastChangeNote?: string;
+}
+
 export interface BookSettings {
   genre: string;
   style: string;
@@ -418,6 +435,7 @@ export interface BookSettings {
   characterGraph?: NovelCharacterRelationNode[];
   keyItemRegistry?: NovelKeyItem[];
   foreshadowLedger?: NovelForeshadowItem[];
+  cascadeSyncMeta?: FourLayerCascadeSyncMeta;
 
   // Commercial Signing & Platform Submission Package
   targetPlatform?: string;
