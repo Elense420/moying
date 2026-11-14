@@ -469,6 +469,91 @@ export interface Summary {
   title: string;
 }
 
+export type ManuscriptAuditSeverity = 'critical' | 'major' | 'minor';
+
+export type ManuscriptAuditCategory =
+  | 'blurb_mismatch'
+  | 'timeline_math'
+  | 'foreshadow_drop'
+  | 'incomplete_narrative'
+  | 'causality_morality'
+  | 'character_backstory'
+  | 'contrivance_plot_armor'
+  | 'title_anachronism'
+  | 'epistemic_power_leak'
+  | 'pacing_spatial_rupture';
+
+export interface ManuscriptAuditLocation {
+  chapterIndex: number; // 0 = 简介/大纲/设定层, >= 1 = 正文第 N 章
+  chapterTitle?: string;
+  quoteSnippet: string; // 精确原文句段，用于原文界面标色高亮与一键定位
+  note: string; // 该位置的具体问题说明
+}
+
+export interface CoordinatedFixChapterPatch {
+  chapterIndex: number; // 0 = 简介同步修改, >= 1 = 对应章节修改
+  chapterTitle: string;
+  editTargetSummary: string; // 精确修改目标与锚点位置
+  preserveConstraints: string; // 必须保留的原有情节与上下章衔接点
+  status: 'pending' | 'generating' | 'ready' | 'applied' | 'skipped' | 'error';
+  originalText?: string;
+  revisedText?: string;
+  appliedHandOffNote?: string; // 上游章节完成改写后传递给下游章节的真实变更口径回执
+  errorMsg?: string;
+}
+
+export interface CoordinatedFixPlan {
+  id: string;
+  createdAt: number;
+  canonicalTruthContract: string; // 全局唯一统一权威口径契约
+  alsoUpdateBlurb?: boolean;
+  revisedBlurb?: string;
+  chapterPatches: CoordinatedFixChapterPatch[];
+}
+
+export interface ManuscriptAuditIssue {
+  id: string;
+  severity: ManuscriptAuditSeverity;
+  category: ManuscriptAuditCategory;
+  categoryLabel: string;
+  title: string;
+  description: string; // 详细剖析 + 读者视角疑问
+  suggestion: string; // 编辑修改建议
+  isCrossChapter: boolean;
+  locations: ManuscriptAuditLocation[];
+  status: 'open' | 'planned' | 'resolved' | 'ignored';
+  userCustomInstruction?: string;
+  fixPlan?: CoordinatedFixPlan;
+}
+
+export interface ChapterFactCard {
+  chapterIndex: number;
+  title: string;
+  charLength: number;
+  textHash: string;
+  timeAnchor: string; // 本章时间锚点、年号与耗时
+  castAndTitles: string; // 出场人物、当前官职/称谓、伤势/认知状态
+  plotAndEvidence: string; // 核心事件因果、关键证据展示、死因或转折理由
+  cluesAndProps: string; // 新埋伏笔/回收线索/道具持有变动
+  localRedFlags: string[]; // 单章局部逻辑/考据/巧合疑点
+}
+
+export interface ManuscriptAuditReport {
+  id: string;
+  createdAt: number;
+  mode: 'short_full_read' | 'long_map_reduce';
+  scopeLabel: string;
+  auditedChapterCount: number;
+  totalWordCount: number;
+  executiveSummary: string;
+  criticalCount: number;
+  majorCount: number;
+  minorCount: number;
+  deterministicHints: string[];
+  factLedger: ChapterFactCard[];
+  issues: ManuscriptAuditIssue[];
+}
+
 export interface Book {
   id: string;
   title: string;
@@ -478,6 +563,7 @@ export interface Book {
   archivedChapters: ArchivedChapter[];
   summaries: Summary[];
   settings: BookSettings;
+  manuscriptAudit?: ManuscriptAuditReport;
 }
 
 export interface ApiConfig {

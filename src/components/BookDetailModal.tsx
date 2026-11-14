@@ -11,6 +11,7 @@ import {
   Clapperboard,
   Sparkles,
   Loader2,
+  FileCheck2,
 } from 'lucide-react';
 import {
   Book,
@@ -38,6 +39,7 @@ interface BookDetailModalProps {
   onDramatizeBook?: (book: Book, options: NovelToDramaAdaptationOptions) => Promise<void>;
   isDramatizing?: boolean;
   autoExpandDramatize?: boolean;
+  onOpenManuscriptAudit?: (book: Book) => void;
 }
 
 const DRAMA_VISUAL_STYLE_OPTIONS: DramaVisualStyle[] = [
@@ -63,6 +65,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onDramatizeBook,
   isDramatizing = false,
   autoExpandDramatize = false,
+  onOpenManuscriptAudit,
 }) => {
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [selectedArchivedIds, setSelectedArchivedIds] = useState<string[]>([]);
@@ -152,6 +155,23 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {onOpenManuscriptAudit && (
+              <MotionButton
+                type="button"
+                disabled={isDramatizing || book.chapters.length === 0}
+                onClick={() => onOpenManuscriptAudit(book)}
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-40 ${
+                  (book.manuscriptAudit?.criticalCount || 0) > 0
+                    ? 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                    : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[var(--accent)]/50'
+                }`}
+                title="一键审查全书逻辑、时间线、简介一致度、伏笔回收与多章协同改稿"
+              >
+                <FileCheck2 className="w-3.5 h-3.5" />
+                <span>全书终审</span>
+              </MotionButton>
+            )}
+
             {onDramatizeBook && (
               <MotionButton
                 type="button"

@@ -11,6 +11,7 @@ import {
   Copy,
   Trash2,
   Clapperboard,
+  FileCheck2,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Book } from '../types';
@@ -31,6 +32,7 @@ interface LibraryViewProps {
   onOpenDownloadBook?: (bookId: string) => void;
   onRequestDeleteBook?: (bookId: string) => void;
   onDramatizeBookQuick?: (book: Book) => void;
+  onOpenManuscriptAudit?: (book: Book) => void;
 }
 
 export const LibraryView: React.FC<LibraryViewProps> = ({
@@ -42,6 +44,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onOpenDownloadBook,
   onRequestDeleteBook,
   onDramatizeBookQuick,
+  onOpenManuscriptAudit,
 }) => {
   const { openContextMenu, triggerQuickToast } = useContextMenu();
   const [searchQuery, setSearchQuery] = useState('');
@@ -241,6 +244,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         label: '查看章节目录与剧本化',
                         icon: <FolderOpen className="w-3.5 h-3.5" />,
                         onSelect: () => onOpenBookDetail(book),
+                      },
+                      {
+                        id: 'ctx-audit',
+                        label: '出版前全书逻辑终审与协同改稿',
+                        icon: <FileCheck2 className="w-3.5 h-3.5" />,
+                        disabled: !onOpenManuscriptAudit || chapterCount === 0,
+                        onSelect: () => onOpenManuscriptAudit?.(book),
                       },
                       {
                         id: 'ctx-dramatize',

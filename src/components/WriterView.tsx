@@ -29,6 +29,7 @@ import {
   Square,
   ShieldCheck,
   ShieldOff,
+  FileCheck2,
 } from 'lucide-react';
 import { Book, BookSettings, Chapter, Summary, UiSettings, ApiConfig, IdeaCard, NovelSkill } from '../types';
 import { streamChatCompletion, chatCompletion } from '../services/apiClient';
@@ -51,6 +52,7 @@ interface WriterViewProps {
   onSaveBook: (updatedBook: Book) => Promise<void>;
   onGoToSetup: () => void;
   onOpenSummaryViewModal: (summary: Summary) => void;
+  onOpenManuscriptAudit?: (book: Book, focusChapterIndex?: number) => void;
 }
 
 /**
@@ -166,6 +168,7 @@ export const WriterView: React.FC<WriterViewProps> = ({
   onSaveBook,
   onGoToSetup,
   onOpenSummaryViewModal,
+  onOpenManuscriptAudit,
 }) => {
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [isRewriteOpen, setIsRewriteOpen] = useState(false);
@@ -1379,6 +1382,36 @@ ${chapterTail}
                     朱雀质检{chapterText.trim() ? ` · AI痕 ${liveZhuqueReport.aiRiskScore}%` : ''}
                   </span>
                 </MotionButton>
+
+                {onOpenManuscriptAudit && (
+                  <MotionButton
+                    type="button"
+                    disabled={isGenerating || currentBook.chapters.length === 0}
+                    onClick={() =>
+                      onOpenManuscriptAudit(
+                        currentBook,
+                        activeChapter?.index || currentChapterIndex + 1
+                      )
+                    }
+                    className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer tabular-nums ${
+                      (currentBook.manuscriptAudit?.criticalCount || 0) > 0
+                        ? 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                        : 'border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[var(--text-primary)]'
+                    }`}
+                    title="一键审查全书与简介一致度、时间线闭合、伏笔回收、身份铺垫与跨章协同改稿"
+                  >
+                    <FileCheck2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      全书终审
+                      {currentBook.manuscriptAudit
+                        ? ` · ${
+                            (currentBook.manuscriptAudit.criticalCount || 0) +
+                            (currentBook.manuscriptAudit.majorCount || 0)
+                          }项`
+                        : ''}
+                    </span>
+                  </MotionButton>
+                )}
 
                 <MotionButton
                   type="button"

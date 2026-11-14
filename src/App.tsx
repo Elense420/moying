@@ -24,6 +24,7 @@ import { DramaLibraryView, DramaRadarView } from './components/DramaLibraryAndRa
 import { DramaSetupView, DramaWriterView } from './components/DramaStudioView';
 import { convertCandidateToDramaProject } from './components/DramaCandidateVaultView';
 import { DramaBackupRestoreModal } from './components/DramaBackupRestoreModal';
+import { ManuscriptAuditModal } from './components/ManuscriptAuditModal';
 import { SafeErrorBoundary } from './components/SafeErrorBoundary';
 import {
   PageTransition,
@@ -132,6 +133,9 @@ function StudioWorkspace() {
   const [isSummaryViewOpen, setIsSummaryViewOpen] = useState(false);
 
   const [pendingDeleteBook, setPendingDeleteBook] = useState<Book | null>(null);
+  const [auditBookTarget, setAuditBookTarget] = useState<Book | null>(null);
+  const [auditFocusChapterIndex, setAuditFocusChapterIndex] = useState<number | undefined>(undefined);
+  const [isManuscriptAuditOpen, setIsManuscriptAuditOpen] = useState<boolean>(false);
 
   const activeTrack: CreativeTrack = uiSettings.activeTrack === 'drama' ? 'drama' : 'novel';
 
@@ -352,10 +356,19 @@ function StudioWorkspace() {
       if (bookDetailTarget?.id === updatedBook.id) {
         setBookDetailTarget(updatedBook);
       }
+      if (auditBookTarget?.id === updatedBook.id) {
+        setAuditBookTarget(updatedBook);
+      }
       localStorage.setItem('currentBookId', updatedBook.id);
     } finally {
       endSave();
     }
+  };
+
+  const handleOpenManuscriptAudit = (book: Book, focusChapterIndex?: number) => {
+    setAuditBookTarget(book);
+    setAuditFocusChapterIndex(focusChapterIndex);
+    setIsManuscriptAuditOpen(true);
   };
 
   const handleOpenBookDetail = (book: Book) => {
@@ -825,6 +838,7 @@ function StudioWorkspace() {
                   onOpenDownloadBook={handleOpenDownloadById}
                   onRequestDeleteBook={requestDeleteBook}
                   onDramatizeBookQuick={handleOpenBookDramatizeQuick}
+                  onOpenManuscriptAudit={(book) => handleOpenManuscriptAudit(book)}
                 />
               )}
 
@@ -857,6 +871,7 @@ function StudioWorkspace() {
                     setSummaryViewTarget(sum);
                     setIsSummaryViewOpen(true);
                   }}
+                  onOpenManuscriptAudit={(book, chIdx) => handleOpenManuscriptAudit(book, chIdx)}
                 />
               )}
 
@@ -985,6 +1000,7 @@ function StudioWorkspace() {
         onDramatizeBook={handleDramatizeNovelToDrama}
         isDramatizing={isDramatizingBook}
         autoExpandDramatize={autoExpandDramatize}
+        onOpenManuscriptAudit={(book) => handleOpenManuscriptAudit(book)}
       />
 
       <ReadChapterModal
@@ -1110,6 +1126,24 @@ function StudioWorkspace() {
         onClose={() => setDramaBackupModal((prev) => ({ ...prev, isOpen: false }))}
         onRestoreConfirm={handleRestoreDramaBackup}
       />
+
+      {/* Full-Book Pre-Release Manuscript Audit & Coordinated Multi-Chapter Revision Modal */}
+      {auditBookTarget && isManuscriptAuditOpen && (
+        <SafeErrorBoundary
+          fallbackTitle="全书终审工作台加载异常"
+          onReset={() => setIsManuscriptAuditOpen(false)}
+        >
+          <ManuscriptAuditModal
+            isOpen={isManuscriptAuditOpen}
+            onClose={() => setIsManuscriptAuditOpen(false)}
+            book={auditBookTarget}
+            configs={configs}
+            uiSettings={uiSettings}
+            onSaveBook={handleSaveBook}
+            initialFocusChapterIndex={auditFocusChapterIndex}
+          />
+        </SafeErrorBoundary>
+      )}
     </div>
   );
 }
