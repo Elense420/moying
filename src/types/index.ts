@@ -395,6 +395,79 @@ export interface FourLayerCascadeSyncMeta {
   lastChangeNote?: string;
 }
 
+export interface LiveCharacterRuntimeSnapshot {
+  name: string;
+  roleType?: string;
+  age?: string;
+  rankOrTitle?: string;
+  location?: string;
+  physicalState?: string;
+  relationshipNote?: string;
+  knownSecrets?: string;
+  lastUpdatedChapter: number;
+}
+
+export interface LiveTimelineEvent {
+  id: string;
+  chapterIndex: number;
+  storyTimeLabel: string;
+  location: string;
+  keyEvent: string;
+}
+
+export type LiveContinuityCategory =
+  | 'character_state'
+  | 'timeline_math'
+  | 'location_jump'
+  | 'setting_conflict'
+  | 'foreshadow_prop'
+  | 'logic_gap';
+
+export interface LiveContinuityAlert {
+  id: string;
+  chapterIndex: number;
+  category: LiveContinuityCategory;
+  severity: 'critical' | 'major' | 'minor';
+  title: string;
+  detail: string;
+  quote?: string;
+  suggestion: string;
+  status: 'open' | 'resolved' | 'dismissed';
+  createdAt: number;
+}
+
+export interface LiveContinuityDeltaRecord {
+  chapterIndex: number;
+  storyTime: string;
+  currentLocation: string;
+  characterChanges: string[];
+  propAndClueChanges: string[];
+  summaryNote: string;
+  updatedAt: number;
+}
+
+export interface LiveContinuityState {
+  enabled: boolean;
+  currentStoryTime: string;
+  currentPrimaryLocation: string;
+  characterSnapshots: LiveCharacterRuntimeSnapshot[];
+  timelineLog: LiveTimelineEvent[];
+  chapterDeltas: LiveContinuityDeltaRecord[];
+  alerts: LiveContinuityAlert[];
+  lastCheckedChapter: number;
+  updatedAt: number;
+}
+
+export interface DialogueCoWriteMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  rationalityPassed?: boolean;
+  flaggedRisks?: string[];
+  directorDirective?: string;
+  timestamp: number;
+}
+
 export interface BookSettings {
   genre: string;
   style: string;
@@ -436,6 +509,10 @@ export interface BookSettings {
   keyItemRegistry?: NovelKeyItem[];
   foreshadowLedger?: NovelForeshadowItem[];
   cascadeSyncMeta?: FourLayerCascadeSyncMeta;
+
+  // 写中防穿帮实时状态追踪与对话协同记忆
+  liveContinuity?: LiveContinuityState;
+  dialogueHistory?: DialogueCoWriteMessage[];
 
   // Commercial Signing & Platform Submission Package
   targetPlatform?: string;

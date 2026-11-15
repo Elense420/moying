@@ -812,13 +812,21 @@ function StudioWorkspace() {
         }
       />
 
-      <main className="relative flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 lg:px-8 pt-4 sm:pt-6 pb-24 md:pb-12">
-        <CreativeRealmSwitcher
-          activeTrack={activeTrack}
-          onSwitchTrack={handleSwitchCreativeTrack}
-          novelCount={books.length}
-          dramaCount={dramaProjects.length}
-        />
+      <main
+        className={`relative flex-1 w-full mx-auto ${
+          activeTab === 'writer'
+            ? 'max-w-[1760px] px-3 sm:px-5 lg:px-6 pt-2.5 pb-24 lg:pb-2.5'
+            : 'max-w-7xl px-3.5 sm:px-6 lg:px-8 pt-4 sm:pt-6 pb-24 md:pb-12'
+        }`}
+      >
+        {activeTab !== 'writer' && (
+          <CreativeRealmSwitcher
+            activeTrack={activeTrack}
+            onSwitchTrack={handleSwitchCreativeTrack}
+            novelCount={books.length}
+            dramaCount={dramaProjects.length}
+          />
+        )}
 
         <AnimatePresence mode="wait">
           {showSkeleton ? (
@@ -859,6 +867,8 @@ function StudioWorkspace() {
               {activeTab === 'writer' && (
                 <WriterView
                   currentBook={currentBook}
+                  books={books}
+                  dramaProjects={dramaProjects}
                   currentChapterIndex={currentChapterIndex}
                   setCurrentChapterIndex={setCurrentChapterIndex}
                   configs={configs}
@@ -872,6 +882,9 @@ function StudioWorkspace() {
                     setIsSummaryViewOpen(true);
                   }}
                   onOpenManuscriptAudit={(book, chIdx) => handleOpenManuscriptAudit(book, chIdx)}
+                  onSelectBook={(book) => handleContinueWritingBook(book)}
+                  onSelectDramaProject={(proj) => handleOpenDramaWriter(proj)}
+                  onSwitchTrack={(track) => handleSwitchCreativeTrack(track)}
                 />
               )}
 

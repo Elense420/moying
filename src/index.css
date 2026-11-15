@@ -251,8 +251,8 @@
 
 .chapter-canvas {
   font-size: var(--chapter-content-font-size);
-  line-height: 1.92;
-  letter-spacing: 0.025em;
+  line-height: var(--chapter-line-height, 1.92);
+  letter-spacing: var(--chapter-letter-spacing, 0.025em);
 }
 
 /* Safe area padding for iPhone Home Indicator */
@@ -290,3 +290,23 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* Draggable Floating Quick-Rail Button & Contextual Overlay Drawer */
+.quick-rail-fab {
+  left: var(--quick-rail-x, 14px);
+  top: var(--quick-rail-y, calc(100dvh - 136px));
+  touch-action: none;
+}
+
+.quick-rail-drawer-top {
+  left: var(--quick-rail-panel-x, 14px);
+  top: var(--quick-rail-panel-offset, 118px);
+  max-height: var(--quick-rail-panel-max-h, 480px);
+}
+
+.quick-rail-drawer-bottom {
+  left: var(--quick-rail-panel-x, 14px);
+  bottom: var(--quick-rail-panel-offset, 76px);
+  max-height: var(--quick-rail-panel-max-h, 480px);
+}
+

@@ -18,6 +18,7 @@ import { parseSingleSkillMarkdown } from './skillPackageParser';
 import { formatNovelSystemSettingsForPrompt } from '../data/novelArchitectureSchema';
 import { formatFourLayerAndEntityContextForPrompt } from './fourLayerOutlineEngine';
 import { formatDistilledStylePromptBlock } from './styleDistiller';
+import { formatLiveContinuityPromptBlock } from './liveContinuityService';
 
 export interface ActiveSkillRefHit {
   doc: SkillReferenceDoc;
@@ -439,6 +440,14 @@ export function buildUnifiedSystemPrompt(params: {
   );
   if (fourLayerBlock) {
     systemPrompt += fourLayerBlock;
+  }
+
+  // Inject Write-Time Live Continuity Firewall (Ages, Ranks, Locations, Timeline Math, Props & Foreshadowing Lock)
+  if (book && (scope === 'chapter' || scope === 'reroll' || scope === 'polish' || scope === 'outline')) {
+    const liveContinuityBlock = formatLiveContinuityPromptBlock(book);
+    if (liveContinuityBlock) {
+      systemPrompt += liveContinuityBlock;
+    }
   }
 
   // Mount Distilled Style DNA first; fallback to raw styleReference only if no Distilled DNA is mounted

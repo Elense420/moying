@@ -30,19 +30,50 @@ import {
   ShieldCheck,
   ShieldOff,
   FileCheck2,
+  MessageSquare,
+  Type,
+  Search,
 } from 'lucide-react';
-import { Book, BookSettings, Chapter, Summary, UiSettings, ApiConfig, IdeaCard, NovelSkill } from '../types';
+import {
+  Book,
+  BookSettings,
+  Chapter,
+  Summary,
+  UiSettings,
+  ApiConfig,
+  IdeaCard,
+  NovelSkill,
+  CreativeTrack,
+  DramaProject,
+  LiveContinuityAlert,
+  DialogueCoWriteMessage,
+  NovelChapterOutlineItem,
+} from '../types';
 import { streamChatCompletion, chatCompletion } from '../services/apiClient';
 import { buildUnifiedSystemPrompt } from '../services/promptEngine';
 import { analyzeTextForZhuque, buildZhuqueDeslopMessages } from '../services/zhuqueAudit';
+import {
+  analyzeChapterWriteTimeContinuity,
+  applyLiveContinuityAnalysisToSettings,
+  buildDialogueCoWriteMessages,
+  ensureLiveContinuityState,
+  parseDialogueCoWriteReply,
+  reviseChapterFromLiveAlert,
+} from '../services/liveContinuityService';
 import { generateUUID } from '../utils/uuid';
 import { MotionButton, StaggerList, StaggerItem, ModalPortal } from './MotionPrimitives';
 import { ZhuqueAuditModal } from './ZhuqueAuditModal';
 import { SafeErrorBoundary } from './SafeErrorBoundary';
 import { useContextMenu } from './ContextMenu';
+import { WriterQuickRail } from './WriterQuickRail';
+import { WriterLeftInspector } from './WriterLeftInspector';
+import { LiveContinuityMonitorDock } from './LiveContinuityMonitorDock';
+import { DialogueCoWritePanel, DialogueComposerBar } from './DialogueCoWritePanel';
 
 interface WriterViewProps {
   currentBook: Book | null;
+  books?: Book[];
+  dramaProjects?: DramaProject[];
   currentChapterIndex: number;
   setCurrentChapterIndex: React.Dispatch<React.SetStateAction<number>>;
   configs: ApiConfig[];
@@ -53,6 +84,9 @@ interface WriterViewProps {
   onGoToSetup: () => void;
   onOpenSummaryViewModal: (summary: Summary) => void;
   onOpenManuscriptAudit?: (book: Book, focusChapterIndex?: number) => void;
+  onSelectBook?: (book: Book) => void;
+  onSelectDramaProject?: (project: DramaProject) => void;
+  onSwitchTrack?: (track: CreativeTrack) => void;
 }
 
 /**
@@ -159,6 +193,8 @@ const FOCUS_FONT_CLASSES = ['text-base', 'text-lg', 'text-xl', 'text-2xl'] as co
 
 export const WriterView: React.FC<WriterViewProps> = ({
   currentBook,
+  books = [],
+  dramaProjects = [],
   currentChapterIndex,
   setCurrentChapterIndex,
   configs,
@@ -169,8 +205,10 @@ export const WriterView: React.FC<WriterViewProps> = ({
   onGoToSetup,
   onOpenSummaryViewModal,
   onOpenManuscriptAudit,
+  onSelectBook,
+  onSelectDramaProject,
+  onSwitchTrack,
 }) => {
-  const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [isRewriteOpen, setIsRewriteOpen] = useState(false);
   const [confirmRewrite, setConfirmRewrite] = useState(false);
   const [confirmClearSuggestions, setConfirmClearSuggestions] = useState(false);
@@ -242,18 +280,88 @@ export const WriterView: React.FC<WriterViewProps> = ({
   const [stopBatchRequested, setStopBatchRequested] = useState<boolean>(false);
   const [isZhuqueModalOpen, setIsZhuqueModalOpen] = useState<boolean>(false);
 
+  // Floating Quick Rail (collapsed by default -> opens over screen only on click) + Mobile Tab + Dual Creation Mode + Live Continuity States
+  const [isQuickRailOpen, setIsQuickRailOpen] = useState<boolean>(false);
+  const [mobilePaneTab, setMobilePaneTab] = useState<'chapters_settings' | 'manuscript' | 'director'>('manuscript');
+  const [creationMode, setCreationMode] = useState<'outline' | 'dialogue'>('outline');
+  const [isCheckingContinuity, setIsCheckingContinuity] = useState<boolean>(false);
+  const [fixingAlertId, setFixingAlertId] = useState<string | null>(null);
+  const [isDialogueSending, setIsDialogueSending] = useState<boolean>(false);
+
+  // Manual Typography Controls (Line Height & Letter Spacing)
+  const [lineHeight, setLineHeight] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('writer_line_height'));
+      return Number.isFinite(saved) && saved >= 1.35 && saved <= 2.8 ? saved : 1.92;
+    } catch {
+      return 1.92;
+    }
+  });
+  const [letterSpacing, setLetterSpacing] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('writer_letter_spacing'));
+      return Number.isFinite(saved) && saved >= -0.02 && saved <= 0.16 ? saved : 0.025;
+    } catch {
+      return 0.025;
+    }
+  });
+  const [isTypographyOpen, setIsTypographyOpen] = useState<boolean>(false);
+
+  // Left-Inspector -> Manuscript Keyword Locating
+  const [locatedKeyword, setLocatedKeyword] = useState<string>('');
+  const [locatedMatchIndex, setLocatedMatchIndex] = useState<number>(0);
+
   const liveZhuqueReport = useMemo(() => analyzeTextForZhuque(chapterText), [chapterText]);
 
   const isInitialChapterLoadRef = useRef(true);
   const autoStartedBookIdsRef = useRef<Set<string>>(new Set());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const manuscriptScrollRef = useRef<HTMLDivElement>(null);
   const streamEndRef = useRef<HTMLDivElement>(null);
+  const typographyPopoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (currentBook?.settings?.chapterWords) {
       setStipulatedWordsPerChapter(Number(currentBook.settings.chapterWords) || 3500);
     }
   }, [currentBook?.id, currentBook?.settings?.chapterWords]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--chapter-line-height', String(lineHeight));
+    try {
+      localStorage.setItem('writer_line_height', String(lineHeight));
+    } catch {
+      // ignore storage errors
+    }
+  }, [lineHeight]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--chapter-letter-spacing', `${letterSpacing}em`);
+    try {
+      localStorage.setItem('writer_letter_spacing', String(letterSpacing));
+    } catch {
+      // ignore storage errors
+    }
+  }, [letterSpacing]);
+
+  useEffect(() => {
+    setLocatedKeyword('');
+    setLocatedMatchIndex(0);
+  }, [currentBook?.id, currentChapterIndex]);
+
+  useEffect(() => {
+    if (!isTypographyOpen) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (
+        typographyPopoverRef.current &&
+        !typographyPopoverRef.current.contains(e.target as Node)
+      ) {
+        setIsTypographyOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handleOutside);
+    return () => window.removeEventListener('mousedown', handleOutside);
+  }, [isTypographyOpen]);
 
   useEffect(() => {
     try {
@@ -795,7 +903,7 @@ ${polishSourceText}`;
         co.chapterIndex === chapterIndexToGen ? { ...co, status: 'drafted' as const } : co
       );
 
-      const updatedBook: Book = {
+      let savedBook: Book = {
         ...currentBook,
         chapters: updatedChapters,
         archivedChapters,
@@ -807,11 +915,50 @@ ${polishSourceText}`;
         lastModifiedAt: Date.now(),
       };
 
-      await onSaveBook(updatedBook);
+      await onSaveBook(savedBook);
       setCurrentChapterIndex(updatedChapters.length - 1);
       setRewritePlotInput('');
       setNextPlotInput('');
       setGenMeta(metaText);
+
+      // Automatic Write-Time Live Continuity Firewall Tracking & Logic Verification
+      if (ensureLiveContinuityState(savedBook).enabled) {
+        try {
+          setIsCheckingContinuity(true);
+          setGenMeta(`${metaText} · 正在同步状态账本并实时核查逻辑漏洞...`);
+          const analysis = await analyzeChapterWriteTimeContinuity({
+            book: savedBook,
+            chapterIndex: chapterIndexToGen,
+            chapterTitle: parsed.title,
+            chapterText: finalBodyText,
+            apiConfig: writerCfg,
+            model: activeModelName,
+          });
+          const nextSettings = applyLiveContinuityAnalysisToSettings(
+            savedBook,
+            chapterIndexToGen,
+            analysis
+          );
+          savedBook = {
+            ...savedBook,
+            settings: nextSettings,
+            lastModifiedAt: Date.now(),
+          };
+          await onSaveBook(savedBook);
+
+          const openAlertsCount = analysis.alerts.length;
+          if (openAlertsCount > 0) {
+            setGenMeta(`${metaText} · 实时监测检出 ${openAlertsCount} 条隐患（见正文下方监测台）`);
+            triggerQuickToast(`第 ${chapterIndexToGen} 章写后监测发现 ${openAlertsCount} 条逻辑/设定隐患，建议立即下方查看修复`);
+          } else {
+            setGenMeta(`${metaText} · 实时监测全链路自洽`);
+          }
+        } catch {
+          // Non-blocking: chapter text is already safely persisted
+        } finally {
+          setIsCheckingContinuity(false);
+        }
+      }
     } catch (err: any) {
       const errMsg = err.message || '网络连接或模型响应异常';
       if (activeChapter) {
@@ -1009,6 +1156,36 @@ ${polishSourceText}`;
         setChapterTitle(newChap.title);
         setChapterText(newChap.text);
         setGenMeta(metaText);
+
+        // Update Live Continuity Firewall after each chapter in batch so step+1 inherits accurate character/time/prop states!
+        if (ensureLiveContinuityState(workingBook).enabled) {
+          try {
+            setIsCheckingContinuity(true);
+            const analysis = await analyzeChapterWriteTimeContinuity({
+              book: workingBook,
+              chapterIndex: chapNum,
+              chapterTitle: newChap.title,
+              chapterText: newChap.text,
+              apiConfig: writerCfg,
+              model: activeModelName,
+            });
+            const nextSettings = applyLiveContinuityAnalysisToSettings(
+              workingBook,
+              chapNum,
+              analysis
+            );
+            workingBook = {
+              ...workingBook,
+              settings: nextSettings,
+              lastModifiedAt: Date.now(),
+            };
+            await onSaveBook(workingBook);
+          } catch {
+            // Non-blocking in batch loop
+          } finally {
+            setIsCheckingContinuity(false);
+          }
+        }
 
         if (stopBatchAfterCurrentRef.current && step < totalSteps) {
           setGenMeta(`已按您的指令在第 ${chapNum} 章完稿后安全停止（本次共成功连写 ${completedCount} 章）`);
@@ -1250,6 +1427,319 @@ ${chapterTail}
     }
   };
 
+  // Toggle Floating Quick Rail
+  const handleToggleQuickRail = () => {
+    setIsQuickRailOpen((prev) => !prev);
+  };
+
+  // Live Continuity Radar Handlers
+  const handleToggleLiveContinuityEnabled = async () => {
+    if (!currentBook || isGenerating) return;
+    const prevState = ensureLiveContinuityState(currentBook);
+    const nextEnabled = !prevState.enabled;
+    await onSaveBook({
+      ...currentBook,
+      settings: {
+        ...currentBook.settings,
+        liveContinuity: {
+          ...prevState,
+          enabled: nextEnabled,
+          updatedAt: Date.now(),
+        },
+      },
+      lastModifiedAt: Date.now(),
+    });
+    triggerQuickToast(
+      nextEnabled
+        ? '已开启写中防穿帮实时监测（每章完稿自动更新人物/时间/道具状态并排雷）'
+        : '已暂停自动实时监测（仍可随时手动点击监测）'
+    );
+  };
+
+  const handleRunManualLiveMonitor = async () => {
+    if (!currentBook || !activeChapter || isGenerating || isCheckingContinuity) return;
+    setIsCheckingContinuity(true);
+    try {
+      const chapNum = activeChapter.index || currentChapterIndex + 1;
+      const liveBody = chapterText.trim() || activeChapter.text;
+      const liveTitle = chapterTitle.trim() || activeChapter.title;
+      const analysis = await analyzeChapterWriteTimeContinuity({
+        book: currentBook,
+        chapterIndex: chapNum,
+        chapterTitle: liveTitle,
+        chapterText: liveBody,
+        apiConfig: writerCfg,
+        model: activeModelName,
+      });
+      const nextSettings = applyLiveContinuityAnalysisToSettings(
+        currentBook,
+        chapNum,
+        analysis
+      );
+      await onSaveBook({
+        ...currentBook,
+        settings: nextSettings,
+        lastModifiedAt: Date.now(),
+      });
+      if (analysis.alerts.length > 0) {
+        triggerQuickToast(`第 ${chapNum} 章监测完成：发现 ${analysis.alerts.length} 条潜在穿帮点`);
+      } else {
+        triggerQuickToast(`第 ${chapNum} 章监测完成：人物、时间线与设定自洽无异常`);
+      }
+    } catch (err: any) {
+      setNoticeModal({
+        isOpen: true,
+        type: 'error',
+        title: '实时状态监测异常',
+        message: err.message || '网络或模型请求异常，请检查 API 配置后重试。',
+      });
+    } finally {
+      setIsCheckingContinuity(false);
+    }
+  };
+
+  const handleUpdateAlertStatus = async (
+    alertId: string,
+    status: 'resolved' | 'dismissed' | 'open'
+  ) => {
+    if (!currentBook) return;
+    const state = ensureLiveContinuityState(currentBook);
+    const nextAlerts = state.alerts.map((a) => (a.id === alertId ? { ...a, status } : a));
+    await onSaveBook({
+      ...currentBook,
+      settings: {
+        ...currentBook.settings,
+        liveContinuity: {
+          ...state,
+          alerts: nextAlerts,
+          updatedAt: Date.now(),
+        },
+      },
+      lastModifiedAt: Date.now(),
+    });
+  };
+
+  const handleFixAlertInChapter = async (alert: LiveContinuityAlert) => {
+    if (!currentBook || isGenerating || fixingAlertId) return;
+    const targetIdx = currentBook.chapters.findIndex((c) => c.index === alert.chapterIndex);
+    const chapObj = targetIdx >= 0 ? currentBook.chapters[targetIdx] : activeChapter;
+    if (!chapObj) return;
+
+    const isCurrentViewing = targetIdx === currentChapterIndex;
+    const sourceText = isCurrentViewing ? chapterText : chapObj.text;
+    const sourceTitle = isCurrentViewing ? chapterTitle : chapObj.title;
+
+    if (!sourceText.trim()) return;
+    setFixingAlertId(alert.id);
+    try {
+      const fixedText = await reviseChapterFromLiveAlert({
+        book: currentBook,
+        chapterIndex: chapObj.index,
+        chapterTitle: sourceTitle,
+        chapterText: sourceText,
+        alert,
+        apiConfig: writerCfg,
+        model: activeModelName,
+      });
+
+      if (!fixedText || fixedText.length < sourceText.length * 0.65) {
+        throw new Error('模型返回修稿文本过短，已保护原章节未被覆盖。');
+      }
+
+      const updatedChapters = [...currentBook.chapters];
+      const realIdx = targetIdx >= 0 ? targetIdx : currentChapterIndex;
+      updatedChapters[realIdx] = {
+        ...updatedChapters[realIdx],
+        text: fixedText,
+        meta: `AI局部防穿帮修复于 ${new Date().toLocaleTimeString()}`,
+      };
+
+      const state = ensureLiveContinuityState(currentBook);
+      const nextAlerts = state.alerts.map((a) =>
+        a.id === alert.id ? { ...a, status: 'resolved' as const } : a
+      );
+
+      await onSaveBook({
+        ...currentBook,
+        chapters: updatedChapters,
+        settings: {
+          ...currentBook.settings,
+          liveContinuity: {
+            ...state,
+            alerts: nextAlerts,
+            updatedAt: Date.now(),
+          },
+        },
+        lastModifiedAt: Date.now(),
+      });
+
+      if (isCurrentViewing || targetIdx >= 0) {
+        setCurrentChapterIndex(realIdx);
+        setChapterText(fixedText);
+      }
+      triggerQuickToast(`已局部修复第 ${chapObj.index} 章逻辑问题并保存！`);
+    } catch (err: any) {
+      setNoticeModal({
+        isOpen: true,
+        type: 'error',
+        title: 'AI 局部修复未完成',
+        message: err.message || '请求中断，原章节正文完好无损。',
+      });
+    } finally {
+      setFixingAlertId(null);
+    }
+  };
+
+  // Dialogue Co-Writing with Setting & Rationality Audit
+  const handleSendDialogueMessage = async (userText: string) => {
+    if (!currentBook || isDialogueSending || isGenerating) return;
+    const prevHistory = currentBook.settings?.dialogueHistory || [];
+    const userMsg: DialogueCoWriteMessage = {
+      id: generateUUID(),
+      role: 'user',
+      content: userText,
+      timestamp: Date.now(),
+    };
+
+    const withUserHistory = [...prevHistory, userMsg];
+    let updatedBook: Book = {
+      ...currentBook,
+      settings: {
+        ...currentBook.settings,
+        dialogueHistory: withUserHistory,
+      },
+      lastModifiedAt: Date.now(),
+    };
+    await onSaveBook(updatedBook);
+    setIsDialogueSending(true);
+
+    try {
+      const nextNum = (currentBook.chapters?.length || 0) + 1;
+      const tail =
+        currentBook.chapters.length > 0
+          ? currentBook.chapters[currentBook.chapters.length - 1]?.text?.slice(-800) || ''
+          : '';
+      const messages = buildDialogueCoWriteMessages({
+        book: updatedBook,
+        history: prevHistory,
+        userMessage: userText,
+        activeChapterTail: tail,
+        nextChapterNum: nextNum,
+      });
+
+      const res = await chatCompletion({
+        provider: writerCfg?.provider,
+        baseUrl: writerCfg?.baseUrl,
+        apiKey: writerCfg?.apiKey,
+        model: activeModelName,
+        messages,
+        temperature: 0.72,
+      });
+
+      const parsed = parseDialogueCoWriteReply(res.content || '');
+      const aiMsg: DialogueCoWriteMessage = {
+        id: generateUUID(),
+        role: 'assistant',
+        content: (res.content || '').trim() || '模型未返回内容，请重试。',
+        rationalityPassed: parsed.rationalityPassed,
+        flaggedRisks: parsed.flaggedRisks,
+        directorDirective: parsed.directorDirective,
+        timestamp: Date.now(),
+      };
+
+      await onSaveBook({
+        ...updatedBook,
+        settings: {
+          ...updatedBook.settings,
+          dialogueHistory: [...withUserHistory, aiMsg],
+        },
+        lastModifiedAt: Date.now(),
+      });
+    } catch (err: any) {
+      setNoticeModal({
+        isOpen: true,
+        type: 'error',
+        title: '对话共创审校请求失败',
+        message: err.message || '网络或模型响应异常，请检查线路后重试。',
+      });
+    } finally {
+      setIsDialogueSending(false);
+    }
+  };
+
+  const handleClearDialogueHistory = async () => {
+    if (!currentBook) return;
+    await onSaveBook({
+      ...currentBook,
+      settings: {
+        ...currentBook.settings,
+        dialogueHistory: [],
+      },
+      lastModifiedAt: Date.now(),
+    });
+    triggerQuickToast('已清空本轮共创对话记忆');
+  };
+
+  const handleFillOutlineIntoDirector = (co: NovelChapterOutlineItem) => {
+    const formatted = `【L4细纲 · 第${co.chapterIndex}章《${co.title}》】\n${co.summary}${
+      co.hookNote ? `\n【章末悬念钩子】${co.hookNote}` : ''
+    }`;
+    handleSaveNextPlotInput(formatted);
+    setCreationMode('outline');
+    setMobilePaneTab('director');
+    triggerQuickToast(`已将第 ${co.chapterIndex} 章 L4 细纲填入导演台`);
+  };
+
+  const scrollToLocatedMatch = (targetIdx: number) => {
+    requestAnimationFrame(() => {
+      const container = manuscriptScrollRef.current;
+      if (!container) return;
+      const el = container.querySelector<HTMLElement>(`[data-locate-idx="${targetIdx}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  };
+
+  const handleLocateKeywordInChapter = (keyword: string) => {
+    const kw = keyword.trim();
+    if (!kw) return;
+    setLocatedKeyword(kw);
+    setLocatedMatchIndex(0);
+    setMobilePaneTab('manuscript');
+
+    const firstPos = chapterText.indexOf(kw);
+    if (firstPos < 0) {
+      triggerQuickToast(`当前章正文中暂未直接出现「${kw}」字样`);
+      return;
+    }
+
+    if (isEditMode && textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(firstPos, firstPos + kw.length);
+      return;
+    }
+    scrollToLocatedMatch(0);
+  };
+
+  const handleAppendReminderToDirector = (reminderText: string) => {
+    const clean = reminderText.trim();
+    if (!clean) return;
+    if (nextPlotInput.includes(clean)) {
+      setCreationMode('outline');
+      setMobilePaneTab('director');
+      triggerQuickToast('该防穿帮叮嘱已在导演台指令中');
+      return;
+    }
+    const combined = nextPlotInput.trim()
+      ? `${nextPlotInput.trim()}\n• [防穿帮叮嘱] ${clean}`
+      : `• [防穿帮叮嘱] ${clean}`;
+    handleSaveNextPlotInput(combined);
+    setCreationMode('outline');
+    setMobilePaneTab('director');
+    triggerQuickToast('已写入右侧导演台防穿帮叮嘱');
+  };
+
   if (!currentBook) {
     return (
       <div className="max-w-lg mx-auto my-12 studio-card p-8 sm:p-12 text-center space-y-4">
@@ -1290,702 +1780,1336 @@ ${chapterTail}
   const manuscriptFontClass =
     uiSettings.chapterFontFamily === 'sans' ? 'font-sans' : 'font-editorial-serif';
 
-  return (
-    <div className="max-w-7xl mx-auto space-y-4 pb-8">
-      {/* Empty-Response / Network Failure 1-Click Retry Banner */}
-      {lastFailedRequest && !isGenerating && (
-        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
-            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-            <span>
-              上次生成未返回有效正文（已自动拦截保护，未覆盖章节）。您输入的剧情走向与灵感卡片均已保留，可直接重试：
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => handleGenerateNextChapter(lastFailedRequest.plotHint, lastFailedRequest.isRewrite)}
-            className="min-h-[44px] px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+  const liveContinuityState = useMemo(
+    () => (currentBook ? ensureLiveContinuityState(currentBook) : null),
+    [currentBook]
+  );
+
+  // Locate Keyword Matches for Highlight Rendering
+  const locatedHighlight = useMemo(() => {
+    const kw = locatedKeyword.trim();
+    if (!kw || !chapterText) {
+      return { totalMatches: 0, nodes: null as React.ReactNode };
+    }
+    const parts = chapterText.split(kw);
+    const total = parts.length - 1;
+    if (total <= 0) {
+      return { totalMatches: 0, nodes: null as React.ReactNode };
+    }
+    const activeIdx = Math.min(locatedMatchIndex, total - 1);
+    const nodes: React.ReactNode[] = [];
+    parts.forEach((seg, idx) => {
+      if (seg) nodes.push(seg);
+      if (idx < total) {
+        const isActive = idx === activeIdx;
+        nodes.push(
+          <mark
+            key={`loc-${idx}`}
+            data-locate-idx={idx}
+            className={`px-1 py-0.5 rounded font-semibold transition-colors ${
+              isActive
+                ? 'bg-[var(--accent)] text-[var(--accent-fg)] ring-2 ring-[var(--accent)]/40'
+                : 'bg-amber-300/65 dark:bg-amber-500/35 text-[var(--text-primary)]'
+            }`}
           >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>一键重试生成该章节</span>
-          </button>
+            {kw}
+          </mark>
+        );
+      }
+    });
+    return { totalMatches: total, nodes };
+  }, [chapterText, locatedKeyword, locatedMatchIndex]);
+
+  return (
+    <div className="w-full pb-2 lg:pb-0">
+      {/* Zone 0: Floating Quick-Switch Overlay Button & Drawer (Zero footprint on main 3 columns) */}
+      <WriterQuickRail
+        isOpen={isQuickRailOpen}
+        onToggleOpen={handleToggleQuickRail}
+        onClose={() => setIsQuickRailOpen(false)}
+        currentBookId={currentBook.id}
+        books={books}
+        dramaProjects={dramaProjects}
+        activeTrack="novel"
+        onSelectBook={onSelectBook}
+        onSelectDramaProject={onSelectDramaProject}
+        onSwitchTrack={onSwitchTrack}
+      />
+
+      {/* Main 3-Column Editorial Workstation Area */}
+      <div className="w-full space-y-2.5 lg:space-y-0">
+        {/* Mobile Pane Switcher (< lg) */}
+        <div className="lg:hidden grid grid-cols-3 gap-1 p-1 rounded-xl studio-muted text-[11px]">
+          {[
+            { id: 'chapters_settings', label: '目录 / 本章联动' },
+            { id: 'manuscript', label: '正文 / 实时监测' },
+            { id: 'director', label: '创作 / 对话台' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setMobilePaneTab(tab.id as any)}
+              className={`min-h-[34px] rounded-lg font-semibold whitespace-nowrap cursor-pointer ${
+                mobilePaneTab === tab.id
+                  ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-2xs'
+                  : 'text-[var(--text-secondary)]'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
-      )}
 
-      {/* 2-Column Editorial Workstation Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* LEFT COLUMN (8 cols): Full-Height Literary Manuscript Sheet */}
-        <div className="lg:col-span-8 space-y-4">
-          <article className="studio-card p-4 sm:p-8 lg:p-10 space-y-5">
-            {/* Compact Chapter Navigation & Word Telemetry Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-[var(--border-subtle)]">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <button
-                  type="button"
-                  disabled={currentChapterIndex <= 0 || isGenerating}
-                  onClick={() => setCurrentChapterIndex((prev) => Math.max(0, prev - 1))}
-                  className="min-h-[40px] min-w-[40px] px-2.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] disabled:opacity-35 flex items-center justify-center text-xs cursor-pointer"
-                  title="上一章"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                </button>
-
-                <select
-                  disabled={isGenerating}
-                  value={currentChapterIndex}
-                  onChange={(e) => setCurrentChapterIndex(Number(e.target.value))}
-                  className="studio-input min-h-[40px] max-w-[180px] sm:max-w-[260px] px-3 py-1.5 text-xs font-medium truncate"
-                >
-                  {currentBook.chapters.length === 0 ? (
-                    <option value={0}>第 1 章 · 初稿生成中</option>
-                  ) : (
-                    currentBook.chapters.map((ch, idx) => (
-                      <option key={ch.id} value={idx}>
-                        第 {ch.index} 章 · {ch.title}
-                      </option>
-                    ))
-                  )}
-                </select>
-
-                <button
-                  type="button"
-                  disabled={currentChapterIndex >= currentBook.chapters.length - 1 || isGenerating}
-                  onClick={() =>
-                    setCurrentChapterIndex((prev) => Math.min(currentBook.chapters.length - 1, prev + 1))
-                  }
-                  className="min-h-[40px] min-w-[40px] px-2.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] disabled:opacity-35 flex items-center justify-center text-xs cursor-pointer"
-                  title="下一章"
-                >
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Editorial Toolbar */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <MotionButton
-                  type="button"
-                  disabled={isGenerating || !chapterText.trim()}
-                  onClick={() => setIsZhuqueModalOpen(true)}
-                  className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer tabular-nums ${
-                    !chapterText.trim()
-                      ? 'border-[var(--border-subtle)] text-[var(--text-secondary)]'
-                      : liveZhuqueReport.verdict === 'pass'
-                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                      : liveZhuqueReport.verdict === 'borderline'
-                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                      : 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300'
-                  }`}
-                  title="打开腾讯朱雀AIGC检测、一键去AI味重铸、四维对抗审读与章节记忆回写"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                  <span>
-                    朱雀质检{chapterText.trim() ? ` · AI痕 ${liveZhuqueReport.aiRiskScore}%` : ''}
-                  </span>
-                </MotionButton>
-
-                {onOpenManuscriptAudit && (
-                  <MotionButton
-                    type="button"
-                    disabled={isGenerating || currentBook.chapters.length === 0}
-                    onClick={() =>
-                      onOpenManuscriptAudit(
-                        currentBook,
-                        activeChapter?.index || currentChapterIndex + 1
-                      )
-                    }
-                    className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer tabular-nums ${
-                      (currentBook.manuscriptAudit?.criticalCount || 0) > 0
-                        ? 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300'
-                        : 'border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[var(--text-primary)]'
-                    }`}
-                    title="一键审查全书与简介一致度、时间线闭合、伏笔回收、身份铺垫与跨章协同改稿"
-                  >
-                    <FileCheck2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>
-                      全书终审
-                      {currentBook.manuscriptAudit
-                        ? ` · ${
-                            (currentBook.manuscriptAudit.criticalCount || 0) +
-                            (currentBook.manuscriptAudit.majorCount || 0)
-                          }项`
-                        : ''}
-                    </span>
-                  </MotionButton>
-                )}
-
-                <MotionButton
-                  type="button"
-                  disabled={isGenerating || !chapterText.trim()}
-                  onClick={handleOpenPolishModal}
-                  className="min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer"
-                  title="选中文本或针对局部段落进行去AI味精修与张力慢放"
-                >
-                  <Wand2 className="w-3.5 h-3.5" />
-                  <span>段落精修</span>
-                </MotionButton>
-
-                <MotionButton
-                  type="button"
-                  onClick={() => setIsFocusMode(true)}
-                  className="min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-secondary)] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <BookOpenText className="w-3.5 h-3.5" />
-                  <span>沉浸阅读</span>
-                </MotionButton>
-
-                <MotionButton
-                  type="button"
-                  disabled={isGenerating}
-                  onClick={() => setIsEditMode(!isEditMode)}
-                  className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer ${
-                    isEditMode
-                      ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)]'
-                      : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
-                  }`}
-                >
-                  {isEditMode ? <Eye className="w-3.5 h-3.5" /> : <Edit3 className="w-3.5 h-3.5" />}
-                  <span>{isEditMode ? '完成校对' : '编辑正文'}</span>
-                </MotionButton>
-
-                {isEditMode && (
-                  <MotionButton
-                    type="button"
-                    disabled={isGenerating}
-                    onClick={handleSaveChapterEdits}
-                    className="btn-primary min-h-[40px] px-3.5 py-1.5 text-xs flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    {saveSuccessToast ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-                    <span>{saveSuccessToast ? '已保存' : '保存'}</span>
-                  </MotionButton>
-                )}
-              </div>
+        {/* Empty-Response / Network Failure 1-Click Retry Banner */}
+        {lastFailedRequest && !isGenerating && (
+          <div className="p-3.5 lg:mb-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <span>
+                上次生成未返回有效正文（已自动拦截保护，未覆盖章节）。您输入的剧情走向与灵感卡片均已保留，可直接重试：
+              </span>
             </div>
+            <button
+              type="button"
+              onClick={() => handleGenerateNextChapter(lastFailedRequest.plotHint, lastFailedRequest.isRewrite)}
+              className="min-h-[40px] px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>一键重试生成该章节</span>
+            </button>
+          </div>
+        )}
 
-            {/* Chapter Title & Word Count Subtitle */}
-            <div className="space-y-2">
-              <input
-                type="text"
-                value={chapterTitle}
-                onChange={(e) => setChapterTitle(e.target.value)}
-                disabled={!isEditMode || isGenerating}
-                placeholder="章节标题..."
-                className={`w-full text-xl sm:text-2xl lg:text-3xl font-bold bg-transparent text-[var(--text-primary)] focus:outline-none ${manuscriptFontClass} ${
-                  isEditMode ? 'border-b border-[var(--accent)] pb-1' : ''
-                }`}
-              />
+        {/* 3-Column Independent-Scroll PC Workstation Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-[264px_minmax(0,1fr)_332px] xl:grid-cols-[300px_minmax(0,1fr)_372px] gap-3 xl:gap-3.5 items-stretch lg:h-[calc(100dvh-5.35rem)] lg:min-h-[480px]">
+          {/* LEFT PANE: Active-Chapter Highlighting + Directory + Settings Inspector (Independent Scroll + Fixed Header/Footer) */}
+          <div
+            className={`lg:h-full lg:min-h-0 ${
+              mobilePaneTab === 'chapters_settings' ? 'block' : 'hidden lg:block'
+            }`}
+          >
+            <WriterLeftInspector
+              book={currentBook}
+              currentChapterIndex={currentChapterIndex}
+              activeChapterText={chapterText}
+              onSelectChapter={(idx) => {
+                setCurrentChapterIndex(idx);
+                setMobilePaneTab('manuscript');
+              }}
+              onFillOutlineIntoDirector={handleFillOutlineIntoDirector}
+              onLocateKeywordInChapter={handleLocateKeywordInChapter}
+              onAppendReminderToDirector={handleAppendReminderToDirector}
+              onGoToSetup={onGoToSetup}
+              isGenerating={isGenerating}
+            />
+          </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)] tabular-nums">
-                <span>
-                  本章 {chapterText.length.toLocaleString()} 字 · 全书累计 {totalWordCount.toLocaleString()} 字 · 线路 {writerCfg?.name} ({activeModelName})
-                </span>
-                <span>
-                  {autoSaveStatus === 'saving'
-                    ? '正在自动保存草稿...'
-                    : autoSaveStatus === 'saved' && lastAutoSavedTime
-                    ? `已自动保存 ${lastAutoSavedTime}`
-                    : genMeta
-                    ? genMeta
-                    : ''}
-                </span>
-              </div>
-            </div>
+          {/* CENTER PANE: Fixed Top Toolbar + Scroll-Only Manuscript Body + Pinned Bottom Live Continuity Dock */}
+          <div
+            className={`lg:h-full lg:min-h-0 flex flex-col gap-2.5 overflow-hidden ${
+              mobilePaneTab === 'manuscript' ? 'flex' : 'hidden lg:flex'
+            }`}
+          >
+            {/* Manuscript Card (Fixed Header, Independently Scrollable Body) */}
+            <article className="studio-card flex-1 min-h-0 flex flex-col overflow-hidden">
+              {/* COMPACT PINNED TOP HEADER (Reclaims vertical height so 75%+ goes to Manuscript prose) */}
+              <div className="shrink-0 px-3.5 py-2 sm:px-4 sm:py-2.5 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] space-y-1.5 z-10">
+                <div className="flex flex-wrap items-center justify-between gap-1.5">
+                  {/* Chapter Nav */}
+                  <div className="flex items-center gap-1 min-w-0">
+                    <button
+                      type="button"
+                      disabled={currentChapterIndex <= 0 || isGenerating}
+                      onClick={() => setCurrentChapterIndex((prev) => Math.max(0, prev - 1))}
+                      className="min-h-[32px] min-w-[32px] px-1.5 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] disabled:opacity-35 flex items-center justify-center text-xs cursor-pointer"
+                      title="上一章"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                    </button>
 
-            {/* Locked Streaming Progress Header (Active ONLY during AI expansion/rewrite/batch) */}
-            {isGenerating && (
-              <div className="sticky top-16 z-20 p-4 rounded-2xl border border-[var(--accent)]/30 bg-[var(--bg-surface)]/95 backdrop-blur-md shadow-lg space-y-2.5 bg-[radial-gradient(circle_at_top_right,var(--accent-soft),transparent_68%)]">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2 font-semibold text-[var(--text-primary)]">
-                    <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)] shrink-0" />
-                    <span>
-                      {batchProgress
-                        ? `正在连续生成第 ${batchProgress.currentStep} / ${batchProgress.totalSteps} 章（全书第 ${batchProgress.currentChapNum} 章）`
-                        : 'AI 正在流式扩写正文 · 编辑区与输入区已安全锁定'}
-                    </span>
+                    <select
+                      disabled={isGenerating}
+                      value={currentChapterIndex}
+                      onChange={(e) => setCurrentChapterIndex(Number(e.target.value))}
+                      className="studio-input min-h-[32px] max-w-[140px] sm:max-w-[175px] px-2 py-0.5 text-xs font-medium truncate"
+                    >
+                      {currentBook.chapters.length === 0 ? (
+                        <option value={0}>第 1 章 · 初稿生成中</option>
+                      ) : (
+                        currentBook.chapters.map((ch, idx) => (
+                          <option key={ch.id} value={idx}>
+                            第 {ch.index} 章 · {ch.title}
+                          </option>
+                        ))
+                      )}
+                    </select>
+
+                    <button
+                      type="button"
+                      disabled={currentChapterIndex >= currentBook.chapters.length - 1 || isGenerating}
+                      onClick={() =>
+                        setCurrentChapterIndex((prev) => Math.min(currentBook.chapters.length - 1, prev + 1))
+                      }
+                      className="min-h-[32px] min-w-[32px] px-1.5 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] disabled:opacity-35 flex items-center justify-center text-xs cursor-pointer"
+                      title="下一章"
+                    >
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[var(--text-secondary)] tabular-nums">
-                      实时输出 {chapterText.length} / 规定 {targetChapterWords} 字 ({progressPercent}%)
-                    </span>
-                    {batchProgress && batchProgress.currentStep < batchProgress.totalSteps && (
-                      <button
+
+                  {/* Editorial Toolbar */}
+                  <div className="flex flex-wrap items-center gap-1">
+                    <MotionButton
+                      type="button"
+                      disabled={isGenerating || !chapterText.trim()}
+                      onClick={() => setIsZhuqueModalOpen(true)}
+                      className={`min-h-[32px] px-2 py-0.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer tabular-nums ${
+                        !chapterText.trim()
+                          ? 'border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                          : liveZhuqueReport.verdict === 'pass'
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                          : liveZhuqueReport.verdict === 'borderline'
+                          ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                          : 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                      }`}
+                      title="打开腾讯朱雀AIGC检测、一键去AI味重铸、四维对抗审读与章节记忆回写"
+                    >
+                      <ShieldCheck className="w-3 h-3 shrink-0" />
+                      <span>
+                        朱雀{chapterText.trim() ? `·${liveZhuqueReport.aiRiskScore}%` : ''}
+                      </span>
+                    </MotionButton>
+
+                    {onOpenManuscriptAudit && (
+                      <MotionButton
                         type="button"
-                        disabled={stopBatchRequested}
-                        onClick={() => {
-                          stopBatchAfterCurrentRef.current = true;
-                          setStopBatchRequested(true);
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-60"
+                        disabled={isGenerating || currentBook.chapters.length === 0}
+                        onClick={() =>
+                          onOpenManuscriptAudit(
+                            currentBook,
+                            activeChapter?.index || currentChapterIndex + 1
+                          )
+                        }
+                        className={`min-h-[32px] px-2 py-0.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer tabular-nums ${
+                          (currentBook.manuscriptAudit?.criticalCount || 0) > 0
+                            ? 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                            : 'border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[var(--text-primary)]'
+                        }`}
+                        title="一键审查全书与简介一致度、时间线闭合、伏笔回收、身份铺垫与跨章协同改稿"
                       >
-                        {stopBatchRequested ? '写完本章后将停止' : '写完本章后停止'}
-                      </button>
+                        <FileCheck2 className="w-3 h-3 shrink-0" />
+                        <span>
+                          终审
+                          {currentBook.manuscriptAudit
+                            ? `·${
+                                (currentBook.manuscriptAudit.criticalCount || 0) +
+                                (currentBook.manuscriptAudit.majorCount || 0)
+                              }`
+                            : ''}
+                        </span>
+                      </MotionButton>
+                    )}
+
+                    <MotionButton
+                      type="button"
+                      disabled={isGenerating || !chapterText.trim()}
+                      onClick={handleOpenPolishModal}
+                      className="min-h-[32px] px-2 py-0.5 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[11px] font-medium text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer"
+                      title="选中文本或针对局部段落进行去AI味精修与张力慢放"
+                    >
+                      <Wand2 className="w-3 h-3" />
+                      <span>精修</span>
+                    </MotionButton>
+
+                    {/* Manual Typography Controls Popover (行间距 + 字间距) */}
+                    <div ref={typographyPopoverRef} className="relative">
+                      <MotionButton
+                        type="button"
+                        onClick={() => setIsTypographyOpen((prev) => !prev)}
+                        className={`min-h-[32px] px-2 py-0.5 rounded-lg border text-[11px] font-medium flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer ${
+                          isTypographyOpen
+                            ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)]'
+                            : 'border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[var(--text-secondary)]'
+                        }`}
+                        title="手动调整正文行间距与字间距"
+                      >
+                        <Type className="w-3 h-3" />
+                        <span>排版</span>
+                      </MotionButton>
+
+                      {isTypographyOpen && (
+                        <div className="absolute right-0 top-full mt-2 w-72 p-4 rounded-2xl studio-card shadow-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] z-40 space-y-3.5 text-xs">
+                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-[var(--border-subtle)]">
+                            <span className="font-bold text-[var(--text-primary)]">正文排版间距调节</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLineHeight(1.92);
+                                setLetterSpacing(0.025);
+                                triggerQuickToast('已恢复默认阅读行距与字距');
+                              }}
+                              className="text-[11px] font-medium text-[var(--accent)] hover:underline cursor-pointer"
+                            >
+                              恢复默认
+                            </button>
+                          </div>
+
+                          {/* Line Height Slider & Presets */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-semibold text-[var(--text-secondary)]">行间距</span>
+                              <span className="font-mono font-bold text-[var(--text-primary)] tabular-nums">
+                                {lineHeight.toFixed(2)}x
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={1.4}
+                              max={2.6}
+                              step={0.05}
+                              value={lineHeight}
+                              onChange={(e) => setLineHeight(Number(e.target.value))}
+                              className="w-full accent-[var(--accent)] cursor-pointer"
+                            />
+                            <div className="grid grid-cols-4 gap-1">
+                              {[
+                                { label: '紧凑', val: 1.6 },
+                                { label: '适中', val: 1.92 },
+                                { label: '舒展', val: 2.2 },
+                                { label: '宽松', val: 2.45 },
+                              ].map((p) => (
+                                <button
+                                  key={p.label}
+                                  type="button"
+                                  onClick={() => setLineHeight(p.val)}
+                                  className={`py-1 rounded-lg border text-[10.5px] cursor-pointer ${
+                                    Math.abs(lineHeight - p.val) < 0.04
+                                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)] font-bold'
+                                      : 'border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                                  }`}
+                                >
+                                  {p.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Letter Spacing Slider & Presets */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-semibold text-[var(--text-secondary)]">字间距</span>
+                              <span className="font-mono font-bold text-[var(--text-primary)] tabular-nums">
+                                {letterSpacing.toFixed(3)}em
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={0.14}
+                              step={0.005}
+                              value={letterSpacing}
+                              onChange={(e) => setLetterSpacing(Number(e.target.value))}
+                              className="w-full accent-[var(--accent)] cursor-pointer"
+                            />
+                            <div className="grid grid-cols-4 gap-1">
+                              {[
+                                { label: '紧致', val: 0 },
+                                { label: '标准', val: 0.025 },
+                                { label: '疏朗', val: 0.06 },
+                                { label: '宽距', val: 0.1 },
+                              ].map((p) => (
+                                <button
+                                  key={p.label}
+                                  type="button"
+                                  onClick={() => setLetterSpacing(p.val)}
+                                  className={`py-1 rounded-lg border text-[10.5px] cursor-pointer ${
+                                    Math.abs(letterSpacing - p.val) < 0.006
+                                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)] font-bold'
+                                      : 'border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                                  }`}
+                                >
+                                  {p.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <MotionButton
+                      type="button"
+                      onClick={() => setIsFocusMode(true)}
+                      className="min-h-[32px] px-2 py-0.5 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[11px] font-medium text-[var(--text-secondary)] flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <BookOpenText className="w-3 h-3" />
+                      <span>沉浸</span>
+                    </MotionButton>
+
+                    <MotionButton
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={() => setIsEditMode(!isEditMode)}
+                      className={`min-h-[32px] px-2 py-0.5 rounded-lg border text-[11px] font-medium flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer ${
+                        isEditMode
+                          ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)]'
+                          : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+                      }`}
+                    >
+                      {isEditMode ? <Eye className="w-3 h-3" /> : <Edit3 className="w-3 h-3" />}
+                      <span>{isEditMode ? '预览' : '编辑'}</span>
+                    </MotionButton>
+
+                    {isEditMode && (
+                      <MotionButton
+                        type="button"
+                        disabled={isGenerating}
+                        onClick={handleSaveChapterEdits}
+                        className="btn-primary min-h-[32px] px-2.5 py-0.5 text-[11px] flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        {saveSuccessToast ? <Check className="w-3 h-3" /> : <Save className="w-3 h-3" />}
+                        <span>{saveSuccessToast ? '已保存' : '保存'}</span>
+                      </MotionButton>
                     )}
                   </div>
                 </div>
 
-                <progress
-                  value={progressPercent}
-                  max={100}
-                  className="w-full h-2 rounded-full overflow-hidden appearance-none [&::-webkit-progress-bar]:bg-[var(--bg-muted)] [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-[var(--accent)] [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:transition-all [&::-moz-progress-bar]:bg-[var(--accent)]"
-                />
-              </div>
-            )}
-
-            {/* Main Literary Manuscript Canvas (No nested 60vh scroll trap!) */}
-            <div
-              className={`relative min-h-[380px] sm:min-h-[520px] pt-2 transition-opacity ${
-                isGenerating
-                  ? 'select-none pointer-events-none bg-[radial-gradient(circle_at_center,var(--accent-soft),transparent_75%)] rounded-xl p-2 sm:p-4'
-                  : ''
-              }`}
-            >
-              {isEditMode && !isGenerating ? (
-                <div className="space-y-2">
-                  <p className="text-[11px] text-[var(--text-muted)]">
-                    提示：在下方文本框中用鼠标或手指涂黑选中任意一段文字，点击顶部「段落精修」即可针对选中句段单独润色或慢放张力。
-                  </p>
-                  <textarea
-                    ref={textareaRef}
-                    rows={22}
-                    value={chapterText}
-                    onChange={(e) => setChapterText(e.target.value)}
-                    placeholder="在此直接校对或撰写章节正文..."
-                    className={`studio-input w-full p-4 text-[var(--text-primary)] chapter-canvas resize-y min-h-[480px] ${manuscriptFontClass}`}
+                {/* Compact Single-Band Title & Word Telemetry Row */}
+                <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-1 sm:gap-3">
+                  <input
+                    type="text"
+                    value={chapterTitle}
+                    onChange={(e) => setChapterTitle(e.target.value)}
+                    disabled={!isEditMode || isGenerating}
+                    placeholder="章节标题..."
+                    className={`flex-1 min-w-0 text-base sm:text-lg font-bold bg-transparent text-[var(--text-primary)] focus:outline-none ${manuscriptFontClass} ${
+                      isEditMode ? 'border-b border-[var(--accent)] pb-0.5' : ''
+                    }`}
                   />
-                </div>
-              ) : (
-                <div
-                  onContextMenu={(e) => {
-                    const selected = window.getSelection()?.toString()?.trim();
-                    openContextMenu(e, selected ? '选中文本快捷操作' : chapterTitle || '章节原稿画布', [
-                      ...(selected
-                        ? [
-                            {
-                              id: 'polish-sel',
-                              label: 'AI 精修当前选中段落',
-                              icon: <Wand2 className="w-3.5 h-3.5" />,
-                              onSelect: () => {
-                                setPolishSourceText(selected);
-                                setPolishRange(null);
-                                setPolishResultText('');
-                                setIsPolishModalOpen(true);
-                              },
-                            },
-                            {
-                              id: 'copy-sel',
-                              label: '复制选中文本',
-                              icon: <Copy className="w-3.5 h-3.5" />,
-                              onSelect: () => {
-                                navigator.clipboard?.writeText(selected);
-                                triggerQuickToast('已复制选中句段');
-                              },
-                            },
-                          ]
-                        : []),
-                      {
-                        id: 'copy-full-ch',
-                        label: '复制本章完整正文',
-                        icon: <Copy className="w-3.5 h-3.5" />,
-                        disabled: !chapterText.trim(),
-                        onSelect: () => {
-                          navigator.clipboard?.writeText(`### ${chapterTitle}\n\n${chapterText}`);
-                          triggerQuickToast('已复制本章完整正文');
-                        },
-                      },
-                      {
-                        id: 'focus-read',
-                        label: '开启全屏沉浸阅读',
-                        icon: <BookOpenText className="w-3.5 h-3.5" />,
-                        onSelect: () => setIsFocusMode(true),
-                      },
-                      {
-                        id: 'edit-ch',
-                        label: '进入手工校对模式',
-                        icon: <Edit3 className="w-3.5 h-3.5" />,
-                        disabled: isGenerating,
-                        onSelect: () => setIsEditMode(true),
-                      },
-                    ]);
-                  }}
-                  className={`whitespace-pre-wrap text-[var(--text-primary)] chapter-canvas ${manuscriptFontClass}`}
-                >
-                  {chapterText || (isGenerating ? '正在等待模型首字流式返回...' : '本章暂无正文，点击右侧「继续扩写」开始创作。')}
-                  <div ref={streamEndRef} />
-                </div>
-              )}
-            </div>
-          </article>
 
-          {/* Collapsible Book Outline & Settings Quick Reference */}
-          <div className="studio-card overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setIsReviewOpen(!isReviewOpen)}
-              className="w-full min-h-[48px] px-5 py-3.5 flex items-center justify-between text-left hover:bg-[var(--bg-muted)] transition-colors cursor-pointer"
-            >
-              <span className="text-xs sm:text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
-                <FileText className="w-4 h-4 text-[var(--text-muted)]" />
-                <span>查阅本书大纲与角色速览：《{currentBook.title}》</span>
-              </span>
-              {isReviewOpen ? (
-                <ChevronUp className="w-4 h-4 text-[var(--text-muted)]" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-[var(--text-muted)]" />
-              )}
-            </button>
-
-            {isReviewOpen && (
-              <div className="p-5 border-t border-[var(--border-subtle)] space-y-3 text-xs text-[var(--text-secondary)] leading-relaxed">
-                <p className="text-[var(--text-muted)]">
-                  {currentBook.settings?.genre} · {currentBook.settings?.style || '默认基调'} · {currentBook.settings?.pov} / {currentBook.settings?.tense} · 记忆窗口 {currentBook.settings?.contextMemory ?? 4} 章
-                </p>
-                {currentBook.settings?.characters && (
-                  <div>
-                    <p className="font-semibold text-[var(--text-primary)] mb-1">主要角色：</p>
-                    <p className="whitespace-pre-wrap">{currentBook.settings.characters}</p>
-                  </div>
-                )}
-                {currentBook.settings?.outline && (
-                  <div>
-                    <p className="font-semibold text-[var(--text-primary)] mb-1">核心大纲：</p>
-                    <p className="whitespace-pre-wrap max-h-56 overflow-y-auto p-3 studio-muted">
-                      {currentBook.settings.outline}
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN (4 cols): Sticky Copilot Director & SKILL Inspector */}
-        <aside className="lg:col-span-4 lg:sticky lg:top-20 space-y-4">
-          {/* Card 1: Real-time SKILL 2.0 & Lorebook 2.0 Mount Status */}
-          <div className="studio-card p-4 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <h3 className="text-xs font-bold text-[var(--text-primary)]">引擎与设定挂载状态</h3>
-                <p className="text-[11px] text-[var(--text-muted)] mt-0.5 tabular-nums">
-                  {liveAuditReport?.activeSkills.length || 0} 项 SKILL · {liveAuditReport?.activeLore.length || 0} 条世界书 ·{' '}
-                  {(currentBook.settings?.chapterOutlines || []).length} 章细纲
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setIsAuditModalOpen(true)}
-                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--bg-muted)] hover:opacity-85 text-xs font-medium text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>透视</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onGoToSetup}
-                  className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-xl border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)] cursor-pointer"
-                  title="修改11大系统设定、章节细纲与SKILL开关"
-                >
-                  <Sliders className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Per-Book XP System Switch inside Writer */}
-            <button
-              type="button"
-              disabled={isGenerating}
-              onClick={handleToggleBookXpSystem}
-              className={`w-full min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
-                isBookXpEnabled
-                  ? 'bg-[var(--accent-soft)] border-[var(--accent)]/45 text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
-              }`}
-              title="随时切换本书是否以 XP 审美系统为底层创作基底"
-            >
-              <span className="flex items-center gap-2">
-                {isBookXpEnabled ? (
-                  <ShieldCheck className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
-                ) : (
-                  <ShieldOff className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
-                )}
-                <span>本书 XP 审美基底系统</span>
-              </span>
-              <span className="text-[11px] font-semibold">
-                {isBookXpEnabled ? '已开启 (全链路基底)' : '已关闭 (纯净商业)'}
-              </span>
-            </button>
-
-            {/* Climax Slow-Motion Switch */}
-            <button
-              type="button"
-              disabled={isGenerating}
-              onClick={() => setClimaxMultiplierEnabled(!climaxMultiplierEnabled)}
-              className={`w-full min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
-                climaxMultiplierEnabled
-                  ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)]'
-                  : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <Flame className="w-3.5 h-3.5 shrink-0" />
-                <span>名场面高潮镜头慢放 (2x细节)</span>
-              </span>
-              <span className="text-[11px] font-semibold">{climaxMultiplierEnabled ? '已开启' : '关闭'}</span>
-            </button>
-
-            {/* Auto Post-Write Zhuque De-Slop Switch */}
-            <button
-              type="button"
-              disabled={isGenerating}
-              onClick={async () => {
-                if (!currentBook) return;
-                const nextFlag = !currentBook.settings?.autoZhuqueDeslop;
-                await onSaveBook({
-                  ...currentBook,
-                  settings: {
-                    ...currentBook.settings,
-                    autoZhuqueDeslop: nextFlag,
-                  },
-                  lastModifiedAt: Date.now(),
-                });
-                triggerQuickToast(
-                  nextFlag
-                    ? '已开启写后自动过朱雀去味校准（AI痕≥22%时自动重铸）'
-                    : '已关闭写后自动去味（仍可随时点击上方朱雀质检手动执行）'
-                );
-              }}
-              className={`w-full min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
-                currentBook.settings?.autoZhuqueDeslop
-                  ? 'bg-emerald-500/15 border-emerald-500/45 text-emerald-700 dark:text-emerald-300'
-                  : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
-              }`}
-              title="开启后，每次单章完稿若检出朱雀AIGC痕迹≥22%，将自动无缝运行一次 story-deslop 人类化重铸"
-            >
-              <span className="flex items-center gap-2">
-                <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                <span>写后自动过朱雀去味校准</span>
-              </span>
-              <span className="text-[11px] font-semibold">
-                {currentBook.settings?.autoZhuqueDeslop ? '已开启' : '按需手动'}
-              </span>
-            </button>
-          </div>
-
-          {/* Card 2: Next Chapter & Multi-Chapter Batch Director (Active on latest chapter) */}
-          {isLastChapter ? (
-            <div className="studio-card p-4 sm:p-5 space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-bold text-[var(--text-primary)]">
-                  章节执笔导演台 (第 {nextChapterNum} 章起)
-                </h3>
-                <MotionButton
-                  type="button"
-                  disabled={isGenerating || isGeneratingBeats}
-                  onClick={handleGenerateChapterBeats}
-                  className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[var(--bg-muted)] hover:opacity-85 text-[11px] font-semibold text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-45 cursor-pointer"
-                  title="AI 自动规划起承转合4幕场景节拍，彻底杜绝原地水字数"
-                >
-                  {isGeneratingBeats ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Clapperboard className="w-3.5 h-3.5" />
-                  )}
-                  <span>生成4幕细纲</span>
-                </MotionButton>
-              </div>
-
-              {/* Single vs Multi-Chapter Continuous Mode Switcher */}
-              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl studio-muted text-xs">
-                <button
-                  type="button"
-                  disabled={isGenerating}
-                  onClick={() => setDirectorMode('single')}
-                  className={`min-h-[34px] rounded-lg font-semibold transition-colors cursor-pointer ${
-                    directorMode === 'single'
-                      ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-2xs'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                  }`}
-                >
-                  单章精写模式
-                </button>
-                <button
-                  type="button"
-                  disabled={isGenerating}
-                  onClick={() => setDirectorMode('batch')}
-                  className={`min-h-[34px] rounded-lg font-semibold transition-colors cursor-pointer flex items-center justify-center gap-1 ${
-                    directorMode === 'batch'
-                      ? 'bg-[var(--accent)] text-[var(--accent-fg)] shadow-2xs'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                  }`}
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  <span>多章连续生成</span>
-                </button>
-              </div>
-
-              {/* Stipulated Word Count Per Chapter Control (Works for BOTH Single & Multi-Chapter!) */}
-              <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/60 space-y-2 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <label className="font-semibold text-[var(--text-primary)]">
-                    规定每章目标字数
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      min={500}
-                      max={15000}
-                      step={250}
-                      disabled={isGenerating}
-                      value={stipulatedWordsPerChapter}
-                      onChange={(e) =>
-                        setStipulatedWordsPerChapter(Math.max(500, Number(e.target.value) || 2000))
-                      }
-                      className="studio-input w-20 px-2 py-1 text-xs font-bold tabular-nums text-right"
-                    />
-                    <span className="text-[11px] text-[var(--text-muted)]">字/章</span>
-                  </div>
-                </div>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {[2000, 3000, 3500, 4500].map((presetW) => (
-                    <button
-                      key={presetW}
-                      type="button"
-                      disabled={isGenerating}
-                      onClick={() => setStipulatedWordsPerChapter(presetW)}
-                      className={`py-1 rounded-lg border text-[11px] tabular-nums transition-colors cursor-pointer ${
-                        Number(stipulatedWordsPerChapter) === presetW
-                          ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-bold'
-                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                      }`}
-                    >
-                      {presetW}字
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Multi-Chapter Batch Count Selector (when in batch mode) */}
-              {directorMode === 'batch' && (
-                <div className="p-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent-soft)]/35 space-y-2.5 text-xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-[var(--text-primary)]">
-                      本次连续生成章节数
+                  <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)] tabular-nums shrink-0">
+                    <span>
+                      {chapterText.length.toLocaleString()} 字 · 行{lineHeight.toFixed(1)}/字{letterSpacing.toFixed(2)}
                     </span>
+                    <span className="hidden xl:inline opacity-75">
+                      {autoSaveStatus === 'saving'
+                        ? '保存中...'
+                        : autoSaveStatus === 'saved' && lastAutoSavedTime
+                        ? `已存 ${lastAutoSavedTime}`
+                        : genMeta || activeModelName}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Pinned Streaming Progress Header (Visible while scrolling manuscript) */}
+                {isGenerating && (
+                  <div className="p-2.5 rounded-xl border border-[var(--accent)]/35 bg-[var(--accent-soft)]/35 space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 font-semibold text-[var(--text-primary)]">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--accent)] shrink-0" />
+                        <span>
+                          {batchProgress
+                            ? `连续生成第 ${batchProgress.currentStep}/${batchProgress.totalSteps} 章（第 ${batchProgress.currentChapNum} 章）`
+                            : 'AI 流式扩写中 · 编辑与输入已锁定'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[var(--text-secondary)] tabular-nums text-[11px]">
+                          {chapterText.length} / {targetChapterWords} 字 ({progressPercent}%)
+                        </span>
+                        {batchProgress && batchProgress.currentStep < batchProgress.totalSteps && (
+                          <button
+                            type="button"
+                            disabled={stopBatchRequested}
+                            onClick={() => {
+                              stopBatchAfterCurrentRef.current = true;
+                              setStopBatchRequested(true);
+                            }}
+                            className="px-2 py-0.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-60"
+                          >
+                            写完本章停止
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <progress
+                      value={progressPercent}
+                      max={100}
+                      className="w-full h-1.5 rounded-full overflow-hidden appearance-none [&::-webkit-progress-bar]:bg-[var(--bg-muted)] [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-[var(--accent)] [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:transition-all [&::-moz-progress-bar]:bg-[var(--accent)]"
+                    />
+                  </div>
+                )}
+
+                {/* Pinned Locate Match Navigator (Active when jumping from Left Inspector) */}
+                {locatedKeyword && (
+                  <div className="px-3 py-1.5 rounded-xl bg-[var(--accent-soft)]/50 border border-[var(--accent)]/35 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-1.5 text-[var(--text-primary)]">
+                      <Search className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                      <span>
+                        正文定位：「<strong>{locatedKeyword}</strong>」·{' '}
+                        {locatedHighlight.totalMatches > 0 ? (
+                          <span className="tabular-nums">
+                            第 {Math.min(locatedMatchIndex + 1, locatedHighlight.totalMatches)} /{' '}
+                            {locatedHighlight.totalMatches} 处
+                          </span>
+                        ) : (
+                          <span className="text-[var(--text-muted)]">本章正文暂未出现</span>
+                        )}
+                      </span>
+                    </div>
                     <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={2}
-                        max={30}
-                        disabled={isGenerating}
-                        value={batchChapterCount}
-                        onChange={(e) =>
-                          setBatchChapterCount(
-                            Math.min(30, Math.max(1, Number(e.target.value) || 2))
-                          )
-                        }
-                        className="studio-input w-16 px-2 py-1 text-xs font-bold tabular-nums text-right"
-                      />
-                      <span className="text-[11px] text-[var(--text-muted)]">章</span>
+                      {locatedHighlight.totalMatches > 1 && !isEditMode && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextIdx =
+                                (locatedMatchIndex - 1 + locatedHighlight.totalMatches) %
+                                locatedHighlight.totalMatches;
+                              setLocatedMatchIndex(nextIdx);
+                              scrollToLocatedMatch(nextIdx);
+                            }}
+                            className="px-2 py-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[11px] hover:bg-[var(--bg-muted)] cursor-pointer"
+                          >
+                            上一处
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextIdx = (locatedMatchIndex + 1) % locatedHighlight.totalMatches;
+                              setLocatedMatchIndex(nextIdx);
+                              scrollToLocatedMatch(nextIdx);
+                            }}
+                            className="px-2 py-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[11px] hover:bg-[var(--bg-muted)] cursor-pointer"
+                          >
+                            下一处
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLocatedKeyword('');
+                          setLocatedMatchIndex(0);
+                        }}
+                        className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                        title="清除正文定位高亮"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
+                )}
+              </div>
 
-                  <div className="grid grid-cols-5 gap-1.5">
-                    {[2, 3, 5, 8, 10].map((cnt) => (
+              {/* ONLY SCROLLABLE MIDDLE AREA (Manuscript Body) */}
+              <div
+                ref={manuscriptScrollRef}
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 sm:px-7 sm:py-5"
+              >
+                <div
+                  className={`relative h-full transition-opacity ${
+                    isGenerating
+                      ? 'select-none pointer-events-none bg-[radial-gradient(circle_at_center,var(--accent-soft),transparent_75%)] rounded-xl p-2 sm:p-4'
+                      : ''
+                  }`}
+                >
+                  {isEditMode && !isGenerating ? (
+                    <div className="h-full flex flex-col gap-1.5">
+                      <p className="text-[11px] text-[var(--text-muted)] shrink-0">
+                        提示：选中段落点击顶部「精修」可局部润色，改完点击底部「监测」校验逻辑连贯性。
+                      </p>
+                      <textarea
+                        ref={textareaRef}
+                        value={chapterText}
+                        onChange={(e) => setChapterText(e.target.value)}
+                        placeholder="在此直接校对或撰写章节正文..."
+                        className={`studio-input w-full flex-1 min-h-[260px] p-4 text-[var(--text-primary)] chapter-canvas resize-none ${manuscriptFontClass}`}
+                      />
+                    </div>
+                  ) : (
+                    <div
+                      onContextMenu={(e) => {
+                        const selected = window.getSelection()?.toString()?.trim();
+                        openContextMenu(e, selected ? '选中文本快捷操作' : chapterTitle || '章节原稿画布', [
+                          ...(selected
+                            ? [
+                                {
+                                  id: 'polish-sel',
+                                  label: 'AI 精修当前选中段落',
+                                  icon: <Wand2 className="w-3.5 h-3.5" />,
+                                  onSelect: () => {
+                                    setPolishSourceText(selected);
+                                    setPolishRange(null);
+                                    setPolishResultText('');
+                                    setIsPolishModalOpen(true);
+                                  },
+                                },
+                                {
+                                  id: 'copy-sel',
+                                  label: '复制选中文本',
+                                  icon: <Copy className="w-3.5 h-3.5" />,
+                                  onSelect: () => {
+                                    navigator.clipboard?.writeText(selected);
+                                    triggerQuickToast('已复制选中句段');
+                                  },
+                                },
+                              ]
+                            : []),
+                          {
+                            id: 'copy-full-ch',
+                            label: '复制本章完整正文',
+                            icon: <Copy className="w-3.5 h-3.5" />,
+                            disabled: !chapterText.trim(),
+                            onSelect: () => {
+                              navigator.clipboard?.writeText(`### ${chapterTitle}\n\n${chapterText}`);
+                              triggerQuickToast('已复制本章完整正文');
+                            },
+                          },
+                          {
+                            id: 'focus-read',
+                            label: '开启全屏沉浸阅读',
+                            icon: <BookOpenText className="w-3.5 h-3.5" />,
+                            onSelect: () => setIsFocusMode(true),
+                          },
+                          {
+                            id: 'edit-ch',
+                            label: '进入手工校对模式',
+                            icon: <Edit3 className="w-3.5 h-3.5" />,
+                            disabled: isGenerating,
+                            onSelect: () => setIsEditMode(true),
+                          },
+                        ]);
+                      }}
+                      className={`whitespace-pre-wrap text-[var(--text-primary)] chapter-canvas ${manuscriptFontClass}`}
+                    >
+                      {locatedHighlight.nodes ||
+                        chapterText ||
+                        (isGenerating
+                          ? '正在等待模型首字流式返回...'
+                          : '本章暂无正文，点击右侧「继续扩写」或通过对话审校共创开始写作。')}
+                      <div ref={streamEndRef} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </article>
+
+            {/* PINNED BOTTOM DOCK: Live Continuity Monitor (Fixed at bottom, does NOT scroll with manuscript) */}
+            <div className="shrink-0">
+              <LiveContinuityMonitorDock
+                book={currentBook}
+                currentChapterIndex={currentChapterIndex}
+                isChecking={isCheckingContinuity}
+                fixingAlertId={fixingAlertId}
+                isGenerating={isGenerating}
+                onToggleEnabled={handleToggleLiveContinuityEnabled}
+                onRunChapterCheck={handleRunManualLiveMonitor}
+                onFixAlertInChapter={handleFixAlertInChapter}
+                onUpdateAlertStatus={handleUpdateAlertStatus}
+                onSelectChapterByNumber={(chapNum) => {
+                  const idx = currentBook.chapters.findIndex((c) => c.index === chapNum);
+                  if (idx >= 0) setCurrentChapterIndex(idx);
+                }}
+              />
+            </div>
+          </div>
+
+          {/* RIGHT PANE: Fixed Top Guardrails & Mode Bar + Independent Scroll Console/Suggestions + Pinned Bottom CTA/Composer */}
+          <aside
+            className={`lg:h-full lg:min-h-0 studio-card flex flex-col overflow-hidden ${
+              mobilePaneTab === 'director' ? 'flex' : 'hidden lg:flex'
+            }`}
+          >
+            {/* PINNED TOP HEADER (Firewall Status + 4 Guardrail Switches + Dual-Mode Tabs) */}
+            <div className="shrink-0 p-3.5 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="text-xs font-bold text-[var(--text-primary)]">引擎与防穿帮控制台</h3>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5 tabular-nums truncate">
+                    {liveAuditReport?.activeSkills.length || 0} SKILL · {liveAuditReport?.activeLore.length || 0} 世界书 ·{' '}
+                    {(currentBook.settings?.chapterOutlines || []).length} 章细纲
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsAuditModalOpen(true)}
+                    className="min-h-[32px] px-2.5 py-1 rounded-xl bg-[var(--bg-muted)] hover:opacity-85 text-xs font-medium text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>透视</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onGoToSetup}
+                    className="min-h-[32px] min-w-[32px] flex items-center justify-center rounded-xl border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)] cursor-pointer"
+                    title="修改11大系统设定、章节细纲与SKILL开关"
+                  >
+                    <Sliders className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={handleToggleBookXpSystem}
+                  className={`min-h-[32px] px-2 py-1 rounded-xl border text-[11px] font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
+                    isBookXpEnabled
+                      ? 'bg-[var(--accent-soft)] border-[var(--accent)]/45 text-[var(--text-primary)]'
+                      : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+                  }`}
+                >
+                  <span className="flex items-center gap-1 truncate">
+                    {isBookXpEnabled ? (
+                      <ShieldCheck className="w-3 h-3 text-[var(--accent)] shrink-0" />
+                    ) : (
+                      <ShieldOff className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
+                    )}
+                    <span className="truncate">XP 基底</span>
+                  </span>
+                  <span className="font-semibold shrink-0">{isBookXpEnabled ? '开' : '关'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => setClimaxMultiplierEnabled(!climaxMultiplierEnabled)}
+                  className={`min-h-[32px] px-2 py-1 rounded-xl border text-[11px] font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
+                    climaxMultiplierEnabled
+                      ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)]'
+                      : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+                  }`}
+                >
+                  <span className="flex items-center gap-1 truncate">
+                    <Flame className="w-3 h-3 shrink-0" />
+                    <span className="truncate">慢放 2x</span>
+                  </span>
+                  <span className="font-semibold shrink-0">{climaxMultiplierEnabled ? '开' : '关'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={async () => {
+                    if (!currentBook) return;
+                    const nextFlag = !currentBook.settings?.autoZhuqueDeslop;
+                    await onSaveBook({
+                      ...currentBook,
+                      settings: {
+                        ...currentBook.settings,
+                        autoZhuqueDeslop: nextFlag,
+                      },
+                      lastModifiedAt: Date.now(),
+                    });
+                    triggerQuickToast(
+                      nextFlag
+                        ? '已开启写后自动过朱雀去味校准（AI痕≥22%时自动重铸）'
+                        : '已关闭写后自动去味'
+                    );
+                  }}
+                  className={`min-h-[32px] px-2 py-1 rounded-xl border text-[11px] font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
+                    currentBook.settings?.autoZhuqueDeslop
+                      ? 'bg-emerald-500/15 border-emerald-500/45 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+                  }`}
+                >
+                  <span className="flex items-center gap-1 truncate">
+                    <Sparkles className="w-3 h-3 shrink-0" />
+                    <span className="truncate">自动去味</span>
+                  </span>
+                  <span className="font-semibold shrink-0">
+                    {currentBook.settings?.autoZhuqueDeslop ? '开' : '关'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={handleToggleLiveContinuityEnabled}
+                  className={`min-h-[32px] px-2 py-1 rounded-xl border text-[11px] font-medium flex items-center justify-between transition-colors cursor-pointer disabled:opacity-50 ${
+                    liveContinuityState?.enabled
+                      ? 'bg-emerald-500/15 border-emerald-500/45 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+                  }`}
+                >
+                  <span className="flex items-center gap-1 truncate">
+                    <ShieldCheck className="w-3 h-3 shrink-0" />
+                    <span className="truncate">防穿帮锁</span>
+                  </span>
+                  <span className="font-semibold shrink-0">
+                    {liveContinuityState?.enabled ? '开' : '关'}
+                  </span>
+                </button>
+              </div>
+
+              {isLastChapter && (
+                <div className="grid grid-cols-2 gap-1 p-1 rounded-xl studio-muted text-xs">
+                  <button
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={() => setCreationMode('outline')}
+                    className={`min-h-[34px] rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+                      creationMode === 'outline'
+                        ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-2xs'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    }`}
+                  >
+                    <ListOrdered className="w-3.5 h-3.5 shrink-0" />
+                    <span>按纲章创作</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={() => setCreationMode('dialogue')}
+                    className={`min-h-[34px] rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+                      creationMode === 'dialogue'
+                        ? 'bg-[var(--accent)] text-[var(--accent-fg)] shadow-2xs'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    }`}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                    <span>对话审校创作</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* INDEPENDENTLY SCROLLABLE MIDDLE REGION (Director Controls, Chat History, 4 Follow-Up Options, Rewrite) */}
+            <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-4">
+              {isLastChapter ? (
+                <>
+                  {creationMode === 'dialogue' ? (
+                    <DialogueCoWritePanel
+                      messages={currentBook.settings?.dialogueHistory || []}
+                      nextChapterNum={nextChapterNum}
+                      isSending={isDialogueSending}
+                      isGenerating={isGenerating}
+                      onSendMessage={handleSendDialogueMessage}
+                      onClearHistory={handleClearDialogueHistory}
+                      onFillDirective={(directive) => {
+                        handleSaveNextPlotInput(directive);
+                        setCreationMode('outline');
+                        triggerQuickToast('已填入导演台指令框，可微调字数与细纲后点击扩写！');
+                      }}
+                      onGenerateWithDirective={(directive) => {
+                        handleSaveNextPlotInput(directive);
+                        handleGenerateNextChapter(directive, false);
+                      }}
+                      hideComposer={true}
+                    />
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-xs font-bold text-[var(--text-primary)]">
+                          导演指令与纲章 (第 {nextChapterNum} 章起)
+                        </h3>
+                        <MotionButton
+                          type="button"
+                          disabled={isGenerating || isGeneratingBeats}
+                          onClick={handleGenerateChapterBeats}
+                          className="min-h-[30px] px-2.5 py-1 rounded-lg bg-[var(--bg-muted)] hover:opacity-85 text-[11px] font-semibold text-[var(--text-primary)] flex items-center gap-1 whitespace-nowrap shrink-0 disabled:opacity-45 cursor-pointer"
+                          title="AI 自动规划起承转合4幕场景节拍，彻底杜绝原地水字数"
+                        >
+                          {isGeneratingBeats ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Clapperboard className="w-3.5 h-3.5" />
+                          )}
+                          <span>生成4幕细纲</span>
+                        </MotionButton>
+                      </div>
+
+                      {/* Single vs Multi-Chapter Continuous Mode Switcher */}
+                      <div className="grid grid-cols-2 gap-1 p-1 rounded-xl studio-muted text-xs">
+                        <button
+                          type="button"
+                          disabled={isGenerating}
+                          onClick={() => setDirectorMode('single')}
+                          className={`min-h-[30px] rounded-lg font-semibold transition-colors cursor-pointer ${
+                            directorMode === 'single'
+                              ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-2xs'
+                              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                          }`}
+                        >
+                          单章精写模式
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isGenerating}
+                          onClick={() => setDirectorMode('batch')}
+                          className={`min-h-[30px] rounded-lg font-semibold transition-colors cursor-pointer flex items-center justify-center gap-1 ${
+                            directorMode === 'batch'
+                              ? 'bg-[var(--accent)] text-[var(--accent-fg)] shadow-2xs'
+                              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                          }`}
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          <span>多章连续生成</span>
+                        </button>
+                      </div>
+
+                      {/* Stipulated Word Count Per Chapter Control */}
+                      <div className="p-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/60 space-y-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="font-semibold text-[var(--text-primary)]">
+                            规定每章目标字数
+                          </label>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min={500}
+                              max={15000}
+                              step={250}
+                              disabled={isGenerating}
+                              value={stipulatedWordsPerChapter}
+                              onChange={(e) =>
+                                setStipulatedWordsPerChapter(Math.max(500, Number(e.target.value) || 2000))
+                              }
+                              className="studio-input w-20 px-2 py-1 text-xs font-bold tabular-nums text-right"
+                            />
+                            <span className="text-[11px] text-[var(--text-muted)]">字/章</span>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[2000, 3000, 3500, 4500].map((presetW) => (
+                            <button
+                              key={presetW}
+                              type="button"
+                              disabled={isGenerating}
+                              onClick={() => setStipulatedWordsPerChapter(presetW)}
+                              className={`py-1 rounded-lg border text-[11px] tabular-nums transition-colors cursor-pointer ${
+                                Number(stipulatedWordsPerChapter) === presetW
+                                  ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-bold'
+                                  : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                              }`}
+                            >
+                              {presetW}字
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Multi-Chapter Batch Count Selector */}
+                      {directorMode === 'batch' && (
+                        <div className="p-2.5 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent-soft)]/35 space-y-2 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-[var(--text-primary)]">
+                              本次连续生成章节数
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={2}
+                                max={30}
+                                disabled={isGenerating}
+                                value={batchChapterCount}
+                                onChange={(e) =>
+                                  setBatchChapterCount(
+                                    Math.min(30, Math.max(1, Number(e.target.value) || 2))
+                                  )
+                                }
+                                className="studio-input w-16 px-2 py-1 text-xs font-bold tabular-nums text-right"
+                              />
+                              <span className="text-[11px] text-[var(--text-muted)]">章</span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-5 gap-1.5">
+                            {[2, 3, 5, 8, 10].map((cnt) => (
+                              <button
+                                key={cnt}
+                                type="button"
+                                disabled={isGenerating}
+                                onClick={() => setBatchChapterCount(cnt)}
+                                className={`py-1 rounded-lg border text-[11px] tabular-nums transition-colors cursor-pointer ${
+                                  Number(batchChapterCount) === cnt
+                                    ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)] font-bold'
+                                    : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                                }`}
+                              >
+                                连写{cnt}章
+                              </button>
+                            ))}
+                          </div>
+
+                          <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed tabular-nums">
+                            将连写 <strong>第 {nextChapterNum} ~ {batchEndChapNum} 章</strong>（其中{' '}
+                            {plannedCountInBatchRange}/{batchChapterCount} 章已有L4细纲；每章完稿后自动刷新防穿帮防火墙）。
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Upcoming Chapter 4-Layer Outline Preview Card */}
+                      {upcomingPlannedOutline && (
+                        <div className="p-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)]/55 space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-[var(--text-primary)] flex items-center gap-1 truncate">
+                              <ListOrdered className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                              <span className="truncate">
+                                第 {upcomingPlannedOutline.chapterIndex} 章 L4：《{upcomingPlannedOutline.title}》
+                              </span>
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isGenerating}
+                              onClick={() => handleSaveNextPlotInput(upcomingPlannedOutline.summary)}
+                              className="text-[11px] font-medium text-[var(--accent)] hover:underline shrink-0 cursor-pointer"
+                            >
+                              填入框内
+                            </button>
+                          </div>
+                          {(upcomingPlannedOutline.protagonistGoal ||
+                            upcomingPlannedOutline.coreObstacle ||
+                            upcomingPlannedOutline.hookNote) && (
+                            <div className="space-y-0.5 text-[11px] text-[var(--text-secondary)] pt-0.5">
+                              {upcomingPlannedOutline.protagonistGoal && (
+                                <p>· <strong>主角目标：</strong>{upcomingPlannedOutline.protagonistGoal}</p>
+                              )}
+                              {upcomingPlannedOutline.coreObstacle && (
+                                <p>· <strong>核心阻力：</strong>{upcomingPlannedOutline.coreObstacle}</p>
+                              )}
+                              {upcomingPlannedOutline.hookNote && (
+                                <p className="text-[var(--accent)]">· <strong>章末钩子：</strong>{upcomingPlannedOutline.hookNote}</p>
+                              )}
+                            </div>
+                          )}
+                          <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed line-clamp-3">
+                            {upcomingPlannedOutline.summary}
+                          </p>
+                        </div>
+                      )}
+
+                      <textarea
+                        rows={4}
+                        disabled={isGenerating}
+                        value={nextPlotInput}
+                        onChange={(e) => handleSaveNextPlotInput(e.target.value)}
+                        placeholder={
+                          isGenerating
+                            ? 'AI 正在流式扩写中，导演输入框已锁定...'
+                            : directorMode === 'batch'
+                            ? '（选填）输入本轮连续多章生成的总体剧情要求、节奏叮嘱或左侧导入的防穿帮提醒...'
+                            : '（选填）输入下一章补充要求，可点左侧「+ 叮嘱导演台」或下方 AI 走向建议...'
+                        }
+                        className="studio-input w-full p-2.5 text-xs leading-relaxed disabled:opacity-55 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                  )}
+
+                  {/* PRESERVED PERSISTENT SECTION: 后续剧情走向建议 (4 Post-Chapter Expansion Options) */}
+                  <div className="pt-3 border-t border-[var(--border-subtle)] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--text-primary)]">后续剧情走向建议</span>
+                      <div className="flex items-center gap-1.5">
+                        <MotionButton
+                          type="button"
+                          disabled={isGenerating || isRerolling || !activeChapter}
+                          onClick={handleRerollSuggestions}
+                          className="min-h-[30px] px-2.5 py-1 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[11px] font-medium text-[var(--text-primary)] flex items-center gap-1 disabled:opacity-45 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${isRerolling ? 'animate-spin' : ''}`} />
+                          <span>重掷</span>
+                        </MotionButton>
+
+                        {activeChapter?.allSuggestions && activeChapter.allSuggestions.length > 0 && (
+                          confirmClearSuggestions ? (
+                            <MotionButton
+                              type="button"
+                              onClick={handleClearSuggestions}
+                              className="min-h-[30px] px-2.5 py-1 rounded-lg bg-rose-600 text-white text-[11px] font-semibold"
+                            >
+                              确认清空
+                            </MotionButton>
+                          ) : (
+                            <MotionButton
+                              type="button"
+                              onClick={() => setConfirmClearSuggestions(true)}
+                              className="min-h-[30px] px-2 py-1 rounded-lg text-[11px] text-[var(--text-muted)] hover:text-rose-600"
+                            >
+                              清空
+                            </MotionButton>
+                          )
+                        )}
+                      </div>
+                    </div>
+
+                    {activeChapter?.allSuggestions && activeChapter.allSuggestions.length > 0 ? (
+                      <StaggerList className="space-y-2">
+                        {activeChapter.allSuggestions[0].suggestions.map((opt, idx) => (
+                          <StaggerItem
+                            key={idx}
+                            onContextMenu={(e) =>
+                              openContextMenu(e, `后续走向选项 #${idx + 1}`, [
+                                {
+                                  id: 'adopt-plot',
+                                  label: '采用此走向填入导演台',
+                                  icon: <Check className="w-3.5 h-3.5" />,
+                                  disabled: isGenerating,
+                                  onSelect: () => {
+                                    handleSaveNextPlotInput(opt);
+                                    setCreationMode('outline');
+                                  },
+                                },
+                                {
+                                  id: 'run-now',
+                                  label: '以此走向立即扩写下一章',
+                                  icon: <Play className="w-3.5 h-3.5" />,
+                                  disabled: isGenerating,
+                                  onSelect: () => {
+                                    handleSaveNextPlotInput(opt);
+                                    handleGenerateNextChapter(opt, false);
+                                  },
+                                },
+                                {
+                                  id: 'append-plot',
+                                  label: '叠加追加到当前导演指令',
+                                  icon: <Plus className="w-3.5 h-3.5" />,
+                                  disabled: isGenerating,
+                                  onSelect: () => {
+                                    const combined = nextPlotInput ? `${nextPlotInput.trim()}\n• ${opt}` : opt;
+                                    handleSaveNextPlotInput(combined);
+                                    setCreationMode('outline');
+                                  },
+                                },
+                                {
+                                  id: 'copy-plot',
+                                  label: '复制此条走向文本',
+                                  icon: <Copy className="w-3.5 h-3.5" />,
+                                  dividerBefore: true,
+                                  onSelect: () => {
+                                    navigator.clipboard?.writeText(opt);
+                                    triggerQuickToast('已复制走向建议');
+                                  },
+                                },
+                              ])
+                            }
+                            className="p-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)]/55 hover:border-[var(--accent)]/40 transition-colors space-y-2 text-[11.5px] text-[var(--text-secondary)] leading-relaxed"
+                          >
+                            <p>{opt}</p>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <MotionButton
+                                type="button"
+                                disabled={isGenerating}
+                                onClick={() => {
+                                  handleSaveNextPlotInput(opt);
+                                  setCreationMode('outline');
+                                }}
+                                className="min-h-[28px] px-2 py-1 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[11px] font-medium text-[var(--text-primary)] hover:opacity-85 disabled:opacity-40 cursor-pointer"
+                              >
+                                采用此走向
+                              </MotionButton>
+                              <MotionButton
+                                type="button"
+                                disabled={isGenerating}
+                                onClick={() => {
+                                  const combined = nextPlotInput ? `${nextPlotInput.trim()}\n• ${opt}` : opt;
+                                  handleSaveNextPlotInput(combined);
+                                  setCreationMode('outline');
+                                }}
+                                className="min-h-[28px] px-2 py-1 rounded-lg text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
+                              >
+                                + 叠加
+                              </MotionButton>
+                              <MotionButton
+                                type="button"
+                                disabled={isGenerating}
+                                onClick={() => {
+                                  handleSaveNextPlotInput(opt);
+                                  handleGenerateNextChapter(opt, false);
+                                }}
+                                className="min-h-[28px] px-2.5 py-1 rounded-lg bg-[var(--accent)] text-[var(--accent-fg)] text-[11px] font-semibold flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                              >
+                                <Play className="w-2.5 h-2.5 fill-current" />
+                                <span>立即扩写</span>
+                              </MotionButton>
+                            </div>
+                          </StaggerItem>
+                        ))}
+                      </StaggerList>
+                    ) : (
+                      <p className="text-xs text-[var(--text-muted)] py-3 text-center studio-muted">
+                        暂无建议，点击右上角「重掷」生成 4 条全新走向
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Collapsible Idea Cards Overlay */}
+                  <div className="pt-2 border-t border-[var(--border-subtle)]">
+                    <button
+                      type="button"
+                      onClick={() => setIsIdeaCardsSectionOpen(!isIdeaCardsSectionOpen)}
+                      className="w-full min-h-[34px] flex items-center justify-between text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+                    >
+                      <span>
+                        叠加灵感工坊爆点卡 {selectedIdeaCardIds.length > 0 ? `(已选 ${selectedIdeaCardIds.length} 张)` : ''}
+                      </span>
+                      {isIdeaCardsSectionOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </button>
+
+                    {isIdeaCardsSectionOpen && (
+                      <div className="pt-2 space-y-2.5">
+                        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                          {['核心爆点', '角色设定', '金手指/机制', '全部'].map((cat) => (
+                            <button
+                              key={cat}
+                              type="button"
+                              onClick={() => setIdeaCategoryFilter(cat)}
+                              className={`min-h-[28px] px-2.5 py-1 rounded-lg text-[11px] whitespace-nowrap shrink-0 ${
+                                ideaCategoryFilter === cat
+                                  ? 'bg-[var(--accent)] text-[var(--accent-fg)] font-semibold'
+                                  : 'bg-[var(--bg-muted)] text-[var(--text-secondary)]'
+                              }`}
+                            >
+                              {cat}
+                            </button>
+                          ))}
+                        </div>
+
+                        {filteredIdeaCards.length === 0 ? (
+                          <p className="text-[11px] text-[var(--text-muted)] py-2">该分类暂无卡片，可在「灵感工坊」添加</p>
+                        ) : (
+                          <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                            {filteredIdeaCards.map((card) => {
+                              const selected = selectedIdeaCardIds.includes(card.id);
+                              return (
+                                <button
+                                  key={card.id}
+                                  type="button"
+                                  onClick={() => handleToggleIdeaCard(card.id)}
+                                  className={`w-full text-left p-2 rounded-xl border text-xs leading-relaxed transition-colors ${
+                                    selected
+                                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)] font-medium'
+                                      : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
+                                  }`}
+                                >
+                                  {card.content}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)]/40 space-y-1.5 text-xs text-[var(--text-secondary)]">
+                  <p className="font-semibold text-[var(--text-primary)]">
+                    当前正在查阅历史章节（第 {currentChapterIndex + 1} / {currentBook.chapters.length} 章）
+                  </p>
+                  <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                    您可直接在中间编辑校对、跑局部实时监测或下文重铸，或点击底部按钮返回最新章继续向后扩写。
+                  </p>
+                </div>
+              )}
+
+              {/* Chapter Rewrite & Long-Term Stage Summary */}
+              <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsRewriteOpen(!isRewriteOpen)}
+                    className="text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>重写第 {currentChapterIndex + 1} 章</span>
+                    {isRewriteOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isGenerating || isSummarizing || currentBook.chapters.length === 0}
+                    onClick={handleGenerateSummary}
+                    className="min-h-[30px] px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[11px] font-medium text-[var(--text-primary)] flex items-center gap-1 disabled:opacity-45 cursor-pointer"
+                    title="浓缩生成阶段全局总结，作为后续所有章节的永久长期记忆"
+                  >
+                    {isSummarizing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                    <span>阶段总结</span>
+                  </button>
+                </div>
+
+                {isRewriteOpen && (
+                  <div className="pt-1 space-y-2">
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      重写后原章节会自动移入书库「历史归档」，绝不丢失旧稿。
+                    </p>
+                    <textarea
+                      rows={3}
+                      disabled={isGenerating}
+                      value={rewritePlotInput}
+                      onChange={(e) => setRewritePlotInput(e.target.value)}
+                      placeholder={
+                        isGenerating ? '流式重写进行中，输入已锁定...' : '输入本章重写调整方向（例：放慢对手戏节奏、改变冲突结局）...'
+                      }
+                      className="studio-input w-full p-2.5 text-xs leading-relaxed disabled:opacity-55"
+                    />
+
+                    {confirmRewrite ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={isGenerating}
+                          onClick={() => handleGenerateNextChapter(rewritePlotInput, true)}
+                          className="flex-1 min-h-[36px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                        >
+                          确认归档旧稿并重写
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRewrite(false)}
+                          className="min-h-[36px] px-3 rounded-xl border border-[var(--border-subtle)] text-xs"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    ) : (
                       <button
-                        key={cnt}
                         type="button"
                         disabled={isGenerating}
-                        onClick={() => setBatchChapterCount(cnt)}
-                        className={`py-1 rounded-lg border text-[11px] tabular-nums transition-colors cursor-pointer ${
-                          Number(batchChapterCount) === cnt
-                            ? 'bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)] font-bold'
-                            : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
-                        }`}
+                        onClick={() => setConfirmRewrite(true)}
+                        className="w-full min-h-[36px] rounded-xl border border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 text-xs font-semibold disabled:opacity-45 cursor-pointer"
                       >
-                        连写{cnt}章
+                        重写本章
                       </button>
-                    ))}
+                    )}
                   </div>
+                )}
+              </div>
+            </div>
 
-                  <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed tabular-nums">
-                    将连续流式生成 **第 {nextChapterNum} 章 ~ 第 {batchEndChapNum} 章**（预计总计约{' '}
-                    {(batchChapterCount * targetChapterWords).toLocaleString()} 字；其中{' '}
-                    {plannedCountInBatchRange}/{batchChapterCount} 章已备有预设章节细纲，每写完一章实时落库并刷新下一章记忆窗口）。
-                  </p>
-                </div>
-              )}
-
-              {/* Upcoming Chapter 4-Layer Outline Preview Card */}
-              {upcomingPlannedOutline && (
-                <div className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)]/55 space-y-1.5 text-xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-[var(--text-primary)] flex items-center gap-1">
-                      <ListOrdered className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
-                      <span>
-                        第 {upcomingPlannedOutline.chapterIndex} 章 L4 细纲：《{upcomingPlannedOutline.title}》
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      disabled={isGenerating}
-                      onClick={() => handleSaveNextPlotInput(upcomingPlannedOutline.summary)}
-                      className="text-[11px] font-medium text-[var(--accent)] hover:underline shrink-0 cursor-pointer"
-                    >
-                      填入编辑框
-                    </button>
-                  </div>
-                  {(upcomingPlannedOutline.protagonistGoal ||
-                    upcomingPlannedOutline.coreObstacle ||
-                    upcomingPlannedOutline.hookNote) && (
-                    <div className="space-y-0.5 text-[11px] text-[var(--text-secondary)] pt-0.5">
-                      {upcomingPlannedOutline.protagonistGoal && (
-                        <p>· <strong>主角目标：</strong>{upcomingPlannedOutline.protagonistGoal}</p>
-                      )}
-                      {upcomingPlannedOutline.coreObstacle && (
-                        <p>· <strong>核心阻力：</strong>{upcomingPlannedOutline.coreObstacle}</p>
-                      )}
-                      {upcomingPlannedOutline.hookNote && (
-                        <p className="text-[var(--accent)]">· <strong>章末钩子：</strong>{upcomingPlannedOutline.hookNote}</p>
-                      )}
-                    </div>
-                  )}
-                  <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed line-clamp-3">
-                    {upcomingPlannedOutline.summary}
-                  </p>
-                  <p className="text-[10px] text-[var(--text-muted)]">
-                    注：执笔引擎会自动挂载所属分卷、防跑偏剧情单元、关联角色知情权边界与关键道具。
-                  </p>
-                </div>
-              )}
-
-              <textarea
-                rows={3}
-                disabled={isGenerating}
-                value={nextPlotInput}
-                onChange={(e) => handleSaveNextPlotInput(e.target.value)}
-                placeholder={
-                  isGenerating
-                    ? 'AI 正在流式扩写中，导演输入框已锁定...'
-                    : directorMode === 'batch'
-                    ? '（选填）输入本轮连续多章生成的总体剧情要求或节奏叮嘱...'
-                    : '（选填）输入下一章补充要求，或点选下方 AI 走向建议...'
-                }
-                className="studio-input w-full p-3 text-xs leading-relaxed disabled:opacity-55 disabled:cursor-not-allowed"
-              />
-
-              {directorMode === 'batch' ? (
+            {/* PINNED BOTTOM FOOTER (Primary Generation CTA or Dialogue Chat Composer) */}
+            <div className="shrink-0 p-3 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)]">
+              {!isLastChapter ? (
+                <button
+                  type="button"
+                  onClick={() => setCurrentChapterIndex(currentBook.chapters.length - 1)}
+                  className="btn-primary w-full min-h-[42px] text-xs cursor-pointer"
+                >
+                  跳至最新章继续执笔
+                </button>
+              ) : creationMode === 'dialogue' ? (
+                <DialogueComposerBar
+                  isSending={isDialogueSending}
+                  isGenerating={isGenerating}
+                  onSendMessage={handleSendDialogueMessage}
+                />
+              ) : directorMode === 'batch' ? (
                 <div className="space-y-2">
                   <MotionButton
                     type="button"
                     disabled={isGenerating}
                     onClick={handleBatchGenerateChapters}
-                    className="btn-primary w-full min-h-[48px] px-5 py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                    className="btn-primary w-full min-h-[44px] px-4 py-2 text-xs sm:text-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
                   >
                     {isGenerating && batchProgress ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
                         <span>
-                          连写第 {batchProgress.currentStep}/{batchProgress.totalSteps} 章 (全书第{' '}
-                          {batchProgress.currentChapNum} 章)...
+                          连写第 {batchProgress.currentStep}/{batchProgress.totalSteps} 章 (第 {batchProgress.currentChapNum} 章)...
                         </span>
                       </>
                     ) : (
@@ -2006,12 +3130,12 @@ ${chapterTail}
                         stopBatchAfterCurrentRef.current = true;
                         setStopBatchRequested(true);
                       }}
-                      className="w-full min-h-[40px] px-4 py-2 rounded-xl border border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
+                      className="w-full min-h-[34px] px-3 py-1 rounded-xl border border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
                     >
                       <Square className="w-3 h-3 fill-current" />
                       <span>
                         {stopBatchRequested
-                          ? `已预约：第 ${batchProgress.currentChapNum} 章写完落库后安全停止`
+                          ? `第 ${batchProgress.currentChapNum} 章写完后安全停止`
                           : '写完当前章后安全停止连写'}
                       </span>
                     </button>
@@ -2022,7 +3146,7 @@ ${chapterTail}
                   type="button"
                   disabled={isGenerating}
                   onClick={() => handleGenerateNextChapter(nextPlotInput, false)}
-                  className="btn-primary w-full min-h-[48px] px-5 py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                  className="btn-primary w-full min-h-[44px] px-4 py-2 text-xs sm:text-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
                 >
                   {isGenerating ? (
                     <>
@@ -2032,277 +3156,14 @@ ${chapterTail}
                   ) : (
                     <>
                       <Play className="w-4 h-4 fill-current" />
-                      <span>继续扩写第 {nextChapterNum} 章（规定 {targetChapterWords} 字）</span>
+                      <span>继续扩写第 {nextChapterNum} 章（{targetChapterWords} 字）</span>
                     </>
                   )}
                 </MotionButton>
               )}
-
-              {/* AI 4 Plot Suggestions */}
-              <div className="pt-3 border-t border-[var(--border-subtle)] space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-[var(--text-primary)]">后续剧情走向建议</span>
-                  <div className="flex items-center gap-1.5">
-                    <MotionButton
-                      type="button"
-                      disabled={isGenerating || isRerolling || !activeChapter}
-                      onClick={handleRerollSuggestions}
-                      className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-[11px] font-medium text-[var(--text-primary)] flex items-center gap-1 disabled:opacity-45 cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3 h-3 ${isRerolling ? 'animate-spin' : ''}`} />
-                      <span>重掷</span>
-                    </MotionButton>
-
-                    {activeChapter?.allSuggestions && activeChapter.allSuggestions.length > 0 && (
-                      confirmClearSuggestions ? (
-                        <MotionButton
-                          type="button"
-                          onClick={handleClearSuggestions}
-                          className="min-h-[34px] px-2.5 py-1 rounded-lg bg-rose-600 text-white text-[11px] font-semibold"
-                        >
-                          确认清空
-                        </MotionButton>
-                      ) : (
-                        <MotionButton
-                          type="button"
-                          onClick={() => setConfirmClearSuggestions(true)}
-                          className="min-h-[34px] px-2 py-1 rounded-lg text-[11px] text-[var(--text-muted)] hover:text-rose-600"
-                        >
-                          清空
-                        </MotionButton>
-                      )
-                    )}
-                  </div>
-                </div>
-
-                {activeChapter?.allSuggestions && activeChapter.allSuggestions.length > 0 ? (
-                  <StaggerList className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
-                    {activeChapter.allSuggestions[0].suggestions.map((opt, idx) => (
-                      <StaggerItem
-                        key={idx}
-                        onContextMenu={(e) =>
-                          openContextMenu(e, `后续走向选项 #${idx + 1}`, [
-                            {
-                              id: 'adopt-plot',
-                              label: '采用此走向填入导演台',
-                              icon: <Check className="w-3.5 h-3.5" />,
-                              disabled: isGenerating,
-                              onSelect: () => handleSaveNextPlotInput(opt),
-                            },
-                            {
-                              id: 'run-now',
-                              label: '以此走向立即扩写下一章',
-                              icon: <Play className="w-3.5 h-3.5" />,
-                              disabled: isGenerating,
-                              onSelect: () => {
-                                handleSaveNextPlotInput(opt);
-                                handleGenerateNextChapter(opt, false);
-                              },
-                            },
-                            {
-                              id: 'append-plot',
-                              label: '叠加追加到当前导演指令',
-                              icon: <Plus className="w-3.5 h-3.5" />,
-                              disabled: isGenerating,
-                              onSelect: () => {
-                                const combined = nextPlotInput ? `${nextPlotInput.trim()}\n• ${opt}` : opt;
-                                handleSaveNextPlotInput(combined);
-                              },
-                            },
-                            {
-                              id: 'copy-plot',
-                              label: '复制此条走向文本',
-                              icon: <Copy className="w-3.5 h-3.5" />,
-                              dividerBefore: true,
-                              onSelect: () => {
-                                navigator.clipboard?.writeText(opt);
-                                triggerQuickToast('已复制走向建议');
-                              },
-                            },
-                          ])
-                        }
-                        className="p-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)]/60 hover:border-[var(--accent)]/40 transition-colors space-y-2 text-xs text-[var(--text-secondary)] leading-relaxed"
-                      >
-                        <p>{opt}</p>
-                        <div className="flex items-center justify-end gap-2">
-                          <MotionButton
-                            type="button"
-                            disabled={isGenerating}
-                            onClick={() => handleSaveNextPlotInput(opt)}
-                            className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[11px] font-medium text-[var(--text-primary)] hover:opacity-85 disabled:opacity-40 cursor-pointer"
-                          >
-                            采用此走向
-                          </MotionButton>
-                          <MotionButton
-                            type="button"
-                            disabled={isGenerating}
-                            onClick={() => {
-                              const combined = nextPlotInput ? `${nextPlotInput.trim()}\n• ${opt}` : opt;
-                              handleSaveNextPlotInput(combined);
-                            }}
-                            className="min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
-                          >
-                            + 叠加
-                          </MotionButton>
-                        </div>
-                      </StaggerItem>
-                    ))}
-                  </StaggerList>
-                ) : (
-                  <p className="text-xs text-[var(--text-muted)] py-3 text-center studio-muted">
-                    暂无建议，点击右上角「重掷」生成 4 条全新走向
-                  </p>
-                )}
-              </div>
-
-              {/* Collapsible Idea Cards Overlay */}
-              <div className="pt-2 border-t border-[var(--border-subtle)]">
-                <button
-                  type="button"
-                  onClick={() => setIsIdeaCardsSectionOpen(!isIdeaCardsSectionOpen)}
-                  className="w-full min-h-[40px] flex items-center justify-between text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
-                >
-                  <span>
-                    叠加灵感工坊爆点卡 {selectedIdeaCardIds.length > 0 ? `(已选 ${selectedIdeaCardIds.length} 张)` : ''}
-                  </span>
-                  {isIdeaCardsSectionOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                </button>
-
-                {isIdeaCardsSectionOpen && (
-                  <div className="pt-2 space-y-2.5">
-                    <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-                      {['核心爆点', '角色设定', '金手指/机制', '全部'].map((cat) => (
-                        <button
-                          key={cat}
-                          type="button"
-                          onClick={() => setIdeaCategoryFilter(cat)}
-                          className={`min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] whitespace-nowrap shrink-0 ${
-                            ideaCategoryFilter === cat
-                              ? 'bg-[var(--accent)] text-[var(--accent-fg)] font-semibold'
-                              : 'bg-[var(--bg-muted)] text-[var(--text-secondary)]'
-                          }`}
-                        >
-                          {cat}
-                        </button>
-                      ))}
-                    </div>
-
-                    {filteredIdeaCards.length === 0 ? (
-                      <p className="text-[11px] text-[var(--text-muted)] py-2">该分类暂无卡片，可在「灵感工坊」添加</p>
-                    ) : (
-                      <div className="space-y-1.5 max-h-44 overflow-y-auto">
-                        {filteredIdeaCards.map((card) => {
-                          const selected = selectedIdeaCardIds.includes(card.id);
-                          return (
-                            <button
-                              key={card.id}
-                              type="button"
-                              onClick={() => handleToggleIdeaCard(card.id)}
-                              className={`w-full text-left p-2.5 rounded-xl border text-xs leading-relaxed transition-colors ${
-                                selected
-                                  ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)] font-medium'
-                                  : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:bg-[var(--bg-muted)]'
-                              }`}
-                            >
-                              {card.content}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
-          ) : (
-            <div className="studio-card p-4 space-y-2 text-xs text-[var(--text-secondary)]">
-              <p className="font-semibold text-[var(--text-primary)]">
-                当前正在查阅历史章节（第 {currentChapterIndex + 1} / {currentBook.chapters.length} 章）
-              </p>
-              <p className="text-[var(--text-muted)]">跳转至最新一章即可继续向后扩写连载。</p>
-              <button
-                type="button"
-                onClick={() => setCurrentChapterIndex(currentBook.chapters.length - 1)}
-                className="btn-primary w-full min-h-[42px] text-xs mt-1 cursor-pointer"
-              >
-                跳至最新章继续执笔
-              </button>
-            </div>
-          )}
-
-          {/* Card 3: Chapter Rewrite & Long-Term Stage Summary */}
-          <div className="studio-card p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setIsRewriteOpen(!isRewriteOpen)}
-                className="text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>重写当前第 {currentChapterIndex + 1} 章</span>
-                {isRewriteOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              </button>
-
-              <button
-                type="button"
-                disabled={isGenerating || isSummarizing || currentBook.chapters.length === 0}
-                onClick={handleGenerateSummary}
-                className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] hover:bg-[var(--bg-muted)] text-xs font-medium text-[var(--text-primary)] flex items-center gap-1 disabled:opacity-45 cursor-pointer"
-                title="浓缩生成阶段全局总结，作为后续所有章节的永久长期记忆"
-              >
-                {isSummarizing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                <span>生成阶段总结</span>
-              </button>
-            </div>
-
-            {isRewriteOpen && (
-              <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2.5">
-                <p className="text-[11px] text-[var(--text-muted)]">
-                  重写后原章节会自动移入书库「历史归档」，绝不丢失旧稿。
-                </p>
-                <textarea
-                  rows={3}
-                  disabled={isGenerating}
-                  value={rewritePlotInput}
-                  onChange={(e) => setRewritePlotInput(e.target.value)}
-                  placeholder={
-                    isGenerating ? '流式重写进行中，输入已锁定...' : '输入本章重写调整方向（例：放慢对手戏节奏、改变冲突结局）...'
-                  }
-                  className="studio-input w-full p-3 text-xs leading-relaxed disabled:opacity-55"
-                />
-
-                {confirmRewrite ? (
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={isGenerating}
-                      onClick={() => handleGenerateNextChapter(rewritePlotInput, true)}
-                      className="flex-1 min-h-[42px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
-                    >
-                      确认归档旧稿并重写
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmRewrite(false)}
-                      className="min-h-[42px] px-3 rounded-xl border border-[var(--border-subtle)] text-xs"
-                    >
-                      取消
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={isGenerating}
-                    onClick={() => setConfirmRewrite(true)}
-                    className="w-full min-h-[42px] rounded-xl border border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 text-xs font-semibold disabled:opacity-45 cursor-pointer"
-                  >
-                    重写本章
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </aside>
+          </aside>
+        </div>
       </div>
 
       {/* Inline Paragraph Polish Modal */}
@@ -2621,7 +3482,7 @@ ${chapterTail}
                 </h1>
               </div>
 
-              <div className={`whitespace-pre-wrap leading-loose tracking-wide ${FOCUS_FONT_CLASSES[focusFontStep]}`}>
+              <div className={`whitespace-pre-wrap chapter-canvas ${FOCUS_FONT_CLASSES[focusFontStep]}`}>
                 {chapterText || '本章暂无正文内容'}
               </div>
 
